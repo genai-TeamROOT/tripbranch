@@ -37,6 +37,8 @@ const server = vi.hoisted(() => ({
   }[],
   renamed: [] as { id: string; title: string }[],
   deleted: [] as string[],
+  scheduleRenamed: [] as { id: string; title: string }[],
+  scheduleDeleted: [] as string[],
   resumed: [] as string[],
   /* 한 턴의 화면 기록. payload는 그 턴의 AgentResponse 그대로다. */
   transcript: {
@@ -256,6 +258,20 @@ vi.mock("../../api/trip", async (importOriginal) => {
       server.sessions = server.sessions.filter((item) => item.session_id !== sessionId);
       return { session_id: sessionId, deleted: true };
     },
+    /* 저장한 일정은 대화와 다른 저장소다 — 기록도 따로 받아 둬야 한쪽 동작이
+       다른 쪽 배열에 섞여 통과하는 일이 없다(TP-233). */
+    renameSavedSchedule: async (scheduleId: string, title: string) => {
+      server.scheduleRenamed.push({ id: scheduleId, title });
+      server.schedules = server.schedules.map((item) =>
+        item.id === scheduleId ? { ...item, title } : item,
+      );
+      return { ...server.schedules[0], title };
+    },
+    deleteSavedSchedule: async (scheduleId: string) => {
+      server.scheduleDeleted.push(scheduleId);
+      server.schedules = server.schedules.filter((item) => item.id !== scheduleId);
+      return { id: scheduleId, deleted: true };
+    },
   };
 });
 
@@ -284,6 +300,8 @@ beforeEach(() => {
   ];
   server.renamed = [];
   server.deleted = [];
+  server.scheduleRenamed = [];
+  server.scheduleDeleted = [];
   server.resumed = [];
   server.chatSessionIds = [];
   server.listCalls = 0;
@@ -942,11 +960,101 @@ test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", a
 
   await renderApp();
 
-  const entry = await within(sidebar()).findByRole("button", { name: /종로 반나절/ });
+  /* 한 줄에 "열기"와 "메뉴" 두 버튼이 있다 — 정규식으로 찾으면 둘 다 걸린다. */
+  const entry = await within(sidebar()).findByRole("button", { name: "종로 반나절 일정 열기" });
   await userEvent.click(entry);
 
   /* 저장한 일정은 SchedulePage가 ?saved=로 받아 연다 — 대화와 다른 화면이다. */
   await waitFor(() => expect(window.location.search).toContain("saved=sched-1"));
+});
+
+const SEED_SCHEDULES = [
+  {
+    id: "sched-1",
+    title: "종로 반나절",
+    session_id: "chat-1",
+    created_at: "2026-08-31T14:30:00+09:00",
+    updated_at: "2026-08-31T14:30:00+09:00",
+  },
+  {
+    id: "sched-2",
+    title: "성수 저녁 코스",
+    session_id: "chat-2",
+    created_at: "2026-09-01T18:00:00+09:00",
+    updated_at: "2026-09-01T18:00:00+09:00",
+  },
+];
+
+test("저장한 일정 이름을 바꾸면 새 이름이 남는다", async () => {
+  server.schedules = [...SEED_SCHEDULES];
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "종로 반나절 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "이름 바꾸기" }));
+  const input = screen.getByRole("textbox", { name: "일정 이름" });
+  await user.clear(input);
+  await user.type(input, "종로 반나절 (수정){Enter}");
+
+  await waitFor(() =>
+    expect(server.scheduleRenamed).toEqual([{ id: "sched-1", title: "종로 반나절 (수정)" }]),
+  );
+  /* 대화 쪽 저장소로 새지 않았다 — 두 목록이 상태를 공유하므로 대상이 섞이면
+     여기서 잡힌다. */
+  expect(server.renamed).toEqual([]);
+  expect(await within(sidebar()).findByText("종로 반나절 (수정)")).toBeInTheDocument();
+});
+
+test("저장한 일정을 삭제하면 목록에서 빠진다", async () => {
+  server.schedules = [...SEED_SCHEDULES];
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "성수 저녁 코스 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
+
+  await waitFor(() => expect(server.scheduleDeleted).toEqual(["sched-2"]));
+  expect(server.deleted).toEqual([]);
+  await waitFor(() =>
+    expect(within(sidebar()).queryByText("성수 저녁 코스")).not.toBeInTheDocument(),
+  );
+  // 다른 줄은 그대로 있다.
+  expect(within(sidebar()).getByText("종로 반나절")).toBeInTheDocument();
+});
+
+/*
+ * 메뉴 상태를 두 목록이 나눠 쓰되 **어느 목록인지**를 함께 들고 있다
+ * (`MenuTarget`). 그 구분자가 막는 것은 정확히 하나다 — 두 목록에 같은 id가
+ * 있을 때 메뉴가 양쪽에 동시에 뜨는 것.
+ *
+ * **id가 겹치는 상황을 일부러 만든다.** 지금 대화 id("chat-1")와 일정
+ * id("sched-1")는 체계가 달라 실제로 겹치지 않는데, 그렇기 때문에 평범한
+ * 시드로는 구분자를 지워도 테스트가 전부 통과한다(실제로 확인했다). 겹치지
+ * 않는다는 것에 기대는 코드를 두지 않으려고 넣은 가드이므로, 겹쳤을 때를
+ * 재현해야 그 가드를 잠글 수 있다.
+ *
+ * 참고로 "한쪽을 열면 다른 쪽이 닫힌다"는 막아야 할 동작이 아니라 원하는
+ * 동작이다 — 메뉴는 한 번에 하나만 떠야 한다. 그건 상태가 하나라는 것에서
+ * 이미 따라오고, 구분자와는 무관하다.
+ */
+test("대화와 저장한 일정의 id가 겹쳐도 메뉴는 하나만 뜬다", async () => {
+  server.schedules = [
+    {
+      id: "chat-1",
+      title: "종로 반나절",
+      session_id: "chat-1",
+      created_at: "2026-08-31T14:30:00+09:00",
+      updated_at: "2026-08-31T14:30:00+09:00",
+    },
+  ];
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }),
+  );
+
+  expect(screen.getAllByRole("menu")).toHaveLength(1);
 });
 
 /* 대화 목록과 별도 저장소다. 세션이 30일 뒤 정리돼도 저장한 일정은 남으므로

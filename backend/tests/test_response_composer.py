@@ -21,6 +21,7 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleBudgetStatus,
     ScheduleItem,
     ScheduleResult,
     Severity,
@@ -1837,3 +1838,67 @@ def test_schedule_message_reports_omitted_even_without_items() -> None:
 
     assert "조건에 맞는 곳을 충분히 찾지 못했어요." in message
     assert "북촌한옥마을" in message
+
+
+class TestScheduleTimeBudgetStatus:
+    """TP-238 — 시간 준수 판정은 편성이 내리고 화면은 읽기만 한다."""
+
+    def test_판정을_다시_계산하지_않고_실려_온_값을_읽는다(self) -> None:
+        """**두 수만 보면 오차 안(200 - 180 = 20)이지만 판정은 OVER다.**
+
+        일부러 어긋나게 만든 입력이다. 화면이 뺄셈을 다시 하면 "3시간 코스"라고
+        말하고 초과 안내도 빠지므로 이 테스트가 깨진다. 평범한 입력에서는 두
+        방식이 같은 답을 내서 이 결함이 안 잡힌다 — 편성이 조절한 결과와 화면이
+        말하는 것이 갈리는 것이 이 필드를 둔 이유다.
+        """
+
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=200,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            time_budget_status=ScheduleBudgetStatus.OVER,
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("3시간 20분 코스를 짜봤어요")
+        assert "3시간으로 말씀하셨는데" in message
+
+    def test_오차_안이면_요청한_시간을_그대로_말한다(self) -> None:
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=210,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            time_budget_status=ScheduleBudgetStatus.WITHIN,
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("3시간 코스를 짜봤어요")
+        assert "길어졌어요" not in message
+
+    def test_판정_필드가_없는_옛_스냅샷도_그대로_읽힌다(self) -> None:
+        """저장한 일정과 지난 대화에는 이 필드가 없던 시절의 스냅샷이 쌓여 있다.
+
+        기본값이 None이라 복원 자체는 되고, 그때는 같은 함수로 판정한다 —
+        같은 함수를 부르는 것과 같은 계산을 다시 적는 것은 다르다.
+        """
+
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=266,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        assert schedule.time_budget_status is None
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("4시간 26분 코스를 짜봤어요")
+        assert "1시간 26분쯤 길어졌어요" in message

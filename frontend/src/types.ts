@@ -519,12 +519,15 @@ export interface UserConditions {
   concentration_intent?: string | null;
   transport: string | null;
   max_travel_time: number | null;
+  travel_origin?: string | null;
   time_available: number | null;
   environment: string | null;
   companion: string | null;
   budget: string | null;
   exclude_tags: string[];
   special_requirements: string[];
+  accessibility_needs?: string[];
+  taste_query?: string | null;
   /*
    * 백엔드 UserConditions에는 아직 없는 필드다. Agent가 반경을 산출해 내려주게 되면
    * toLegacyConditions()가 이 값을 우선 사용하고, 없으면 기본값(2.0km)을 쓴다.

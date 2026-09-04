@@ -243,6 +243,21 @@ class ScheduleItem(BaseModel):
     travel_to_next_measured: bool = False
 
 
+class ScheduleBudgetStatus(StrEnum):
+    """편성 결과가 사용자가 말한 활동 가능 시간을 지켰는지. (TP-238)
+
+    판정 자체는 app.schedule.budget.classify_budget()이 내린다. **이 열거형이
+    app.schedule이 아니라 여기 있는 이유**는 ScheduleResult가 이 타입을 직접
+    참조하기 때문이다 — app.schemas가 app.schedule을 import하면 순환이 된다
+    (app.schedule.duration이 이미 app.schemas.PlaceType을 읽는다). SCHEDULE-02가
+    ScheduleItem을 app.schemas에 둔 것과 같은 이유다.
+    """
+
+    WITHIN = "within"
+    OVER = "over"
+    UNDER = "under"
+
+
 class ScheduleResult(BaseModel):
     """일정 편성 모듈(app.schedule)의 최종 출력. AgentResponse.schedule에 실린다.
 
@@ -306,6 +321,19 @@ class ScheduleResult(BaseModel):
     # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
     # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
     added_place_names: list[str] = Field(default_factory=list)
+    # 요청한 활동 가능 시간을 지켰는지에 대한 판정 (TP-238).
+    #
+    # **판정을 한 곳에서만 내리기 위한 필드다.** 예전에는 response_composer가
+    # total_duration_min과 요청 시간을 직접 빼서 두 번 판정했다 — 라벨을 요청값으로
+    # 쓸지 한 번, 초과 안내를 붙일지 또 한 번. 편성 쪽에는 목표가 아예 없었다.
+    # 지금은 planner가 체류시간을 예산에 맞춘 뒤 그 결과를 판정해 여기 싣고,
+    # 화면과 지표가 같은 값을 읽는다.
+    #
+    # 사용자가 시간을 말하지 않은 턴에서는 None이다 — 판정할 것이 없다.
+    # **기본값이 None인 이유는 그것만이 아니다**: saved_schedules.payload와
+    # session_messages에 이 필드가 없던 시절의 스냅샷이 쌓여 있어서, 기본값이
+    # 없으면 지난 대화·저장한 일정을 여는 복원 경로가 통째로 깨진다.
+    time_budget_status: ScheduleBudgetStatus | None = None
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",

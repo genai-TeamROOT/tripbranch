@@ -11,7 +11,7 @@
  * "현재 위치 사용"은 이 모달을 거치지 않는다 — 그 버튼의 뜻은 "내 위치는 기기
  * 좌표다" 하나뿐이라 되물을 것이 없다.
  *
- * 모양은 AddFavoriteModal과 같은 바텀시트다.
+ * 모양은 AddKeywordModal과 같은 바텀시트다.
  */
 
 import { useId } from "react";
