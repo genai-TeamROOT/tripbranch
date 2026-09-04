@@ -28,6 +28,7 @@ from app.agent_context.schemas import (
 )
 from app.auth.principal import Principal
 from app.config import settings
+from app.domain import saved_preference
 from app.domain.ranking_origin import resolve_ranking_origin
 from app.domain.schedule_travel import (
     ModeJudgmentContext,
@@ -170,6 +171,7 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
+from app.state import preferences as state_preferences
 from app.state.schema import (
     ConversationTurn,
     PendingInfoContext,
@@ -1308,6 +1310,43 @@ def _narrow_prepared(
     )
 
 
+def _saved_taste_query(
+    conditions: UserConditions,
+    principal: Principal | None,
+    store: StateStore | None,
+) -> str | None:
+    """계정에 저장해 둔 취향으로 근거 검색 질의를 만든다. 쓸 것이 없으면 None.
+
+    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 발화가
+    있으면 저장값을 쓰지 않는 것, 동행·분류 칩을 빼는 것이 전부 거기 있다. 여기는
+    읽어서 넘기는 배선이다.
+
+    신원이 없으면(게스트) 저장할 자리가 없어 항상 None이다 — 취향은 세션이 아니라
+    사람에게 붙는 값이라 `user_preferences`가 user_id를 필수로 잡는다
+    (`state/preferences.py`).
+
+    조회 실패는 추천을 막지 않는다. 취향은 순위를 다듬는 축이지 후보를 만드는
+    축이 아니라서, 못 읽으면 저장값 없이 채점하는 편이 낫다 — 취향 근거 검색
+    실패를 삼키는 것과 같은 이유다(`real_recommendation_provider`).
+    """
+    if principal is None or store is None:
+        return None
+    spoken = (conditions.taste_query or "").strip()
+    if spoken:
+        # 이 경우 D도 None을 돌려주지만, 조회 자체를 건너뛰어 저장소를 안 친다.
+        #
+        # **`strip()`을 D와 똑같이 한다.** 공백만 있는 값을 여기서 "말했다"로 보면
+        # 저장값을 안 읽고, D는 "말 안 했다"로 봐서 저장값을 쓰려 한다 — 두 판정이
+        # 갈리면 그 요청만 취향 축이 조용히 꺼진다.
+        return None
+    try:
+        chips = state_preferences.get_items(store, principal.user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("저장된 취향 조회 실패 — 저장값 없이 채점합니다.", exc_info=True)
+        return None
+    return saved_preference.to_taste_query(chips, spoken_taste_query=spoken or None)
+
+
 async def _score_with_measured_routes(
     recommendation_provider: StagedRecommendationProvider,
     conditions: UserConditions,
@@ -1317,6 +1356,10 @@ async def _score_with_measured_routes(
     travel_route_tool: TravelRouteToolProvider | None,
     recommendation_limit: int,
     llm: LLMProvider | None = None,
+    # 계정에 저장해 둔 취향으로 만든 근거 검색 질의. 1차·2차 채점에 모두 넘긴다 —
+    # 한쪽만 주면 취향으로 후보를 좁혀 놓고 최종 순위에서는 취향을 빼게 된다
+    # (2026-08-20에 그 계열 사고가 있었다, SCORING_VERSION 1.4.0).
+    saved_taste_query: str | None = None,
 ) -> RecommendationResponse:
     """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
 
@@ -1340,13 +1383,16 @@ async def _score_with_measured_routes(
     """
     if travel_route_tool is None:
         return await recommendation_provider.score_prepared(
-            conditions, prepared, limit=recommendation_limit
+            conditions,
+            prepared,
+            limit=recommendation_limit,
+            saved_taste_query=saved_taste_query,
         )
 
     # 1차 — 실측 없이 직선거리로 줄을 세워 실측할 후보를 고른다.
     shortlist_limit = max(recommendation_limit, _MEASURED_ROUTE_CANDIDATE_LIMIT)
     first_pass = await recommendation_provider.score_prepared(
-        conditions, prepared, limit=shortlist_limit
+        conditions, prepared, limit=shortlist_limit, saved_taste_query=saved_taste_query
     )
     shortlist_ids = [
         item.place_id
@@ -1370,7 +1416,10 @@ async def _score_with_measured_routes(
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
-            conditions, narrowed, limit=recommendation_limit
+            conditions,
+            narrowed,
+            limit=recommendation_limit,
+            saved_taste_query=saved_taste_query,
         )
 
     # 2차 — 실측을 받은 후보끼리 다시 줄을 세운다.
@@ -1379,6 +1428,7 @@ async def _score_with_measured_routes(
         narrowed,
         travel_routes=travel_routes,
         limit=recommendation_limit,
+        saved_taste_query=saved_taste_query,
     )
 
 
@@ -4459,6 +4509,10 @@ async def _score_recommendations(
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
+        # 발화에 취향이 없으면 계정에 저장해 둔 값으로 채운다. 한 번만 읽어 1차·2차
+        # 채점과 보관함 덧붙이기가 같은 값을 쓰게 한다 — 회차 중간에 갈리면 취향으로
+        # 후보를 좁혀 놓고 최종 순위에서 다른 자를 쓰게 된다.
+        saved_taste_query = _saved_taste_query(agent_conditions, principal, store)
         recommendations = await _score_with_measured_routes(
             recommendation_provider,
             agent_conditions,
@@ -4467,6 +4521,7 @@ async def _score_recommendations(
             travel_route_tool=travel_route_tool,
             recommendation_limit=recommendation_limit,
             llm=llm,
+            saved_taste_query=saved_taste_query,
         )
         # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
         # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.
@@ -4478,6 +4533,7 @@ async def _score_recommendations(
                 agent_conditions,
                 _narrow_prepared(merged_prepared, cut_saved_ids),
                 limit=len(cut_saved_ids),
+                saved_taste_query=saved_taste_query,
             )
             recommendations = _with_pinned_recommendations(
                 recommendations, pinned, cut_saved_ids

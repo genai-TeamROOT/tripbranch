@@ -145,6 +145,13 @@ class StagedRecommendationProvider(Protocol):
         *,
         travel_routes: tuple[TravelRoute, ...] = (),
         limit: int = 5,
+        # 계정에 저장해 둔 취향으로 만든 근거 검색 질의. 발화에 취향이 없을 때만
+        # 값이 있다(`domain/saved_preference.py`가 그 판단을 한다).
+        #
+        # `conditions.taste_query`에 합치지 않고 따로 받는 이유는, 그 필드가 LLM
+        # 요약 프롬프트로도 가서(`gemini_prompts.py`) 말풍선이 "말씀하신 '아늑한
+        # 공간'"이라고 이번 턴에 하지 않은 말을 하게 되기 때문이다.
+        saved_taste_query: str | None = None,
     ) -> RecommendationResponse:
         """하드 필터 통과 후보와 A가 조회한 도보 정보를 받아 최종 추천한다."""
         ...

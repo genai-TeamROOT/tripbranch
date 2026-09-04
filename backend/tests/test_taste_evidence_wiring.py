@@ -208,6 +208,75 @@ async def test_no_taste_query_skips_the_search_and_the_feature() -> None:
 
 
 @pytest.mark.asyncio
+async def test_saved_taste_query_is_used_when_nothing_was_spoken() -> None:
+    """발화에 취향이 없어도 계정에 저장해 둔 값이 있으면 그것으로 찾는다."""
+    evidence = _RecordingEvidenceProvider({"a": _match("a")})
+    provider = RealRecommendationProvider(evidence)
+
+    matches = await provider._taste_matches_for(
+        UserConditions(), _Prepared(["a", "b"]), saved_taste_query="아늑한 공간 전망 좋은"
+    )
+
+    assert evidence.calls == [("아늑한 공간 전망 좋은", ["a", "b"])]
+    assert matches is not None and set(matches) == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_saved_taste_query_skips_place_tag_enrichment() -> None:
+    """저장값에는 장소 유형을 덧붙이지 않는다.
+
+    그 보강은 "조용한" 같은 **한 단어 발화**가 임베딩에 안 걸리는 것을 고치려던
+    것이고(2/45 → 38/45), 저장값은 칩 3~5개가 이어져 있어 이미 문맥이 있다.
+    붙이면 발화가 없는데도 "카페"가 질의에 들어가 저장한 취향과 다른 말이 된다.
+    """
+    evidence = _RecordingEvidenceProvider({"a": _match("a")})
+    provider = RealRecommendationProvider(evidence)
+
+    await provider._taste_matches_for(
+        UserConditions(place_tags=[PlaceTag.CAFE]),
+        _Prepared(["a"]),
+        saved_taste_query="아늑한 공간",
+    )
+
+    assert evidence.calls == [("아늑한 공간", ["a"])]
+
+
+@pytest.mark.asyncio
+async def test_spoken_taste_query_wins_over_saved() -> None:
+    """이번 턴에 말한 것이 우선이다. 둘을 합치지 않는다.
+
+    합치는 쪽이 점수는 높았지만(취향점수 중앙 0.29 → 0.43) 모순을 걸러낼 방법이
+    없다 — `domain/saved_preference.py` 참고. 그쪽이 발화가 있으면 None을 주므로
+    실제로는 이 경로에 저장값이 오지 않지만, 와도 발화가 이기는지 못 박는다.
+    """
+    evidence = _RecordingEvidenceProvider({"a": _match("a")})
+    provider = RealRecommendationProvider(evidence)
+
+    await provider._taste_matches_for(
+        UserConditions(taste_query="조용한"),
+        _Prepared(["a"]),
+        saved_taste_query="힙한 분위기",
+    )
+
+    # 발화 질의가 보강까지 그대로 타고, 저장값은 섞이지 않는다.
+    assert evidence.calls == [("조용한 곳", ["a"])]
+
+
+@pytest.mark.asyncio
+async def test_no_spoken_and_no_saved_disables_the_feature() -> None:
+    """둘 다 없으면 지금까지와 같다 — 취향 축이 꺼진다."""
+    evidence = _RecordingEvidenceProvider()
+    provider = RealRecommendationProvider(evidence)
+
+    matches = await provider._taste_matches_for(
+        UserConditions(), _Prepared(["a"]), saved_taste_query=None
+    )
+
+    assert matches is None
+    assert evidence.calls == []
+
+
+@pytest.mark.asyncio
 async def test_provider_absent_disables_the_feature() -> None:
     """모델을 올릴 수 없는 배포에서도 추천은 그대로 동작해야 한다."""
     provider = RealRecommendationProvider(None)
