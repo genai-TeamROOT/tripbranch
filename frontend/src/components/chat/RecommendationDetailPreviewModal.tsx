@@ -1305,6 +1305,18 @@ export function RecommendationDetailPreviewModal({
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
+  /*
+   * 상세를 기다리는 동안에도 버튼 자리를 잡아 둔다. 이 버튼은 스크롤 영역 바깥의
+   * 하단 고정 바라, 늦게 생기면 그만큼 본문 높이가 줄며 읽던 자리가 밀린다.
+   *
+   * 자리만 잡고 누르지는 못하게 한다 — 목적지 좌표가 상세 응답에 실려 오므로
+   * 그 전에는 열 지도가 없다. 추천 카드에는 좌표가 없어서(RecommendationItem에
+   * 필드 자체가 없다) 미리 채울 수도 없다.
+   *
+   * 현재 위치가 없으면 자리도 잡지 않는다. 그 경우 상세가 와도 버튼은 끝내
+   * 나오지 않으므로, 자리를 잡으면 영영 못 누르는 버튼을 보여주게 된다.
+   */
+  const showRouteFooter = Boolean(device_location) && (canRoute || isLoading);
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
@@ -1592,19 +1604,25 @@ export function RecommendationDetailPreviewModal({
             ))}
         </div>
 
-        {canRoute && detailCard && (
+        {showRouteFooter && (
           <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
             <button
               type="button"
-              onClick={() =>
+              disabled={!canRoute}
+              onClick={() => {
+                if (!canRoute || !detailCard) return;
                 openNaverDirections({
                   deviceLocation: device_location as string,
                   destLat: detailCard.latitude as number,
                   destLng: detailCard.longitude as number,
                   destName: detailCard.place_name ?? title,
-                })
-              }
-              className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep"
+                });
+              }}
+              className={`flex h-[52px] w-full items-center justify-center gap-2 rounded-full text-base font-bold transition-colors ${
+                canRoute
+                  ? "bg-brand text-white hover:bg-brand-deep"
+                  : "cursor-not-allowed bg-chip text-muted"
+              }`}
             >
               <Navigation size={18} />
               {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}

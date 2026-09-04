@@ -9,6 +9,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
+import { openNaverDirections } from "../../utils/naverDirections";
 import { TripProvider } from "../../state/TripContext";
 import type {
   InfoPlaceCard,
@@ -27,6 +28,38 @@ vi.mock("../../utils/naverDirections", () => ({
 }));
 
 const mockedFetch = vi.mocked(fetchRecommendationPlaceDetails);
+const mockedDirections = vi.mocked(openNaverDirections);
+
+/* 길찾기 버튼은 현재 위치가 있어야 나온다. TripProvider가 sessionStorage에서
+   복원하므로 저장 형식을 직접 심는다(SchedulePage.test.tsx와 같은 방식). */
+function seedDeviceLocation() {
+  sessionStorage.setItem(
+    "tripbranch_state",
+    JSON.stringify({
+      version: 6,
+      state: {
+        language: "ko",
+        user_input: "",
+        interpreted_conditions: null,
+        recommendations: [],
+        unverified_recommendations: [],
+        shown_place_ids: [],
+        messages: [],
+        auditTurns: [],
+        phase: "ready",
+        error: null,
+        session_id: null,
+        device_location: "37.5665,126.9780",
+        device_location_captured_at: Date.now(),
+        device_location_snoozed_until: null,
+        awaiting_clarification: false,
+        saved_places: [],
+        agentProgress: null,
+        streamingIntent: null,
+      },
+    }),
+  );
+}
 
 function card(overrides: Partial<InfoPlaceCard> = {}): InfoPlaceCard {
   return {
@@ -87,6 +120,8 @@ function recommendationItem(overrides: Partial<RecommendationItem> = {}): Recomm
 
 beforeEach(() => {
   mockedFetch.mockReset();
+  mockedDirections.mockReset();
+  sessionStorage.clear();
 });
 
 /*
@@ -526,4 +561,67 @@ it("상세가 도착하면 스켈레톤이 사라지고 실제 표가 남는다"
 
   expect(await screen.findByText("가능 (240대)")).toBeInTheDocument();
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+/*
+ * 길찾기 버튼은 스크롤 영역 바깥의 하단 고정 바다. 늦게 생기면 그만큼 본문
+ * 높이가 줄며 읽던 자리가 밀린다 — 자리는 먼저 잡되 누르지는 못하게 한다.
+ */
+it("상세를 기다리는 동안 길찾기 버튼 자리를 잡되 누를 수 없다", async () => {
+  seedDeviceLocation();
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  expect(button).toBeDisabled();
+
+  // 목적지 좌표가 상세 응답에 실려 오므로 그 전에는 열 지도가 없다.
+  await user.click(button);
+  expect(mockedDirections).not.toHaveBeenCalled();
+});
+
+it("상세가 도착하면 길찾기 버튼이 활성화된다", async () => {
+  seedDeviceLocation();
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  expect(await screen.findByRole("button", { name: /네이버 지도로 길찾기/ })).toBeDisabled();
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  await waitFor(() => expect(button).toBeEnabled());
+  await user.click(button);
+  expect(mockedDirections).toHaveBeenCalledWith(
+    expect.objectContaining({ destLat: 37.5796, destLng: 126.977 }),
+  );
+});
+
+/* 현재 위치가 없으면 상세가 와도 버튼은 끝내 안 나온다 — 자리를 잡으면 영영 못
+   누르는 버튼을 보여주게 된다. */
+it("현재 위치가 없으면 로딩 중에도 버튼 자리를 잡지 않는다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("status");
+  expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
 });
