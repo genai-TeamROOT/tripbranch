@@ -364,9 +364,10 @@ class RealRecommendationProvider:
         검색 실패는 추천 전체를 막지 않는다. 취향은 순위를 다듬는 축이지
         후보를 만드는 축이 아니라서, 실패하면 취향 없이 채점하는 편이 낫다.
 
-        **발화에 취향이 없어도 계정에 저장해 둔 값이 있으면 그것으로 찾는다.**
-        둘 중 무엇을 쓸지는 `domain/saved_preference.py`가 이미 정해서
-        `saved_taste_query`에 담아 보낸다 — 발화가 있으면 그 값이 None이다.
+        **계정에 저장해 둔 취향은 발화 뒤에 이어 붙인다.** 무엇을 붙일지는
+        `domain/saved_preference.py`가 이미 정해서 `saved_taste_query`에 담아
+        보낸다 — 발화와 겹치거나 부딪히는 칩은 거기서 빠진 뒤에 온다. 발화가
+        없으면 이 값이 질의 전체가 된다.
         """
         if self._place_evidence is None:
             return None
@@ -385,8 +386,12 @@ class RealRecommendationProvider:
         # 덧붙이는 보강(`_enrich_taste_query`)을 태우지 않는다. 그 보강은 "조용한"
         # 같은 **한 단어 발화**가 임베딩에 안 걸리는 것을 고치려던 것인데(2/45 →
         # 38/45), 저장값은 보통 칩 3~5개가 이어져 있어 이미 문맥이 있다.
-        enriched_query = (
-            _enrich_taste_query(conditions) if conditions.taste_query else saved_taste_query
+        #
+        # **발화가 앞이다.** 벡터 하나로 합쳐 검색하므로 순서가 점수를 가르지는
+        # 않지만, 로그에 남는 질의를 읽을 때 사용자가 방금 한 말이 먼저 보인다.
+        spoken_query = _enrich_taste_query(conditions) if conditions.taste_query else None
+        enriched_query = " ".join(
+            part for part in (spoken_query, saved_taste_query) if part
         )
         try:
             result = await self._place_evidence.search(enriched_query, place_ids)

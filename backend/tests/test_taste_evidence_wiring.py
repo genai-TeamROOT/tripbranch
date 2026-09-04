@@ -242,12 +242,15 @@ async def test_saved_taste_query_skips_place_tag_enrichment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spoken_taste_query_wins_over_saved() -> None:
-    """이번 턴에 말한 것이 우선이다. 둘을 합치지 않는다.
+async def test_saved_taste_query_is_appended_after_the_spoken_one() -> None:
+    """발화가 앞이고 저장값이 뒤다.
 
-    합치는 쪽이 점수는 높았지만(취향점수 중앙 0.29 → 0.43) 모순을 걸러낼 방법이
-    없다 — `domain/saved_preference.py` 참고. 그쪽이 발화가 있으면 None을 주므로
-    실제로는 이 경로에 저장값이 오지 않지만, 와도 발화가 이기는지 못 박는다.
+    벡터 하나로 합쳐 검색하므로 순서가 점수를 가르지는 않지만, 로그에 남는
+    질의를 읽을 때 사용자가 방금 한 말이 먼저 보인다.
+
+    **발화 쪽만 장소 유형 보강(`_enrich_taste_query`)을 탄다** — "조용한"이
+    "조용한 곳"이 되고, 저장값은 이미 칩이 여러 개라 문맥이 있어 그대로 붙는다.
+    부딪히는 칩을 빼는 것은 D가 이 값을 만들 때 이미 끝났다.
     """
     evidence = _RecordingEvidenceProvider({"a": _match("a")})
     provider = RealRecommendationProvider(evidence)
@@ -255,11 +258,10 @@ async def test_spoken_taste_query_wins_over_saved() -> None:
     await provider._taste_matches_for(
         UserConditions(taste_query="조용한"),
         _Prepared(["a"]),
-        saved_taste_query="힙한 분위기",
+        saved_taste_query="사진 명소 아늑한 공간",
     )
 
-    # 발화 질의가 보강까지 그대로 타고, 저장값은 섞이지 않는다.
-    assert evidence.calls == [("조용한 곳", ["a"])]
+    assert evidence.calls == [("조용한 곳 사진 명소 아늑한 공간", ["a"])]
 
 
 @pytest.mark.asyncio

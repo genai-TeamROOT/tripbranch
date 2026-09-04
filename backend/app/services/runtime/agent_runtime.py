@@ -1317,9 +1317,13 @@ def _saved_taste_query(
 ) -> str | None:
     """계정에 저장해 둔 취향으로 근거 검색 질의를 만든다. 쓸 것이 없으면 None.
 
-    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 발화가
-    있으면 저장값을 쓰지 않는 것, 동행·분류 칩을 빼는 것이 전부 거기 있다. 여기는
-    읽어서 넘기는 배선이다.
+    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 발화와
+    겹치거나 부딪히는 칩을 빼는 것, 어떤 칩이 어느 축인지가 전부 거기 있다. 여기는
+    읽어서 넘기는 배선이다. 돌려주는 값은 **발화를 뺀 저장 칩만**이라, 발화 질의와
+    잇는 것은 provider가 한다(`real_recommendation_provider::_taste_matches_for`).
+
+    발화에 취향이 있어도 조회한다. 발화가 정본이고 저장값은 뒤에 덧붙는 값이라,
+    발화가 정하지 않은 축의 칩은 그대로 살아남는다.
 
     신원이 없으면(게스트) 저장할 자리가 없어 항상 None이다 — 취향은 세션이 아니라
     사람에게 붙는 값이라 `user_preferences`가 user_id를 필수로 잡는다
@@ -1331,20 +1335,18 @@ def _saved_taste_query(
     """
     if principal is None or store is None:
         return None
-    spoken = (conditions.taste_query or "").strip()
-    if spoken:
-        # 이 경우 D도 None을 돌려주지만, 조회 자체를 건너뛰어 저장소를 안 친다.
-        #
-        # **`strip()`을 D와 똑같이 한다.** 공백만 있는 값을 여기서 "말했다"로 보면
-        # 저장값을 안 읽고, D는 "말 안 했다"로 봐서 저장값을 쓰려 한다 — 두 판정이
-        # 갈리면 그 요청만 취향 축이 조용히 꺼진다.
-        return None
     try:
         chips = state_preferences.get_items(store, principal.user_id)
     except Exception:  # noqa: BLE001
         logger.warning("저장된 취향 조회 실패 — 저장값 없이 채점합니다.", exc_info=True)
         return None
-    return saved_preference.to_taste_query(chips, spoken_taste_query=spoken or None)
+    return saved_preference.to_taste_query(
+        chips,
+        spoken_taste_query=conditions.taste_query,
+        concentration_intent=conditions.concentration_intent,
+        environment=conditions.environment,
+        companion=conditions.companion,
+    )
 
 
 async def _score_with_measured_routes(

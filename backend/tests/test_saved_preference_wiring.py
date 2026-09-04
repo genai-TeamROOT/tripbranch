@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.auth.principal import Principal
-from app.schemas import UserConditions
+from app.schemas import Companion, ConcentrationIntent, Environment, UserConditions
 from app.services.runtime.agent_runtime import _saved_taste_query
 from app.state import preferences as state_preferences
 from app.state.schema import UserPreference
@@ -42,8 +42,12 @@ def test_저장된_취향을_읽어_질의로_만든다() -> None:
     assert _saved_taste_query(UserConditions(), _principal(), store) == "아늑한 공간 전망 좋은"
 
 
-def test_발화에_취향이_있으면_저장소를_읽지_않는다() -> None:
-    """조회 자체를 건너뛴다 — D도 None을 주지만 저장소를 안 치는 편이 낫다."""
+def test_발화에_취향이_있어도_저장소를_읽는다() -> None:
+    """발화는 정본이지 저장값을 지우는 스위치가 아니다.
+
+    발화가 정하지 않은 축의 칩은 그대로 살아남아 발화 뒤에 붙으므로, 발화가
+    있다고 조회를 건너뛰면 그 칩들이 통째로 사라진다.
+    """
     store = _store_with(_chip("아늑한 공간", "preference", "cozy"))
     calls: list[str] = []
     original = store.get_preferences
@@ -51,8 +55,80 @@ def test_발화에_취향이_있으면_저장소를_읽지_않는다() -> None:
 
     result = _saved_taste_query(UserConditions(taste_query="조용한"), _principal(), store)
 
-    assert result is None
-    assert calls == []
+    assert result == "아늑한 공간"
+    assert calls == [_principal().user_id]
+
+
+def test_발화가_정한_축의_칩은_배선이_빼고_넘긴다() -> None:
+    """D의 축 규칙이 이 경로로 실제로 걸리는지 못 박는다.
+
+    `conditions`에서 세 축을 꺼내 D에 넘기는 줄이 빠지면 여기서만 깨진다 —
+    라벨을 잇는 것만 보는 테스트는 통과해 버린다.
+    """
+    store = _store_with(
+        _chip("조용한 곳", "preference", "quiet"),
+        _chip("사진 명소", "preference", "photo_spot"),
+    )
+
+    result = _saved_taste_query(
+        UserConditions(taste_query="북적이는", concentration_intent=ConcentrationIntent.SEEK),
+        _principal(),
+        store,
+    )
+
+    assert result == "사진 명소"
+
+
+@pytest.mark.parametrize(
+    ("conditions", "expected"),
+    [
+        pytest.param(
+            UserConditions(concentration_intent=ConcentrationIntent.SEEK),
+            "사진 명소 자연·공원 아이와 함께",
+            id="혼잡도",
+        ),
+        pytest.param(
+            UserConditions(environment=Environment.INDOOR),
+            "조용한 곳 사진 명소 아이와 함께",
+            id="실내외",
+        ),
+        pytest.param(
+            UserConditions(companion=Companion.SOLO),
+            "조용한 곳 사진 명소 자연·공원",
+            id="동행",
+        ),
+    ],
+)
+def test_세_축을_각각_D에_넘긴다(conditions: UserConditions, expected: str) -> None:
+    """축 하나라도 안 넘기면 그 축의 모순 칩이 살아서 질의에 섞인다.
+
+    한 축만 보는 테스트는 나머지 두 줄이 빠져도 통과한다 — 세 축을 따로 못 박는다.
+    """
+    store = _store_with(
+        _chip("조용한 곳", "preference", "quiet"),
+        _chip("사진 명소", "preference", "photo_spot"),
+        _chip("자연·공원", "place_tag", "공원", "산", "호수", "계곡", "수목원"),
+        _chip("아이와 함께", "preference", "with_kids"),
+    )
+
+    assert _saved_taste_query(conditions, _principal(), store) == expected
+
+
+def test_발화_취향도_D에_넘긴다() -> None:
+    """발화를 안 넘기면 **중복**이 안 빠진다 — 모순만 보는 테스트는 통과한다.
+
+    같은 값인 칩은 발화 취향이 있을 때만 빠지므로, 이 줄이 빠지면 "조용한 곳"이
+    발화 뒤에 한 번 더 붙는다.
+    """
+    store = _store_with(
+        _chip("조용한 곳", "preference", "quiet"),
+        _chip("사진 명소", "preference", "photo_spot"),
+    )
+    conditions = UserConditions(
+        taste_query="조용한", concentration_intent=ConcentrationIntent.AVOID
+    )
+
+    assert _saved_taste_query(conditions, _principal(), store) == "사진 명소"
 
 
 def test_게스트는_저장할_자리가_없다() -> None:
