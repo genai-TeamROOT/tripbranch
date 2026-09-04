@@ -431,6 +431,10 @@ test("사이드바를 접으면 레일만 남고 다시 펼칠 수 있다", asyn
   /* 접힘 레일에는 아이콘만 남는다 — 목록 제목이 사라진다. 지표로 쓰던 "즐겨찾기"
      제목이 사이드바에서 빠져(2026-09-04) "채팅 히스토리"로 바꿨다. */
   expect(within(sidebar()).queryByText("채팅 히스토리")).not.toBeInTheDocument();
+  /* 레일 아이콘의 이름은 title·aria-label로만 남는다. 펼침 쪽과 같은 문구여야
+     한다 — 라벨이 두 곳에 따로 적혀 있어 한쪽만 바뀌기 쉽다(2026-09-04에 "홈"을
+     "새 채팅"으로 바꿨을 때 레일 쪽이 테스트에 안 걸렸다). */
+  expect(within(sidebar()).getByRole("button", { name: "새 채팅" })).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "사이드바 펼치기" }));
   expect(within(sidebar()).getByText("채팅 히스토리")).toBeInTheDocument();
@@ -672,6 +676,30 @@ test("지금 보고 있는 대화가 목록에서 표시된다", async () => {
   const current = rows.filter((row) => row.getAttribute("aria-current") === "true");
   expect(current).toHaveLength(1);
   expect(current[0]).toHaveTextContent("비 오는 날 아이와 함께 갈 곳");
+});
+
+/*
+ * 첫 줄의 라벨과 동작이 짝이어야 한다. 예전 라벨은 "홈"이었는데 누르면 세션을
+ * 지우고(`RESET`) 첫 화면으로 가므로 실제 동작은 "새 채팅"이다 — 2026-09-04에
+ * 라벨을 그쪽으로 맞췄다.
+ *
+ * **라벨이 아무 테스트에도 안 잠겨 있었다**(되돌려 확인했다). 문구만 잠그면
+ * 이름만 바뀌고 동작이 따라오지 않는 경우를 못 잡으니 둘을 같이 본다.
+ */
+test("새 채팅을 누르면 대화가 비워지고 첫 화면으로 간다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  /* 대화를 하나 열어 화면에 메시지를 남긴다. */
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
+  await screen.findByText("첫 답변");
+
+  await user.click(within(sidebar()).getByRole("button", { name: "새 채팅" }));
+
+  await waitFor(() => expect(screen.queryByText("첫 답변")).not.toBeInTheDocument());
+  expect(await screen.findByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
 /* 홈처럼 세션이 없는 화면에서는 아무 줄도 켜지지 않아야 한다. */

@@ -28,7 +28,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
   const hasConversation = state.messages.length > 0;
 
   /*
-   * "홈"만 판정과 동작이 다르다 — 대화가 남아 있으면 비활성으로 그리고,
+   * **"새 채팅"만 판정과 동작이 다르다** — 대화가 남아 있으면 비활성으로 그리고,
    * 누르면 세션을 지운다(6.17). 나머지는 단순 이동이다.
    */
   const railItems: Array<{
@@ -40,7 +40,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
   }> = [
     {
       key: "home",
-      label: "홈",
+      label: "새 채팅",
       icon: Home,
       active: location.pathname === "/" && !hasConversation,
       onClick: () => {

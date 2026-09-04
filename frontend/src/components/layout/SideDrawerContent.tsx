@@ -152,7 +152,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }
 
   /*
-   * "홈"만 활성 판정이 다르다. 대화가 남아 있으면 라우트가 "/"여도 비활성으로 그린다.
+   * **"새 채팅"만 활성 판정이 다르다.** 대화가 남아 있으면 라우트가 "/"여도
+   * 비활성으로 그린다. 라벨을 "홈"에서 바꾼 것은 동작이 그쪽이기 때문이다 —
+   * 누르면 세션을 지우고(`RESET`) 첫 화면으로 간다.
    * 다시 누르면 세션을 지우는 파괴적 동작이라, "이미 여기 있음"으로 보이면 안 된다(6.17).
    */
   function goHome() {
@@ -248,7 +250,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }> = [
     {
       key: "home",
-      label: state.language === "en" ? "Home" : "홈",
+      label: state.language === "en" ? "New chat" : "새 채팅",
       icon: Home,
       active: pathname === "/" && !hasConversation,
       onClick: goHome,
