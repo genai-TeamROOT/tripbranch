@@ -4,10 +4,95 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v3.4.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md, pending_question_block.md | factuality |
-| info.answer | v1.0.0 | answer_instruction.md | persona, factuality |
+| info.extract | v3.5.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md, pending_question_block.md | factuality |
+| info.answer | v1.1.0 | answer_instruction.md | persona, factuality |
 
 ## Draft
+
+- 2026-09-04(info.answer v1.1.0): **행사 질문은 "행사"로 뭉뚱그려 답한다**(TP-237).
+  사용자가 전시회·공연·콘서트·축제 중 하나를 지목해 물어도 그 유형으로 단정하지 않습니다.
+
+  가릴 근거가 없기 때문입니다. 주 경로인 서울시 실시간 도시데이터의 `EVENT_STTS`는
+  항목 키가 아홉 개인데(`EVENT_NM`·`EVENT_PERIOD`·`EVENT_PLACE`·좌표·`PAY_YN`·
+  `THUMBNAIL`·`URL`·`EVENT_ETC_DETAIL`) **유형 필드가 없습니다.** 제목으로 추론하게
+  하면 "[세종문화회관] HYPNOSIS THERAPY on Sync Next 26"이 공연인지 전시인지 갈리지
+  않고, 단정하게 시키면 **있는 것을 없다고 말하는 새 오류**를 만듭니다(D-042).
+
+  실측(2026-09-04, 종로구 realtime_event 5건으로 답변 생성): 모델은 이미 "전시회"라고
+  부르지 않고 "다양한 행사"로 답했습니다 — `answer_instruction.md`의 "JSON에 없는 사실,
+  추측은 절대 추가하지 마세요"가 작동한 결과입니다. 이 규칙은 그 동작을 **명시로
+  고정**하는 것이며, 프롬프트를 고치다 유형을 단정하게 되는 회귀를 막습니다.
+
+  같은 이유로 `event_place_required` 되묻기 문구도 "축제·공연·전시를 모두 모아서
+  알려드려요"로 고지합니다 — 축제를 물어도 공연·전시가 함께 나오는 것이 현재 동작입니다.
+
+  **유형별로 가려 보여주는 것은 하지 않았습니다.** 필요해지면 그때 추가합니다. 참고로
+  폴백 경로인 TourAPI `searchFestival2`에는 `lclsSystm2`(EV01 축제·EV02 공연·EV03 행사)가
+  실려 오므로 그쪽은 가릴 수 있습니다 — 다만 지금 `FestivalEvent`가 그 필드를 받지 않고,
+  주 경로인 서울시 쪽은 어차피 가릴 수 없습니다.
+
+- 2026-09-04(info.extract v3.5.0): **행사 발화가 "추천해줘" 형태여도 `realtime_event`를
+  뽑게 했습니다**(TP-237). `question_type_rules.md`의 `realtime_event` 정의에 추천 형태와
+  "지명이 없으면 place_name을 비우고 question_type만 채운다"를 넣고, 건물을 가리키는 말
+  (미술관·박물관·전시관·공연장)은 이 유형이 아니라고 못 박았습니다. 판별 우선순위에도
+  같은 규칙을 한 줄 넣었습니다.
+
+  라우터가 INFO로 보내줘도 이쪽이 `question_type`을 못 뽑으면 그대로 실패합니다 —
+  변경 전 실측에서 "추천해줘"가 붙은 6발화 전부 `question_type=None`이었고
+  `종로 전시회 뭐 있어?`만 `realtime_event`로 잡혔습니다.
+
+  배경은 TP-201입니다. 축제공연행사(contentTypeId=15)를 추천 후보에서 뺐는데
+  (D-120 — `places`에 행사 기간 컬럼이 없어 끝난 행사를 거를 수 없습니다),
+  모델은 여전히 `place_types=['festival']`을 냈습니다. `prompts/recommend/extract.md`가
+  축제를 설명하지 않는데도 그런 이유는 구조화 출력 스키마(`LLMOutput` → `PlaceType`)가
+  허용 값으로 제시하기 때문입니다. 그대로 두면 "축제 추천해줘"가 이유 없는 빈 결과로
+  끝납니다.
+
+  가른 기준은 **찾는 대상이 장소냐 행사냐**입니다. TourAPI가 이미 그 선을 긋고 있어
+  공연장(VE060100)·전시관(VE070300)·미술관(VE070600)·박물관(VE070100)은 문화시설(14)이고,
+  그 안에서 열리는 축제·공연·전시가 15입니다. 유형 15 활성 189건의 중분류 분포는
+  축제 96·행사 74·공연 19라 "축제만"의 문제가 아닙니다.
+
+  실측(2026-09-04, Gemini 실호출 13발화. 라우터 v2.5.0·recommend.extract v2.8.0과 함께 잰 값입니다):
+
+  | 발화 | 전 | 후 |
+  | --- | --- | --- |
+  | 축제 추천해줘 | RECOMMEND, place_types=['festival'] → 후보 0건 | INFO, realtime_event |
+  | 서울에서 축제 갈 만한 곳 추천해줘 | RECOMMEND → 0건 | INFO, realtime_event (place_name='서울') |
+  | 강남구 축제 추천해줘 | RECOMMEND → 0건 | INFO, realtime_event (place_name='강남구') |
+  | 전시회 추천해줘 | RECOMMEND → 0건(태그 상충) | INFO, realtime_event |
+  | 콘서트 갈 만한 곳 알려줘 | RECOMMEND → 0건(태그 상충) | INFO, realtime_event |
+  | 공연 볼 만한 데 추천해줘 | RECOMMEND → 공연장만 | INFO, realtime_event |
+  | 종로 전시회 뭐 있어? | INFO, realtime_event | INFO, realtime_event |
+  | 미술관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 박물관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 전시관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 공연장 어디 있어? | RECOMMEND | RECOMMEND (그대로) |
+  | 경복궁 근처 카페 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 오늘 갈 만한 곳 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+
+  덧붙여 `agent_context/service.py`에 **`realtime_event`가 비면 TourAPI(`event`)로 한 번 더
+  보는 폴백**을 넣었습니다. 두 출처가 거의 겹치지 않기 때문입니다 — 2026-09-04 실측에서
+  그날 진행 중인 행사가 서울시 실시간 95건·TourAPI 21건인데 양쪽에 다 있는 것은 3건뿐이었습니다.
+
+  회귀(2026-09-04):
+
+  - `scripts.evaluate_info_question_type --repeat 5` — 30건 전부 정확·전부 안정입니다
+    (`accuracy 1.0`, `stable_cases 30`). 이번에 넣은 `realtime_event` 5건도 5회 모두
+    같은 답이었습니다. 케이스는 `info/evals/question_type_cases.csv`의 RE-001~RE-005입니다.
+  - `scripts.evaluate_agent_quality --split dev` — Intent 94.0% · Macro F1 0.972 ·
+    조건 필드 정확도 96.6%. 직전 동일 골드셋 대비 Intent −4.0%p·Macro F1 −0.019인 반면
+    조건 필드 정확도 +2.25%p·케이스 통과율 +5.71%p로 방향이 엇갈립니다.
+    **이 변경이 겨냥한 칸인 `RECOMMEND × INFO`는 0을 유지했습니다** — 기존 추천 발화
+    26건 중 INFO로 샌 것이 없습니다.
+  - 실패 2건은 **MODIFY ↔ RECOMMEND 축**이라 이 변경이 가른 경계가 아닙니다. 두 케이스의
+    턴을 `classify_intent`로 7회씩 다시 돌려 확인했습니다.
+    DEV-025는 재현되지 않았고(7/7 기대대로), DEV-030 첫 턴 "비 와서 실내로 바꿔줘"가
+    RECOMMEND 4 · MODIFY 3으로 갈리는 원래 흔들리는 케이스였습니다 — 첫 턴이 뒤집히면
+    둘째 턴까지 연쇄로 무너져 조건 4개가 함께 실패합니다. 골드셋의 알려진 약점으로
+    보이며, 라벨·구성은 팀 합의 영역이라 이 PR에서 건드리지 않았습니다.
+  - `--split final`은 돌리지 않았습니다. `test_results/agent_quality/README.md`가 정한
+    대로 프롬프트가 확정된 뒤 1회만 돌립니다.
 
 - 2026-08-31(info.extract v3.4.0): `_shared/rules/conversation_history.md`를 bundle에 추가했습니다 —
   최근 대화가 이미 API contents로 전달되는데 프롬프트가 그 존재를 몰라 생략된 후속

@@ -1,8 +1,8 @@
 """구 단위 후보 선택 규칙을 못 박는다(D-119).
 
 기대값은 지어낸 것이 아니라 2026-09-01 Supabase 전량 실측에서 나온 수다. 그래서
-모집단도 실측 구성을 그대로 흉내 낸다 — 강남구는 30곳을 채우고 금천구는 21곳에서
-멈추는데, 그 21이 이 규칙이 데이터 앞에서 어떻게 행동하는지를 보여주는 수다.
+모집단도 실측 구성을 그대로 흉내 낸다 — 강남구는 30곳을 채우고 금천구는 20곳에서
+멈추는데, 그 20이 이 규칙이 데이터 앞에서 어떻게 행동하는지를 보여주는 수다.
 """
 
 from __future__ import annotations
@@ -16,8 +16,11 @@ from app.agent_context.district_selection import (
 from app.schemas import PlaceCandidate
 
 # 실측 구성. (contentTypeId, 그 구의 활성 장소 수)
-_GANGNAM = {"12": 39, "14": 69, "39": 260, "38": 713, "28": 6, "15": 13}
-_GEUMCHEON = {"12": 10, "14": 7, "39": 7, "38": 224, "28": 0, "15": 3}
+#
+# 축제(15)는 넣지 않는다. `resolve_place_category()`가 후보로 올리지 않아(D-120)
+# 여기까지 올 수 없다 — 강남구 13곳·금천구 3곳이 실측이지만 모집단에서 빠진다.
+_GANGNAM = {"12": 39, "14": 69, "39": 260, "38": 713, "28": 6}
+_GEUMCHEON = {"12": 10, "14": 7, "39": 7, "38": 224, "28": 0}
 
 
 def _place(
@@ -55,13 +58,11 @@ def _counts(places: tuple[PlaceCandidate, ...]) -> Counter[str]:
 
 
 def test_분류_몫대로_담는다() -> None:
-    """데이터가 넉넉한 구는 몫이 그대로 나온다(강남구 실측: 7·7·6·6·2·2)."""
+    """데이터가 넉넉한 구는 몫이 그대로 나온다(강남구: 8·8·6·6·2)."""
     selected = select_district_candidates(_district(_GANGNAM), limit=30)
 
     assert len(selected) == 30
-    assert _counts(selected) == Counter(
-        {"12": 7, "14": 7, "39": 6, "38": 6, "28": 2, "15": 2}
-    )
+    assert _counts(selected) == Counter({"12": 8, "14": 8, "39": 6, "38": 6, "28": 2})
 
 
 def test_쇼핑은_다른_분류가_모자라도_6을_넘지_않는다() -> None:
@@ -72,12 +73,15 @@ def test_쇼핑은_다른_분류가_모자라도_6을_넘지_않는다() -> None
 
 
 def test_얇은_구는_30을_못_채우고_모자란_대로_준다() -> None:
-    """금천구 실측 21곳. 251곳을 갖고도 여행에 쓸 만한 것이 27곳뿐이라 그렇다."""
+    """금천구는 20곳에서 멈춘다. 248곳을 갖고도 여행에 쓸 만한 것이 24곳뿐이라 그렇다.
+
+    몫이 8로 올랐어도 관광지는 6곳에서 멈춘다 — 소진율 상한이 몫보다 먼저 걸린다.
+    """
     selected = select_district_candidates(_district(_GEUMCHEON), limit=30)
 
-    assert len(selected) == 21
-    # 관광지 10곳 중 6곳(60%), 문화시설·음식점 7곳 중 4곳, 축제 3곳 중 1곳.
-    assert _counts(selected) == Counter({"12": 6, "14": 4, "39": 4, "38": 6, "15": 1})
+    assert len(selected) == 20
+    # 관광지 10곳 중 6곳(60%), 문화시설·음식점 7곳 중 4곳, 쇼핑은 절대 상한 6곳.
+    assert _counts(selected) == Counter({"12": 6, "14": 4, "39": 4, "38": 6})
 
 
 def test_소진율_상한이_바닥_긁기를_막는다() -> None:
@@ -139,8 +143,9 @@ def test_넘기기는_첫_턴에만_한다() -> None:
 
     second = select_district_candidates(places, excluded_place_ids=shown, limit=30)
 
-    # 몫을 넘어서는 분류가 없다 — 넘기기가 돌았다면 한 분류가 7을 크게 넘는다.
-    assert all(count <= 7 for count in _counts(second).values())
+    # 몫을 넘어서는 분류가 없다 — 넘기기가 돌았다면 한 분류가 몫을 크게 넘는다.
+    # 8은 가장 두꺼운 몫(관광지·문화시설)이다.
+    assert all(count <= 8 for count in _counts(second).values())
 
 
 def test_더_보기를_반복하면_결국_소진_하한_아래로_떨어진다() -> None:
