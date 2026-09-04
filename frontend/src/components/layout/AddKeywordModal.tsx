@@ -3,7 +3,7 @@
  * 입력: 없음(내부 폼 상태).
  * 출력: onAdd(키워드) 또는 onClose.
  * 호출 시점: PreferencesPage의 "키워드 직접 입력" 버튼.
- * 근거: Figma "Preferences"(28:2) — AddFavoriteModal(§6.15)과 같은 패턴.
+ * 근거: Figma "Preferences"(28:2) — LocationPurposeModal과 같은 바텀시트 패턴.
  */
 
 import { useId, useState } from "react";
