@@ -192,7 +192,12 @@
       flex-direction: column;
       width: 272px;
       flex: none;
-      min-height: 100dvh;
+      /* .tb-shell 과 같은 이유로 min-height 가 아니라 height 다. 최소 높이만 주면
+         내용(대화 목록·저장한 일정)이 화면을 넘길 때 박스가 그대로 늘어나고,
+         안쪽 SideDrawerContent 의 `flex-1 min-h-0 overflow-y-auto` 가 나눠 가질
+         **확정된 전체 높이**가 없어 스크롤이 발동하지 않는다. 모바일 드로어는
+         `fixed inset-y-0` 이라 이 문제가 없었다(2026-09-04 실측). */
+      height: 100dvh;
       background: var(--color-bg);
       transition: width 0.2s ease;
     }
