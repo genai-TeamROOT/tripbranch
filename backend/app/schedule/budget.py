@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 from app.schedule.duration import VisitDurationPolicy, policy_for
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schedule.timeline import (
@@ -133,6 +134,43 @@ def pairwise_travel_minutes(request: SchedulePlanningRequest) -> list[int]:
         if (resolved := resolve(from_id, to_id)) is not None
     ]
     return sorted(minutes)
+
+
+def walkable_cluster_size(request: SchedulePlanningRequest, *, within_min: int) -> int:
+    """도보 `within_min`분 안에 함께 묶을 수 있는 후보 수의 **근사 최대치**. (TP-242)
+
+    근접 묶기(TP-243)가 대부분의 요청에 영향이 있는 기능인지 미리 재기 위한 값이다.
+    이 수가 3 미만인 요청이 대부분이면 그 카드는 범위를 줄일 근거가 생긴다.
+
+    **정확한 최대 묶음이 아니다.** 서로 모두 가까운 최대 집합을 구하는 것은 최대
+    클리크 문제라 후보 수가 늘면 비싸진다. 여기서는 **한 후보를 중심으로 놓고 그
+    반경 안에 들어오는 후보 수 + 1**의 최댓값을 쓴다 — 중심에서는 가깝지만 서로는
+    먼 조합을 과대 계산할 수 있다. 지표는 추세를 보는 값이고, 실제 묶음 규칙은
+    TP-243이 자기 기준으로 다시 정한다. **근사라는 사실을 이름이 아니라 이 주석이
+    말한다** — 지표를 읽는 사람이 정확값으로 오해하면 잘못된 결론을 낸다.
+
+    거리 정보가 없으면 0을 돌려준다 — "묶을 수 없다"가 아니라 "알 수 없다"이지만,
+    그 구분은 이 지표의 목적(빈도 추세)에 필요하지 않다.
+    """
+
+    distances = request.pairwise_distances_km
+    if not distances:
+        return 0
+    resolve = estimated_travel_minutes(
+        distances, speed_km_per_minute=WALKING_SPEED_KM_PER_MINUTE
+    )
+    place_ids = sorted({place_id for pair in distances for place_id in pair})
+    best = 0
+    for center in place_ids:
+        near = sum(
+            1
+            for other in place_ids
+            if other != center
+            and (minutes := resolve(center, other)) is not None
+            and minutes <= within_min
+        )
+        best = max(best, near + 1)
+    return best
 
 
 def derive_item_range(
@@ -261,4 +299,5 @@ __all__ = [
     "fit_durations_to_budget",
     "pairwise_travel_minutes",
     "travel_estimate_minutes",
+    "walkable_cluster_size",
 ]

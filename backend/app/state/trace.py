@@ -8,6 +8,7 @@ B는 step 이름이나 버전 값의 의미를 해석하지 않고, 호출자(A/
 """
 
 from datetime import datetime
+from typing import Any
 
 from app.state.schema import TraceRecord, now_kst
 from app.state.session import new_trace_id
@@ -26,6 +27,7 @@ def record(
     latency_ms: int | None = None,
     token_usage: int | None = None,
     error_type: str | None = None,
+    metrics: dict[str, Any] | None = None,
 ) -> TraceRecord:
     """실행 단계 1건을 기록한다. (llmops-trace-contract-v1.md 3·4절)
 
@@ -43,6 +45,7 @@ def record(
         latency_ms=latency_ms,
         token_usage=token_usage,
         error_type=error_type,
+        metrics=metrics,
         recorded_at=now_kst(),
     )
     store.append_traces([trace])
