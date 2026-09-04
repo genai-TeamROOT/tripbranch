@@ -20,6 +20,7 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { RecommendationDetailPreviewModal } from "../components/chat/RecommendationDetailPreviewModal";
 import { useTripState } from "../state/TripContext";
 import { fetchSavedSchedule } from "../api/trip";
+import { SavedScheduleList } from "../components/schedule/SavedScheduleList";
 import type { SavedScheduleDetail } from "../types";
 import type { ScheduleItem } from "../types";
 import { scheduleTravelLabel } from "../utils/scheduleTravel";
@@ -153,8 +154,13 @@ export function SchedulePage() {
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader onBack={() => navigate(-1)} />
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10">
+        {/*
+          빈 화면·실패 화면의 블록에서 `flex-1 justify-center`를 뺐다. 아래에
+          저장한 일정 목록이 붙은 뒤로는 중앙 블록이 화면을 다 차지해 **목록이
+          스크롤 밖으로 밀렸다** — 목록이 가장 필요한 상태에서 안 보였다.
+        */}
         {savedError ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <div className="flex flex-col items-center gap-3 py-14 text-center">
             <p className="text-sm text-muted">
               {isEn ? "Couldn't load that schedule." : "그 일정을 불러오지 못했어요."}
             </p>
@@ -165,7 +171,7 @@ export function SchedulePage() {
             </p>
           </div>
         ) : !schedule || schedule.items.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <div className="flex flex-col items-center gap-3 py-14 text-center">
             <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
               <RouteIcon size={22} />
             </span>
@@ -264,6 +270,14 @@ export function SchedulePage() {
             </button>
           </>
         )}
+
+        {/*
+          저장한 일정 목록은 **세 상태 모두**에 둔다(일정 없음 / 일정 있음 /
+          `?saved=` 실패). 원래 사이드바에 있었는데, 일정 탭이 이미 있으니 목록도
+          여기 있는 편이 맞다 — 특히 "아직 짠 일정이 없어요"와 불러오기 실패
+          화면에서는 **다른 일정을 고를 유일한 입구**다.
+        */}
+        <SavedScheduleList />
       </div>
     </main>
   );

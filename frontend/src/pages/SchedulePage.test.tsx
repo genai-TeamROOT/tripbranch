@@ -7,6 +7,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { AuthProvider } from "../auth/AuthContext";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
 import { SchedulePage } from "./SchedulePage";
@@ -22,13 +23,15 @@ afterEach(() => {
 test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준다", async () => {
   const user = userEvent.setup();
   render(
-    <MemoryRouter initialEntries={["/schedule"]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 
   expect(screen.getByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
@@ -107,13 +110,15 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
   const user = userEvent.setup();
   seedScheduleState();
   render(
-    <MemoryRouter initialEntries={["/schedule"]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 
   expect(screen.getByText("역삼 아트뮤지엄")).toBeInTheDocument();
@@ -166,13 +171,15 @@ const SAVED_DETAIL = {
 
 function renderSaved(id: string) {
   return render(
-    <MemoryRouter initialEntries={[`/schedule?saved=${id}`]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={[`/schedule?saved=${id}`]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 }
 
@@ -209,4 +216,59 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
   expect(await screen.findByText(/불러오지 못했어요/)).toBeInTheDocument();
   /* "아직 짠 일정이 없어요"로 뭉뚱그리면 사용자는 저장이 안 된 줄 안다. */
   expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+});
+
+/*
+ * 저장한 일정 목록을 사이드바에서 여기로 옮겼다(2026-09-04). **세 상태 모두**에
+ * 있어야 한다 — 특히 "아직 짠 일정이 없어요"와 불러오기 실패 화면에서는 다른
+ * 일정을 고를 유일한 입구다. 목록을 빼도 나머지 테스트는 전부 통과했다(되돌림 확인).
+ */
+test("저장한 일정 목록이 세 상태 모두에 있다", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ items: [] })));
+
+  const heading = () => screen.getByRole("heading", { name: "저장한 일정" });
+
+  // ① 짠 일정이 없을 때
+  const empty = render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+  expect(heading()).toBeInTheDocument();
+  empty.unmount();
+
+  // ② 짠 일정이 있을 때
+  seedScheduleState();
+  const filled = render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+  expect(heading()).toBeInTheDocument();
+  filled.unmount();
+
+  // ③ 저장한 일정을 못 불러왔을 때
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("/schedules/")
+        ? new Response(null, { status: 404 })
+        : Response.json({ items: [] }),
+    ),
+  );
+  renderSaved("gone");
+  expect(await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요.")).toBeInTheDocument();
+  expect(heading()).toBeInTheDocument();
 });
