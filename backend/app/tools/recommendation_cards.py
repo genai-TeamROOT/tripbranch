@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -29,6 +30,8 @@ from app.providers.tour_category_registry import (
 )
 from app.repositories.protocols import PlaceDetailsReadRepository
 from app.tools.contracts import ToolError, ToolStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,17 @@ class RecommendationCardTool:
         try:
             rows = await self._repository.get_active_place_details(ordered_ids)
         except AppError as exc:
+            # 부르는 쪽은 이 실패를 상태로만 받고 추천은 그대로 내보낸다. 화면에는
+            # 그 턴의 썸네일이 통째로 빠진 채 자리표시 칩만 남는데, 여기서 남기지
+            # 않으면 "이 장소들에 사진이 없다"와 구분할 수 없다 — 같은 장소가
+            # 어떤 요청에는 사진이 나오고 어떤 요청에는 안 나오는 이유가 이것이다.
+            logger.warning(
+                "추천 카드 조회 실패 — 이 턴의 썸네일이 전부 빠진다 "
+                "(요청=%d건, code=%s, retryable=%s)",
+                len(ordered_ids),
+                exc.code,
+                exc.retryable,
+            )
             return RecommendationCardResult(
                 status=ToolStatus.UNAVAILABLE,
                 cards=(),
@@ -107,6 +121,16 @@ class RecommendationCardTool:
         missing = tuple(
             content_id for content_id in ordered_ids if content_id not in rows
         )
+        if missing:
+            # 위 실패와 다른 사건이다. 조회는 됐는데 그 행이 없는 것이라
+            # 비활성이거나 아직 동기화되지 않은 장소다. 어느 id인지 남겨야
+            # 데이터를 채울 대상을 고를 수 있다.
+            logger.info(
+                "추천 카드 일부 없음 — 사진 없이 나간다 (요청=%d건, 없음=%d건, id=%s)",
+                len(ordered_ids),
+                len(missing),
+                ",".join(missing[:10]),
+            )
         return RecommendationCardResult(
             status=_status(requested=len(ordered_ids), found=len(cards)),
             cards=cards,
