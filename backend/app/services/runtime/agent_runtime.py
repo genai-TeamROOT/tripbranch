@@ -3439,7 +3439,9 @@ async def _run_agent_flow(
         and llm_output.info is not None
         and hasattr(tool_provider, "fetch_info_context")
     ):
-        info_request = to_info_context_request(new_trace_id(), llm_output.info)
+        info_request = to_info_context_request(
+            new_trace_id(), llm_output.info, device_location=valid_gps
+        )
         await _emit_progress(
             stream_event_sink,
             "fetching_context",

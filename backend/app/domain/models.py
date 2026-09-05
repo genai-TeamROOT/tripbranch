@@ -210,6 +210,41 @@ class StoredMunicipalParkingLot:
 
 
 @dataclass(frozen=True)
+class PublicToilet:
+    """서울시 공중화장실 위치정보(mgisToiletPoi) 한 곳.
+
+    주차장과 달리 실시간 값이 없어 모델이 하나다 — API가 주는 것도, 우리가
+    보관하는 것도 같은 정적 정보다. 좌표는 원본에 이미 들어 있어(실측 4,447건
+    전부) 지오코딩 단계가 없다.
+
+    ``open_hours_raw``는 자치구 담당자가 손으로 적은 값을 그대로 보관한다.
+    ``상시(24시간)``·``정시(09:00~18:00)``·``기타|05:00~익일01:00``처럼 형식이
+    제각각이고 11%는 시각 자체가 없어(``정시(영업시작~종료)``), 해석은 조회
+    시점에 ``app.public_toilet_hours``가 맡고 실패하면 이 원문을 그대로 보여준다.
+    """
+
+    toilet_id: str
+    name: str
+    address_new: str | None
+    address_old: str | None
+    latitude: float
+    longitude: float
+    district: str | None
+    tel: str | None
+    # 공공개방 / 민간개방. 민간개방은 건물주가 시민에게 열어준 화장실이다.
+    open_type: str | None
+    open_hours_raw: str | None
+    # `남자|여자` 같은 파이프 구분 원문. 개수가 아니라 있고 없음만 알려준다.
+    restroom_status: str | None
+    accessible_status: str | None
+    amenities: str | None
+    safety_signs: str | None
+    # 지하철 / 공공시설 / 공원 및 하천변 / 근생시설 등.
+    location_type: str | None
+    manager: str | None
+
+
+@dataclass(frozen=True)
 class RealtimeSubwayArrival:
     station_name: str
     line: str | None

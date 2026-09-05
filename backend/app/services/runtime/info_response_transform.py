@@ -346,6 +346,8 @@ def _to_realtime_detail_items(
             details=item.details,
             thumbnail_url=item.thumbnail_url,
             external_url=item.external_url,
+            latitude=item.latitude,
+            longitude=item.longitude,
         )
         for item in items
     ]

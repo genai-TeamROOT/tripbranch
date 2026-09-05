@@ -341,6 +341,10 @@ export interface RealtimeInfoDetailItem {
   details: Record<string, string>;
   thumbnail_url: string | null;
   external_url: string | null;
+  /** 항목별 길찾기 목적지 좌표. 공중화장실처럼 목록의 각 항목이 곧 목적지인
+   *  카드에서만 채워진다. 없으면 details["주소"]로 지도 검색을 폴백한다. */
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */

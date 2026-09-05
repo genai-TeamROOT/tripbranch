@@ -8,6 +8,7 @@
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
 import { useTripState } from "../../state/TripContext";
+import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
 import {
   groupSubwayArrivals,
   parseSubwayArrival,
@@ -144,6 +145,143 @@ function formatCardValue(fieldKey: keyof InfoPlaceCardData, value: string) {
 
 function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
   return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
+}
+
+function isPublicToiletCard(card: InfoPlaceCardData): boolean {
+  return card.question_type === "public_toilet";
+}
+
+/* 개방 여부 칩 색. "확인 필요"를 초록으로 두면 열려 있다고 읽히므로 중립색을 쓴다. */
+const TOILET_OPEN_CHIP_STYLE: Record<string, string> = {
+  "지금 이용 가능": "bg-[#e7f6ec] text-calm",
+  "지금은 닫혀 있음": "bg-rust-tint text-rust",
+  "개방시간 확인 필요": "bg-chip text-muted",
+};
+
+/* 화장실 한 곳. 카드 전체가 도보 길찾기 버튼이다(CompareResultCards와 같은 방식) —
+ * 급해서 묻는 질문이라 한 번 눌러 바로 출발할 수 있어야 한다. 좌표가 없으면
+ * 주소로 지도 검색을 폴백하고, 그것도 없으면 정보만 보여준다. */
+function PublicToiletSummary({
+  item,
+  deviceLocation,
+  isEn,
+}: {
+  item: RealtimeInfoDetailItem;
+  deviceLocation: string | null;
+  isEn: boolean;
+}) {
+  const openLabel = item.details["개방 여부"] ?? "";
+  const distance = item.details["거리"];
+  const hours = item.details["개방시간"];
+  const address = item.details["주소"];
+  const accessible = item.details["장애인화장실"];
+
+  const hasCoordinates = item.latitude != null && item.longitude != null;
+  const canRoute = (hasCoordinates && Boolean(deviceLocation)) || Boolean(address);
+
+  const openDirections = () => {
+    if (hasCoordinates && deviceLocation) {
+      openNaverDirections({
+        deviceLocation,
+        destLat: item.latitude as number,
+        destLng: item.longitude as number,
+        destName: item.title,
+        // 화장실은 걸어서 간다 — 대중교통 경로를 띄우면 급한 사람에게 쓸모없다.
+        mode: "walk",
+      });
+      return;
+    }
+    if (address) openNaverMapSearch(address);
+  };
+
+  return (
+    <article
+      className={`min-w-0 rounded-xl border border-border bg-white px-3 py-2.5${
+        canRoute ? " cursor-pointer transition-colors hover:bg-chip" : ""
+      }`}
+      role={canRoute ? "button" : undefined}
+      tabIndex={canRoute ? 0 : undefined}
+      aria-label={
+        canRoute
+          ? isEn
+            ? `Walking directions to ${item.title} on Naver Maps`
+            : `${item.title}까지 네이버 지도 도보 길찾기`
+          : undefined
+      }
+      onClick={canRoute ? openDirections : undefined}
+      onKeyDown={
+        canRoute
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDirections();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <span className="min-w-0 flex-1 text-sm font-bold text-ink" title={item.title}>
+          {item.title}
+        </span>
+        {openLabel && (
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              TOILET_OPEN_CHIP_STYLE[openLabel] ?? "bg-chip text-muted"
+            }`}
+          >
+            {openLabel}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {distance && (
+          <span className="rounded-md bg-sky-light px-1.5 py-0.5 text-[11px] font-semibold text-brand-deep">
+            {distance}
+          </span>
+        )}
+        {hours && <span className="text-[11px] text-muted">{hours}</span>}
+        {accessible && (
+          <span className="rounded-md bg-chip px-1.5 py-0.5 text-[11px] text-muted">
+            {isEn ? "Accessible" : "장애인화장실"} {accessible}
+          </span>
+        )}
+      </div>
+
+      {address && <p className="mt-1 truncate text-[11px] text-muted">{address}</p>}
+
+      {canRoute && (
+        <span className="mt-2 flex w-fit items-center gap-0.5 text-xs font-semibold text-brand">
+          {isEn ? "Walking directions on Naver Maps" : "네이버 지도로 도보 길찾기"}
+          <span aria-hidden="true">›</span>
+        </span>
+      )}
+    </article>
+  );
+}
+
+function PublicToiletList({
+  items,
+  deviceLocation,
+  isEn,
+}: {
+  items: RealtimeInfoDetailItem[];
+  deviceLocation: string | null;
+  isEn: boolean;
+}) {
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {items.map((item) => (
+        <PublicToiletSummary
+          key={item.title}
+          item={item}
+          deviceLocation={deviceLocation}
+          isEn={isEn}
+        />
+      ))}
+    </section>
+  );
 }
 
 type ParkingLotType = "공영" | "민영" | "기타";
@@ -412,7 +550,8 @@ function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
 
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
-  const isEn = useTripState().language === "en";
+  const { language, device_location } = useTripState();
+  const isEn = language === "en";
   const answers = Object.entries(card.answer_fields);
 
   return (
@@ -447,7 +586,13 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </span>
       </button>
 
-      {isRealtimeParkingCard(card) && answers.length > 0 ? (
+      {isPublicToiletCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <PublicToiletList
+          items={card.realtime_detail_items ?? []}
+          deviceLocation={device_location}
+          isEn={isEn}
+        />
+      ) : isRealtimeParkingCard(card) && answers.length > 0 ? (
         <RealtimeParkingList answers={answers} />
       ) : isEventCardRow(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
         <RealtimeEventCardRow items={card.realtime_detail_items ?? []} />

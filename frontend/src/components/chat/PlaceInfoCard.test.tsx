@@ -2,11 +2,13 @@
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { TripProvider } from "../../state/TripContext";
+import type { TripState } from "../../state/TripContext";
+import { clearState, saveState } from "../../state/storage";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
-import { openNaverMapSearch } from "../../utils/naverDirections";
+import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 
 // 상세 모달이 useTripState(현재 위치)를 읽으므로 TripProvider로 감싼다.
@@ -692,4 +694,119 @@ it("실시간 지하철 도착은 호선 색으로 묶고, 상행·하행을 별
   expect(screen.getByText("9분 30초 후 (옥수)")).toHaveClass("text-emerald-700");
   // 도착 정보가 없으면 초록이 아니라 중립색 칩이다.
   expect(screen.getByText("도착 정보 미제공")).not.toHaveClass("text-emerald-700");
+});
+
+function seedDeviceLocation(deviceLocation: string): void {
+  saveState({
+    language: "ko",
+    user_input: "",
+    interpreted_conditions: null,
+    recommendations: [],
+    unverified_recommendations: [],
+    shown_place_ids: [],
+    messages: [],
+    auditTurns: [],
+    phase: "ready",
+    error: null,
+    session_id: "session-1",
+    last_turn_at: null,
+    device_location: deviceLocation,
+    device_location_captured_at: Date.now(),
+    device_location_snoozed_until: null,
+    awaiting_clarification: false,
+    saved_places: [],
+    agentProgress: null,
+    streamingIntent: null,
+  } satisfies TripState);
+}
+
+describe("근처 공중화장실 카드", () => {
+  afterEach(() => {
+    clearState();
+  });
+
+  const toiletCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "public_toilet",
+    place_name: "인사동",
+    answer_fields: {
+      "인사동마루 신관 개방화장실": "도보 50m · 지금 이용 가능 · 24시간",
+      "쌈지길(지하1층)": "도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+    },
+    realtime_detail_items: [
+      {
+        title: "인사동마루 신관 개방화장실",
+        subtitle: "도보 50m · 지금 이용 가능 · 24시간",
+        details: {
+          거리: "도보 50m",
+          "개방 여부": "지금 이용 가능",
+          개방시간: "24시간",
+          주소: "서울특별시 종로구 인사동길 35-4",
+          장애인화장실: "남자, 여자",
+        },
+        thumbnail_url: null,
+        external_url: null,
+        latitude: 37.57432,
+        longitude: 126.98563,
+      },
+      {
+        title: "쌈지길(지하1층)",
+        subtitle: "도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+        details: {
+          거리: "도보 60m",
+          "개방 여부": "지금은 닫혀 있음",
+          개방시간: "10:30~20:30",
+          주소: "서울특별시 종로구 인사동길 44",
+        },
+        thumbnail_url: null,
+        external_url: null,
+        latitude: 37.57411,
+        longitude: 126.98527,
+      },
+    ],
+  };
+
+  it("두 곳의 거리·개방 여부를 보여주고 개방 여부에 따라 칩 색이 다르다", () => {
+    renderWithTrip(<PlaceInfoCard card={toiletCard} />);
+
+    expect(screen.getByText("인사동마루 신관 개방화장실")).toBeInTheDocument();
+    expect(screen.getByText("쌈지길(지하1층)")).toBeInTheDocument();
+    expect(screen.getByText("도보 50m")).toBeInTheDocument();
+    // 열린 곳은 초록, 닫힌 곳은 경고색이라 눈으로 바로 갈린다.
+    expect(screen.getByText("지금 이용 가능")).toHaveClass("text-calm");
+    expect(screen.getByText("지금은 닫혀 있음")).toHaveClass("text-rust");
+  });
+
+  it("좌표와 현재 위치가 있으면 카드를 눌러 도보 길찾기를 연다", async () => {
+    const user = userEvent.setup();
+    // TripProvider가 복원할 상태에 현재 위치를 심는다 — 이게 없으면 주소 검색으로
+    // 폴백한다(SavedPlacesBar.test.tsx와 같은 방식).
+    seedDeviceLocation("37.5739,126.9852");
+    renderWithTrip(<PlaceInfoCard card={toiletCard} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "인사동마루 신관 개방화장실까지 네이버 지도 도보 길찾기" }),
+    );
+
+    expect(openNaverDirections).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destLat: 37.57432,
+        destLng: 126.98563,
+        destName: "인사동마루 신관 개방화장실",
+        // 화장실은 걸어서 가므로 대중교통이 아니다.
+        mode: "walk",
+      }),
+    );
+  });
+
+  it("현재 위치가 없으면 주소로 지도 검색을 폴백한다", async () => {
+    const user = userEvent.setup();
+    renderWithTrip(<PlaceInfoCard card={toiletCard} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "쌈지길(지하1층)까지 네이버 지도 도보 길찾기" }),
+    );
+
+    expect(openNaverMapSearch).toHaveBeenCalledWith("서울특별시 종로구 인사동길 44");
+  });
 });

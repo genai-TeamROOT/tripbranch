@@ -541,6 +541,10 @@ class QuestionType(StrEnum):
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
     REALTIME_TRAFFIC = "realtime_traffic"
+    # "근처에 화장실 있어?"처럼 주변 공중화장실 위치를 찾는 질문. 그 장소 안에
+    # 화장실이 있는지 묻는 건 FACILITY다 — 답하는 데이터가 다르다(전자는 서울시
+    # 공중화장실 목록, 후자는 그 관광지의 편의시설 안내).
+    PUBLIC_TOILET = "public_toilet"
 
 
 class PlaceContext(StrEnum):
@@ -1334,6 +1338,11 @@ class RealtimeInfoDetailItem(BaseModel):
     details: dict[str, str] = Field(default_factory=dict)
     thumbnail_url: str | None = None
     external_url: str | None = None
+    # 항목별 길찾기용 좌표. 공중화장실처럼 목록의 각 항목이 목적지가 되는
+    # 카드에서 채운다. 주소만 있는 항목(일부 민영주차장)은 없는 채로 둔다 —
+    # 프론트가 주소 검색으로 폴백한다.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

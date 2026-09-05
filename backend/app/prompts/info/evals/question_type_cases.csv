@@ -29,3 +29,9 @@ RE-002,전시회 추천해줘,realtime_event,realtime_event,추천 형태 - 미�
 RE-003,콘서트 갈 만한 곳 알려줘,realtime_event,realtime_event,"""갈 만한 곳""이라 장소처럼 보이지만 찾는 대상은 행사다"
 RE-004,공연 볼 만한 데 추천해줘,realtime_event,realtime_event,공연장(장소)과 공연(행사)이 한 발화에 섞이는 경우
 RE-005,강남구 축제 추천해줘,realtime_event,realtime_event,지명이 있어도 찾는 대상이 행사면 같은 유형
+PT-001,근처에 화장실 있어?,public_toilet,public_toilet,지명 없음 - 기기 위치로 답한다
+PT-002,인사동 화장실 어디야?,public_toilet,public_toilet,지명 + 어디 - 위치를 찾는다
+PT-003,화장실 급한데 어디로 가?,public_toilet,public_toilet,돌발 상황 표현
+PT-004,가까운 공중화장실 알려줘,public_toilet,public_toilet,공중화장실 명시
+PT-005,경복궁 근처 화장실 어디야?,public_toilet,public_toilet,지명이 있어도 근처를 찾으면 이쪽이다
+PT-006,경복궁 화장실 있어?,facility,public_toilet,경계 - 그 장소 하나의 시설이라 facility다
