@@ -115,6 +115,10 @@ class RealtimeCommercialCategory:
     large_category: str | None
     middle_category: str | None
     activity_level: str | None
+    # 최근 10분 결제 건수와 결제 금액 범위(원). 서울시는 금액을 구간으로만 준다.
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,10 @@ class RealtimeCommercialResult:
     observed_at: str | None
     categories: tuple[RealtimeCommercialCategory, ...]
     provider: str
+    # 지역 전체의 최근 10분 결제 건수·금액 범위(원, 신한카드 내국인 기준).
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +145,14 @@ class PopulationForecastSlot:
     congestion_level: str | None
     population_min: int | None
     population_max: int | None
+
+
+@dataclass(frozen=True)
+class PopulationAgeShare:
+    """실시간 인구의 연령대별 비율 한 건(``PPLTN_RATE_*``)."""
+
+    label: str
+    rate: float
 
 
 @dataclass(frozen=True)
@@ -151,6 +167,12 @@ class RealtimePopulationResult:
     forecast_available: bool
     forecasts: tuple[PopulationForecastSlot, ...]
     provider: str
+    # 현재 인구 지표 범위(명). 서울시는 예측(FCST_PPLTN)과 같은 방식으로 현재값도
+    # 구간(AREA_PPLTN_MIN/MAX)으로만 준다 — 단일 실측치가 아니다.
+    current_population_min: int | None = None
+    current_population_max: int | None = None
+    # 응답에 실린 순서(0세~70대) 그대로 보존한다. 비율 합은 100이다.
+    age_shares: tuple[PopulationAgeShare, ...] = ()
 
 
 @dataclass(frozen=True)

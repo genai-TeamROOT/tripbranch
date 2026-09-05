@@ -1297,6 +1297,47 @@ class InfoPlaceCard(BaseModel):
     realtime_source_url: str | None = None
     realtime_map_url: str | None = None
     realtime_detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
+    # 서울시 실시간 인구·상권 공통 요약. 실시간 인구 혼잡도(concentration)와 실시간
+    # 상권(realtime_commercial) 카드에만 싣는다 — 두 유형만 서울시 citydata를 이미
+    # 호출하므로 추가 호출 없이 채울 수 있다.
+    seoul_realtime_summary: SeoulRealtimeSummary | None = None
+
+
+class SeoulRealtimePaymentCategory(BaseModel):
+    """최근 10분 결제 금액 상위 업종 한 건. 금액 단위는 원이고 구간으로만 온다."""
+
+    label: str
+    activity_level: str | None = None
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
+
+
+class SeoulRealtimeSummary(BaseModel):
+    """서울시 실시간 도시데이터에서 뽑은 인구·상권 요약 블록.
+
+    인구 구획과 상권 구획은 서로 독립이다 — 서울시가 상권을 121곳 중 82곳에만
+    제공하므로(D-084) 경복궁처럼 상권 값이 전부 비는 지역이 있다. 프론트는 값이
+    없는 구획을 통째로 감춘다.
+
+    현재 혼잡도 단계·기준 시각은 카드의 ``population_current_level`` /
+    ``population_observed_at``에 이미 있어 여기서 중복해 두지 않는다.
+    """
+
+    population_min: int | None = None
+    population_max: int | None = None
+    # 예측 중 가장 붐비는 시간대("오후 5시")와 그때의 단계. 과거 추이는 서울시
+    # API가 제공하지 않아 "오늘의 인기 시간대"가 아니라 앞으로의 예측이다.
+    peak_forecast_hour_label: str | None = None
+    peak_forecast_level: str | None = None
+    top_age_label: str | None = None
+    top_age_rate: float | None = None
+    commercial_level: str | None = None
+    commercial_observed_at: str | None = None
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
+    top_payment_categories: list[SeoulRealtimePaymentCategory] = Field(default_factory=list)
 
 
 class PopulationForecastBar(BaseModel):

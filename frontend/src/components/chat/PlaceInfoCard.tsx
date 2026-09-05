@@ -20,6 +20,7 @@ import {
   PopulationForecastBars,
   RoadTrafficStatusSection,
 } from "./CongestionForecastBars";
+import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const FIELD_LABELS: Record<string, string> = {
@@ -474,6 +475,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
 
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />
+      <SeoulRealtimeSummarySection card={card} />
       <RoadTrafficStatusSection card={card} />
 
       {showDetail && (
