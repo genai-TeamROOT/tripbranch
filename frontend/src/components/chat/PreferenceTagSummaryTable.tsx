@@ -1,7 +1,8 @@
-import type { Language, RecommendationItem } from "../../types";
+import type { Language, PreferenceTagSummaryEntry } from "../../types";
 
 interface PreferenceTagSummaryTableProps {
-  items: RecommendationItem[];
+  /* RecommendationItem을 그대로 넘겨도 된다 — 이 모양을 만족한다. */
+  items: PreferenceTagSummaryEntry[];
   language: Language;
 }
 

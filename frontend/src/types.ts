@@ -85,6 +85,18 @@ export interface PreferenceTagSummary {
   mention_count: number;
 }
 
+/*
+ * 취향 태그 표가 실제로 읽는 것만 추린 형태. RecommendationItem을 통째로 다시
+ * 싣지 않으려고 따로 둔다 — 표는 별도 메시지라 대화 저장소에 한 벌 더 들어가는데,
+ * 점수·근거 문장까지 복사하면 저장 크기가 배로 커진다. RecommendationItem이 이
+ * 모양을 만족하므로 그대로 넘겨도 된다.
+ */
+export interface PreferenceTagSummaryEntry {
+  place_id: string;
+  name: string;
+  preference_tags?: PreferenceTagSummary[];
+}
+
 export interface TasteEvidenceQuote {
   text: string;
   similarity: number;
@@ -495,6 +507,31 @@ export type ChatMessage =
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
     }
+  /*
+   * 추천 결과에 딸린 동작 버튼(다른 장소 보기·반경 확대·기준 전환)만 담는다.
+   * 카드와 갈라 둔 이유는 **수명이 다르기 때문이다** — 카드는 기록으로 남지만
+   * 버튼은 다음 발화가 나가는 순간 걷어낸다(follow_up_suggestions와 같은 규칙).
+   * 지난 턴의 버튼을 그대로 두면 그때 기준의 요청이 지금 맥락으로 나간다.
+   */
+  | {
+      id: string;
+      type: "recommendation_actions";
+      /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
+      travel_origin_toggle?: TravelOriginToggle | null;
+      /* 그 턴이 빈손이었는가. 버튼 구성이 갈린다 — 빈손이면 "반경 넓혀 다시 찾기",
+         아니면 "다른 장소 보기"다. 카드가 다른 메시지로 떨어져 나가서 여기서
+         후보 목록을 다시 셀 수 없으므로 판정 결과를 실어 보낸다. */
+      has_no_results: boolean;
+    }
+  /*
+   * 추천 카드와 같은 턴에 붙는 장소별 취향 태그 표. 버튼과 달리 기록이므로
+   * 걷어내지 않는다. 표가 실제로 읽는 세 필드만 담아 저장 크기를 키우지 않는다.
+   */
+  | {
+      id: string;
+      type: "preference_tag_summary";
+      items: PreferenceTagSummaryEntry[];
+    }
   | {
       /*
        * 지난 대화를 펼쳤을 때만 나온다. recommendation_result와 구조가 비슷해
@@ -518,6 +555,20 @@ export type ChatMessage =
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
+    }
+  /*
+   * 일정 결과에 딸린 재편성 버튼(다른 코스 보기·검색 범위 넓히기)만 담는다.
+   * recommendation_actions와 같은 이유로 갈라 둔다 — 새 발화가 나가면 걷어낸다.
+   *
+   * "이 일정 저장"은 여기 없다. 그건 새 요청이 아니라 그 턴의 일정을 run_id로
+   * 저장하는 것이라, 지난 일정을 나중에 저장하는 것도 정상적인 사용이다.
+   * 그래서 저장 버튼은 schedule_result 쪽에 남는다.
+   */
+  | {
+      id: string;
+      type: "schedule_actions";
+      /* 일정을 못 짠 턴인가. 못 짰으면 "검색 범위 넓혀서 다시 찾기"만 낸다. */
+      has_no_schedule: boolean;
     }
   | {
       id: string;
