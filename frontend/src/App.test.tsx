@@ -288,7 +288,7 @@ test("falls back to the current location instead of the old 종로구 default", 
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 현재 위치)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 현재 위치 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -299,7 +299,7 @@ test("shows the picked origin in the header pill when no center is set", async (
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 혜화역)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (혜화역에서 출발, 혜화역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -310,7 +310,7 @@ test("shows the picked search center in the header location pill", async () => {
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 안국역)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 안국역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -424,7 +424,7 @@ test("moves the header pill before the recommendation cards arrive", async () =>
      교체로 떨어져 나가면 "찾았는데 document에 없다"로 깨진다. */
   await waitFor(() =>
     expect(
-      screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 광화문역)" }),
+      screen.getByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
     ).toBeInTheDocument(),
   );
   expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
@@ -452,7 +452,7 @@ test("shows the location the utterance picked in the header pill", async () => {
 
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(
-    await screen.findByRole("button", { name: "위치 설정으로 이동 (현재: 광화문역)" }),
+    await screen.findByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -502,7 +502,7 @@ test("keeps the picked location when the server reports no location at all", asy
 
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 서대문역)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 서대문역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
