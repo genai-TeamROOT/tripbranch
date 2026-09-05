@@ -615,7 +615,7 @@ it("실시간 행사는 추천 카드처럼 사진과 함께 가로로 늘어놓
         external_url: "https://example.test/jipokjae",
       },
       {
-        // 서울시 응답에 THUMBNAIL이 비는 경우가 있다 — 이미지 대신 자리표시 칩을 보여준다.
+        // 서울시 응답에 THUMBNAIL이 비는 경우가 있다 — 사진 없음 자리표시를 보여준다.
         title: "수문장 순라의식",
         subtitle: "2026-03-01~2026-11-29 · 경복궁 내부",
         details: { 기간: "2026-03-01~2026-11-29", 장소: "경복궁 내부" },
@@ -634,7 +634,7 @@ it("실시간 행사는 추천 카드처럼 사진과 함께 가로로 늘어놓
   expect(
     screen.getByText("2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정"),
   ).toBeInTheDocument();
-  // 링크가 없는 행사는 자리표시 칩("행사")만 보이고 누를 수 없다.
+  // 링크가 없는 행사는 사진 없음 자리표시만 보이고 누를 수 없다.
   expect(screen.getByText("수문장 순라의식")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "수문장 순라의식 행사 정보 보기" })).toBeNull();
 
