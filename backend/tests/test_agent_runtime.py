@@ -4459,6 +4459,17 @@ def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
 
 # C가 내려주는 operating_schedule 직렬화 형태. 24시간 열려 있어 Scoring이 폐점으로
 # 걸러내지 않는 값으로 둔다 — 여기서 보려는 건 운영시간 유무에 따른 분류다.
+#
+# **마감을 "23:59"가 아니라 하루의 끝으로 둔다.** Scoring의 폐점 판정은
+# `open_time <= now < close_time`이라(scoring.py `_remaining_minutes`), "23:59"로
+# 두면 23:59:00부터 자정까지 이 픽스처가 폐점으로 판정된다. 그 1분에 CI가 걸리면
+# "영업 중"으로 깔아둔 후보가 전부 걸러져 이 파일 24건이 한꺼번에 깨진다 —
+# 2026-09-05 14:59 UTC(23:59 KST) 실행에서 실제로 그렇게 됐다.
+#
+# time.max(23:59:59.999999)는 이 저장소가 이미 "하루의 끝"으로 쓰는 값이다
+# (recommendation_pipeline.py의 "%H:%M" 표기 주석 참고).
+_END_OF_DAY = "23:59:59.999999"
+
 _OPEN_ALL_DAY_SCHEDULE = {
     "availability": "scheduled",
     "rules": [
@@ -4466,11 +4477,11 @@ _OPEN_ALL_DAY_SCHEDULE = {
             "months": None,
             "weekdays": None,
             "time_ranges": [
-                {"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}
+                {"open_time": "00:00", "close_time": _END_OF_DAY, "crosses_midnight": False}
             ],
         }
     ],
-    "time_ranges": [{"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}],
+    "time_ranges": [{"open_time": "00:00", "close_time": _END_OF_DAY, "crosses_midnight": False}],
     "closure_rules": [],
     "parse_status": "parsed",
     "assumption_reason": None,
@@ -4514,6 +4525,36 @@ class _PartialPlacesToolProvider:
             ),
             metadata=ResponseMetadata(),
         )
+
+
+def test_open_all_day_fixture_stays_open_through_the_last_minute() -> None:
+    """이 픽스처는 하루의 어느 순간에도 영업 중이어야 한다.
+
+    **그러지 않으면 이 파일이 하루에 1분씩 깨진다.** 폐점 판정은
+    `open_time <= now < close_time`이라(scoring.py `_remaining_minutes`), 마감을
+    "23:59"로 두면 23:59:00부터 자정까지 "영업 중"으로 깔아둔 후보가 전부
+    걸러진다. 후보가 없으니 되묻기로 끝나거나 경로 조회가 0건이 되어, 운영시간과
+    무관한 테스트까지 24건이 한꺼번에 무너진다 — 2026-09-05 14:59 UTC(23:59 KST)
+    CI 실행에서 실제로 그렇게 됐다.
+
+    시각을 고정하는 대신 픽스처 자체를 검사한다. 이 파일의 테스트들은 실제 시각으로
+    돌기 때문에, 고정해 봐야 여기 한 곳만 안전해지고 나머지 24건은 그대로다.
+    """
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    from app.domain.models import OperatingHours
+    from app.domain.scoring import _remaining_minutes
+
+    kst = ZoneInfo("Asia/Seoul")
+    hours = OperatingHours(
+        open_time=time.fromisoformat(_OPEN_ALL_DAY_SCHEDULE["time_ranges"][0]["open_time"]),
+        close_time=time.fromisoformat(_OPEN_ALL_DAY_SCHEDULE["time_ranges"][0]["close_time"]),
+    )
+
+    for hour, minute, second in ((0, 0, 0), (12, 0, 0), (23, 58, 30), (23, 59, 0), (23, 59, 59)):
+        now = datetime(2026, 9, 5, hour, minute, second, tzinfo=kst)
+        assert _remaining_minutes(now, hours) is not None, f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
 _CLOSED_ALL_WEEK_SCHEDULE = {
