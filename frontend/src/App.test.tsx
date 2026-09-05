@@ -417,10 +417,16 @@ test("moves the header pill before the recommendation cards arrive", async () =>
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  /* 아직 result를 안 보냈다 — 칩만 먼저 바뀌어 있어야 한다. */
-  expect(
-    await screen.findByRole("button", { name: "위치 설정으로 이동 (현재: 광화문역)" }),
-  ).toBeInTheDocument();
+  /* 아직 result를 안 보냈다 — 칩만 먼저 바뀌어 있어야 한다.
+
+     findBy가 아니라 waitFor로 매번 다시 조회한다. 이 턴은 홈에서 시작해 채팅
+     화면으로 넘어가는 중이라, findBy가 홈의 칩을 붙잡은 직후 그 노드가 화면
+     교체로 떨어져 나가면 "찾았는데 document에 없다"로 깨진다. */
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 광화문역)" }),
+    ).toBeInTheDocument(),
+  );
   expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
 
   gated.release();
