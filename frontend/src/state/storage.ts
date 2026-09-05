@@ -159,6 +159,9 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (message.type === "preference_tag_summary") {
     return Array.isArray(message.items);
   }
+  if (message.type === "schedule_actions") {
+    return typeof message.has_no_schedule === "boolean";
+  }
   return false;
 }
 

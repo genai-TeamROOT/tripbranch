@@ -25,6 +25,7 @@ import { PastRecommendationMessage } from "./PastRecommendationMessage";
 import { RecommendationActionsMessage } from "./RecommendationActionsMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
+import { ScheduleActionsMessage } from "./ScheduleActionsMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
 import { SuggestedFollowUps } from "./SuggestedFollowUps";
@@ -314,11 +315,21 @@ export function ChatMessageList({
                 schedule={message.schedule}
                 elapsedMs={message.elapsed_ms}
                 showElapsedTime={isDeveloperView}
+                runId={message.run_id}
+                sessionId={message.session_id}
+              />
+            );
+          }
+
+          /* 일정 재편성 버튼. 추천과 같은 이유로 새 발화가 나가면 걷어낸다. */
+          if (message.type === "schedule_actions") {
+            return (
+              <ScheduleActionsMessage
+                key={message.id}
+                hasNoSchedule={message.has_no_schedule}
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
-                runId={message.run_id}
-                sessionId={message.session_id}
               />
             );
           }

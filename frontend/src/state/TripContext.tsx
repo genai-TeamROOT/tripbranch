@@ -231,8 +231,12 @@ interface InterpretedPayload {
  * 카드·취향 표 같은 기록은 여기 들어오지 않는다. 지우면 대화를 위로 올렸을 때
  * 그때 무엇을 받았는지가 사라진다. 버튼만 갈라서 메시지로 둔 것도 이 때문이다.
  */
-function isPastTurnControl(message: ChatMessage): boolean {
-  return message.type === "follow_up_suggestions" || message.type === "recommendation_actions";
+export function isPastTurnControl(message: ChatMessage): boolean {
+  return (
+    message.type === "follow_up_suggestions" ||
+    message.type === "recommendation_actions" ||
+    message.type === "schedule_actions"
+  );
 }
 
 /*

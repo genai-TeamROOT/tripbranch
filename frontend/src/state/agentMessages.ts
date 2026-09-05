@@ -160,6 +160,13 @@ export function buildAgentMessages(
       run_id: response.state?.run_id ?? undefined,
       session_id: response.state?.session_id ?? undefined,
     });
+    /* 재편성 버튼은 별도 메시지다 — 다음 발화가 나가면 이것만 걷어내고 일정
+       카드는 기록으로 남긴다(recommendation_actions와 같은 규칙). */
+    messages.push({
+      id: createMessageId("schedule-actions"),
+      type: "schedule_actions",
+      has_no_schedule: response.schedule.items.length === 0,
+    });
   }
 
   if (response.info_place_card) {

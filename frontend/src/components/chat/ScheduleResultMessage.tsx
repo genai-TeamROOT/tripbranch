@@ -1,10 +1,12 @@
 /*
  * 역할: 일정 편성 API 응답을 채팅 메시지 안에서 세로 타임라인으로 렌더링한다.
  * 입력: ScheduleResult(items/route_summary/total_duration_min/basis_note),
- *   재조정·검색 범위 확대 콜백, 로딩 상태.
- * 출력: 정류장(ScheduleCard)과 이동 구간(ScheduleTravelSegment)이 번갈아
- *   이어지는 타임라인, 근거 시각 안내, "다른 코스 보기"/"검색 범위 넓혀서
- *   다시 찾기" 버튼. 총 소요 시간·동선 요약 문구는 여기서 만들지 않는다 —
+ *   저장에 함께 보낼 run_id·session_id.
+ * 출력: 제목과 저장(책갈피) 버튼, 정류장(ScheduleCard)과 이동 구간
+ *   (ScheduleTravelSegment)이 번갈아 이어지는 타임라인, 근거 시각 안내.
+ *   재편성 버튼("다른 코스 보기"·"검색 범위 넓혀서 다시 찾기")은 여기 없다 —
+ *   턴이 지나면 걷어내야 해서 ScheduleActionsMessage로 갈라져 있다.
+ *   총 소요 시간·동선 요약 문구는 여기서 만들지 않는다 —
  *   바로 위 assistant_text 말풍선(백엔드 compose_schedule_message)이 이미
  *   보여주고 있어서 중복 렌더링이었다(SCHEDULE-10 후속: 요청 시간과 실제
  *   편성 시간이 다를 때 "N분 코스를 짜봤어요"가 어색해 보이는 문제를 고치며
@@ -22,8 +24,9 @@
  * plan_partial_schedule()이 측정)를 서버 소요로, elapsedMs를 클라이언트 소요로 쓴다.
  */
 
-import { useState } from "react";
-import { saveSchedule } from "../../api/trip";
+import { Bookmark } from "lucide-react";
+import { useEffect, useState } from "react";
+import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
@@ -41,52 +44,80 @@ interface ScheduleResultMessageProps {
   schedule: ScheduleResult;
   elapsedMs?: number;
   showElapsedTime?: boolean;
-  isLoading: boolean;
-  onRequestMore: () => void;
-  onRelaxRadius: () => void;
   /* 저장에 함께 보낸다. run_id는 같은 턴을 두 번 저장하지 않기 위한 열쇠이고
      session_id는 출처 표시다. 응답이 run_id 없이 끝나는 경로가 있어 둘 다 선택. */
   runId?: string;
   sessionId?: string;
 }
 
-/* idle → saving → saved. 실패는 error로 빠지고 다시 누를 수 있다. */
-type SaveState = "idle" | "saving" | "saved" | "error";
+/* 알림이 스스로 사라지기까지. 읽을 만큼은 두되 오래 남아 방해하지 않는 길이다. */
+const NOTICE_MS = 2500;
 
 export function ScheduleResultMessage({
   schedule,
   elapsedMs,
   showElapsedTime = false,
-  isLoading,
-  onRequestMore,
-  onRelaxRadius,
   runId,
   sessionId,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
-  const [saveState, setSaveState] = useState<SaveState>("idle");
+  /*
+   * 저장된 일정의 id를 들고 있는 것이 곧 "저장됨" 표시다. 해제할 때 이 id가
+   * 필요해서이기도 하다.
+   *
+   * **새로고침하면 잊는다.** 저장 목록(SavedScheduleSummary)에 run_id가 없어
+   * "이 턴의 일정이 이미 저장됐는지"를 목록에서 되찾을 방법이 없다. 백엔드가
+   * run_id를 함께 내려주면 그때 이어붙일 수 있다. 그때까지는 표시만 틀리고
+   * 데이터는 어긋나지 않는다 — 저장은 (신원, run_id)에 멱등이라 모르고 다시
+   * 저장해도 새 줄이 생기지 않는다.
+   *
+   * 저장 목록을 구독해 맞추지는 않는다. loadSavedSchedules()가 실패해도 빈
+   * 목록을 돌려주도록 되어 있어서, 401이나 네트워크 실패에 저장 표시가 조용히
+   * 풀린다.
+   */
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // 알림은 잠깐 떴다 사라진다. 화면을 떠나면 타이머도 함께 걷는다.
+  useEffect(() => {
+    if (notice === null) return;
+    const timer = window.setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   /*
    * 저장은 낙관적으로 그리지 않는다. 보관함 담기와 달리 이건 목록에 새 줄을
    * 만드는 동작이라, 실패했는데 저장된 것처럼 보이면 사용자가 나중에 목록에서
-   * 찾다가 없는 것을 겪는다.
+   * 찾다가 없는 것을 겪는다. 해제도 같은 이유로 서버 응답을 받고 나서 바꾼다.
    */
-  async function handleSave() {
-    if (saveState === "saving" || saveState === "saved") return;
-    setSaveState("saving");
+  async function handleToggleSave() {
+    if (isBusy) return;
+    setIsBusy(true);
+    setError(null);
     try {
-      await saveSchedule({
-        title: defaultScheduleTitle(schedule.items),
-        payload: schedule,
-        sessionId,
-        runId,
-      });
-      setSaveState("saved");
-      /* 사이드바 목록을 바로 갱신한다. 저장하고 사이드바를 봤는데 없으면
-         사용자는 저장이 안 된 줄 안다 — 실제로 새로고침해야 보였다. */
+      if (savedId === null) {
+        const saved = await saveSchedule({
+          title: defaultScheduleTitle(schedule.items),
+          payload: schedule,
+          sessionId,
+          runId,
+        });
+        setSavedId(saved.id);
+        setNotice("저장했어요");
+      } else {
+        await deleteSavedSchedule(savedId);
+        setSavedId(null);
+        setNotice("저장을 해제했어요");
+      }
+      /* 저장 목록을 바로 갱신한다. 저장하고 목록을 봤는데 없으면 사용자는
+         저장이 안 된 줄 안다 — 실제로 새로고침해야 보였다. */
       void refreshSavedSchedules();
     } catch {
-      setSaveState("error");
+      setError(savedId === null ? "저장하지 못했어요." : "저장을 해제하지 못했어요.");
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -101,6 +132,57 @@ export function ScheduleResultMessage({
       )}
       {hasItems ? (
         <>
+          {/*
+            제목은 저장할 때 쓰던 것을 미리 보여주는 것이다(defaultScheduleTitle) —
+            눌러서 저장하면 저장 목록에 이 이름 그대로 들어간다. 이름 바꾸기는
+            여기서 하지 않는다.
+
+            저장 버튼을 여기 둔 이유는 재편성 버튼과 성격이 다르기 때문이다. 저건
+            새 요청이라 턴이 지나면 걷어내지만, 저장은 이 턴의 일정을 run_id로
+            남기는 것이라 나중에 눌러도 맞다. 제목 옆이면 무엇을 저장하는지도 분명하다.
+          */}
+          {/* 책갈피는 제목 바로 옆에 붙인다. 오른쪽 끝으로 밀면 제목과 멀어져
+              무엇을 저장하는 버튼인지 눈에 덜 걸린다. */}
+          <div className="flex items-center gap-1.5">
+            <h3 className="min-w-0 truncate text-sm font-bold text-ink">
+              {defaultScheduleTitle(schedule.items)}
+            </h3>
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => void handleToggleSave()}
+              /* 아이콘만 있는 버튼이라 이름을 여기서 준다. 누르면 무엇이 되는지를
+                 말해야 해서 상태에 따라 문구가 바뀐다. */
+              aria-label={savedId === null ? "이 일정 저장" : "저장 해제"}
+              aria-pressed={savedId !== null}
+              className="shrink-0 text-muted transition-colors hover:text-brand disabled:opacity-50"
+            >
+              {/* 저장되면 같은 모양이 색으로 찬다 — 모양이 바뀌면 다른 버튼처럼
+                  보여서, 누를 때마다 오가는 토글이라는 것이 덜 읽힌다. */}
+              <Bookmark
+                size={18}
+                className={
+                  savedId !== null
+                    ? "fill-brand text-brand"
+                    : isBusy
+                      ? "animate-pulse"
+                      : undefined
+                }
+              />
+            </button>
+            {/* 저장했는지를 아이콘 색만으로 알아채기 어려워 잠깐 말로도 알린다. */}
+            {notice && (
+              <span role="status" className="text-xs text-brand">
+                {notice}
+              </span>
+            )}
+          </div>
+          {error && (
+            <p role="alert" className="text-xs text-rust">
+              {error} 다시 눌러주세요.
+            </p>
+          )}
+
           <ul className="flex flex-col">
             {schedule.items.flatMap((item, index) => {
               const nodes = [
@@ -130,54 +212,8 @@ export function ScheduleResultMessage({
             </p>
           )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={onRequestMore}
-              className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-            >
-              {isLoading ? "불러오는 중..." : "다른 코스 보기"}
-            </button>
-            {/*
-              같은 턴을 두 번 저장해도 서버가 한 줄로 받지만(멱등), 버튼을 잠가
-              사용자가 "눌렸나?" 하고 다시 누르지 않게 한다.
-            */}
-            <button
-              type="button"
-              disabled={saveState === "saving" || saveState === "saved"}
-              onClick={() => void handleSave()}
-              className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-            >
-              {saveState === "saved"
-                ? "저장했어요"
-                : saveState === "saving"
-                  ? "저장하는 중..."
-                  : "이 일정 저장"}
-            </button>
-            {saveState === "error" ? (
-              <span role="alert" className="text-xs text-rust">
-                저장하지 못했어요. 다시 눌러주세요.
-              </span>
-            ) : (
-              <span className="text-xs text-muted">
-                다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
-              </span>
-            )}
-          </div>
         </>
-      ) : (
-        <div className="flex flex-col gap-3 text-sm">
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={onRelaxRadius}
-            className="w-fit rounded-full bg-rust px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rust/90 active:scale-[0.98] disabled:opacity-50"
-          >
-            검색 범위 넓혀서 다시 찾기
-          </button>
-        </div>
-      )}
+      ) : null}
     </article>
   );
 }

@@ -556,6 +556,20 @@ export type ChatMessage =
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
     }
+  /*
+   * 일정 결과에 딸린 재편성 버튼(다른 코스 보기·검색 범위 넓히기)만 담는다.
+   * recommendation_actions와 같은 이유로 갈라 둔다 — 새 발화가 나가면 걷어낸다.
+   *
+   * "이 일정 저장"은 여기 없다. 그건 새 요청이 아니라 그 턴의 일정을 run_id로
+   * 저장하는 것이라, 지난 일정을 나중에 저장하는 것도 정상적인 사용이다.
+   * 그래서 저장 버튼은 schedule_result 쪽에 남는다.
+   */
+  | {
+      id: string;
+      type: "schedule_actions";
+      /* 일정을 못 짠 턴인가. 못 짰으면 "검색 범위 넓혀서 다시 찾기"만 낸다. */
+      has_no_schedule: boolean;
+    }
   | {
       id: string;
       type: "place_info_result";
