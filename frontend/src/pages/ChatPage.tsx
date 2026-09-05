@@ -31,7 +31,10 @@ import {
   endChatRequest,
   wasCancelledByUser,
 } from "../state/chatAbortController";
-import { loadLocationSettings } from "../state/locationSettings";
+import {
+  loadLocationSettings,
+  syncLocationSettingsFromConditions,
+} from "../state/locationSettings";
 import { useLocationSettings } from "../hooks/useLocationSettings";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
@@ -182,6 +185,12 @@ export function ChatPage() {
               dispatch({ type: "SET_AGENT_PROGRESS", payload: event.data });
               return;
             }
+            /* 조건 병합 직후에 온다 — 도구 조회·채점·답변 스트리밍보다 앞이라,
+               발화로 위치를 바꾸면 결과를 기다리지 않고 상단 칩이 먼저 바뀐다. */
+            if (event.type === "location_resolved") {
+              syncLocationSettingsFromConditions(event.data);
+              return;
+            }
             if (event.type === "result") {
               receivedStreamResult = true;
               dispatch({
@@ -214,6 +223,11 @@ export function ChatPage() {
               throw new ApiError(event.data);
             }
             const response = event.data.response;
+            /* 위 location_resolved의 백스톱이다. SSE를 못 쓰는 환경은 단발 API로
+               낮춰 done만 받으므로(streamChat의 catch), 그 경로에는 위 이벤트가
+               아예 없다. 값이 같으면 헬퍼가 아무것도 쓰지 않아 두 번 불러도
+               무해하다. 두 dispatch 분기 앞에 두어 스트리밍이든 아니든 지나간다. */
+            syncLocationSettingsFromConditions(response.state.user_conditions);
             const elapsedMsClient = performance.now() - startedAt;
             if (receivedStreamResult || receivedStreamMessage) {
               dispatch({
