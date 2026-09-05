@@ -280,6 +280,24 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+  /*
+   * 무장애 여행 정보(D-077). 값이 있는 항목만 그리고, 아홉 개가 모두 비면 구획
+   * 자체를 숨긴다 — 이 데이터는 있으면 적고 없으면 비우는 식이라 빈 값을 "없음"으로
+   * 그리면 안 된다. 무장애 원문이 있는 장소는 전체의 15%이고, 아홉 중 하나라도
+   * 나오는 곳은 11%다.
+   *
+   * stroller_rental이 차면 baby_carriage가 비고, 비면 baby_carriage가 남는다.
+   * 두 값이 같은 사실을 말하는데 62%에서 어긋나 C가 하나만 골라 보낸다.
+   */
+  accessible_restroom?: string | null;
+  accessible_parking?: string | null;
+  elevator?: string | null;
+  visual_guide?: string | null;
+  wheelchair_rental?: string | null;
+  nursing_room?: string | null;
+  seating?: string | null;
+  stroller_rental?: string | null;
+  guide_dog?: string | null;
   preference_insights?: PlacePreferenceInsight[];
   population_current_level?: string | null;
   population_current_message?: string | null;

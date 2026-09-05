@@ -36,7 +36,15 @@ from app.agent_context.enrichment_service import (
     select_concentration_forecast,
     select_concentration_forecasts,
 )
-from app.agent_context.info_field_rules import clean_text, extract_info_fields
+from app.agent_context.info_field_rules import (
+    clean_barrier_free_text,
+    clean_text,
+    compose_nursing_room,
+    compose_seating,
+    compose_visual_guide,
+    extract_info_fields,
+    resolve_stroller_rental,
+)
 from app.agent_context.info_schemas import (
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
@@ -3085,6 +3093,9 @@ def _to_place_card(
     thumbnail_url은 그대로 둔다 — 사진 목록이 비는 장소가 절반이 넘고, 그쪽은
     대표 이미지 한 장이 유일한 그림이다.
     """
+    # 유모차는 두 원문 중 하나만 쓴다. 어느 쪽을 쓸지는 답변 경로와 같은 함수가
+    # 정한다 — 같은 장소가 말풍선과 카드에서 다르게 읽히면 안 된다.
+    stroller_rental, baby_carriage = resolve_stroller_rental(details)
     return PlaceCard(
         place_id=details.content_id or place_id,
         place_name=clean_text(details.title),
@@ -3099,11 +3110,22 @@ def _to_place_card(
         parking=clean_text(details.parking),
         parking_fee=clean_text(details.parking_fee),
         fee=clean_text(details.fee),
-        baby_carriage=clean_text(details.baby_carriage),
+        baby_carriage=baby_carriage,
         pet=clean_text(details.pet),
         credit_card=clean_text(details.credit_card),
         restroom=clean_text(details.restroom),
         homepage=clean_text(details.homepage),
+        # 무장애 아홉 항목. 접근로·주출입구(단차 서술)와 대중교통 접근은 카드에
+        # 싣지 않는다 — 답변 경로의 wheelchair_access는 그대로 둔다.
+        accessible_restroom=clean_barrier_free_text(details.accessible_restroom_raw),
+        accessible_parking=clean_barrier_free_text(details.accessible_parking_raw),
+        elevator=clean_barrier_free_text(details.elevator_raw),
+        visual_guide=compose_visual_guide(details),
+        wheelchair_rental=clean_barrier_free_text(details.wheelchair_rental_raw),
+        nursing_room=compose_nursing_room(details),
+        seating=compose_seating(details),
+        stroller_rental=stroller_rental,
+        guide_dog=clean_barrier_free_text(details.guide_dog_raw),
     )
 
 

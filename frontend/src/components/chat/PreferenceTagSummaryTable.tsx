@@ -5,28 +5,7 @@ interface PreferenceTagSummaryTableProps {
   language: Language;
 }
 
-const TAG_COLORS: Record<string, string> = {
-  date: "bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-200",
-  with_parents: "bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-200",
-  with_friends: "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200",
-  with_kids: "bg-yellow-50 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-200",
-  alone: "bg-slate-50 text-slate-700 dark:bg-slate-900/40 dark:text-slate-200",
-  photo_spot: "bg-pink-50 text-pink-700 dark:bg-pink-950/30 dark:text-pink-200",
-  good_view: "bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-200",
-  night_visit: "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-200",
-  healing: "bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-200",
-  quiet: "bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200",
-  cozy: "bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-200",
-  experience: "bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-200",
-  unique: "bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-950/30 dark:text-fuchsia-200",
-  culture_art: "bg-lime-50 text-lime-700 dark:bg-lime-950/30 dark:text-lime-200",
-  indoor: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/30 dark:text-cyan-200",
-  walk: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200",
-  nature: "bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-200",
-  food_exploration: "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200",
-};
-
-const FALLBACK_COLOR = "bg-chip text-muted";
+const TAG_BADGE_COLOR = "bg-sky-light text-brand";
 
 export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSummaryTableProps) {
   const taggedItems = items.filter((item) => (item.preference_tags?.length ?? 0) > 0);
@@ -65,13 +44,13 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
                 {item.name}
               </th>
               <td className="px-3.5 py-2">
-                <div className="flex flex-wrap gap-1.5">
-                  {item.preference_tags?.slice(0, 3).map((tag) => (
+                <div className="flex flex-nowrap gap-1.5">
+                  {item.preference_tags?.slice(0, 2).map((tag) => (
                     <span
                       key={tag.code}
-                      className={`rounded-full px-2.5 py-1 text-xs font-medium ${TAG_COLORS[tag.code] ?? FALLBACK_COLOR}`}
+                      className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${TAG_BADGE_COLOR}`}
                     >
-                      {tag.label} ({tag.mention_count})
+                      {tag.label} <span className="text-muted">({tag.mention_count})</span>
                     </span>
                   ))}
                 </div>

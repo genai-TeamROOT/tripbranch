@@ -374,3 +374,52 @@ def test_card_without_photos_has_empty_list() -> None:
 
     assert card is not None
     assert card.photos == []
+
+
+def test_무장애_아홉_항목을_카드로_이월한다() -> None:
+    """C가 채운 값이 A 응답에서 조용히 사라지지 않는지 본다.
+
+    이 저장소가 반복해 온 사고 유형이다 — 계약 모델을 필드별로 다시 조립하는
+    자리에서 새 필드 하나만 빠지면, 테스트는 통과하는데 화면에서는 그 줄이
+    영영 비어 있다.
+    """
+    response = _response()
+    result = response.result
+    assert isinstance(result, PlaceInfoResult)
+    assert result.place_card is not None
+    result.place_card.accessible_restroom = "장애인 화장실 있음(1층)"
+    result.place_card.accessible_parking = "장애인 주차구역 2면"
+    result.place_card.elevator = "엘리베이터 있음"
+    result.place_card.visual_guide = "점자블록 있음 / 음성안내기 대여 가능"
+    result.place_card.wheelchair_rental = "대여가능(2대, 안내데스크)"
+    result.place_card.nursing_room = "수유실 있음(2층) / 기저귀교환대 있음"
+    result.place_card.seating = "의자식 테이블 있음"
+    result.place_card.stroller_rental = "대여가능(10대)"
+    result.place_card.guide_dog = "보조견 동반 가능함"
+
+    card = to_info_place_card(response)
+
+    assert card is not None
+    assert card.accessible_restroom == "장애인 화장실 있음(1층)"
+    assert card.accessible_parking == "장애인 주차구역 2면"
+    assert card.elevator == "엘리베이터 있음"
+    assert card.visual_guide == "점자블록 있음 / 음성안내기 대여 가능"
+    assert card.wheelchair_rental == "대여가능(2대, 안내데스크)"
+    assert card.nursing_room == "수유실 있음(2층) / 기저귀교환대 있음"
+    assert card.seating == "의자식 테이블 있음"
+    assert card.stroller_rental == "대여가능(10대)"
+    assert card.guide_dog == "보조견 동반 가능함"
+
+
+def test_무장애_정보가_없는_장소는_전부_None이다() -> None:
+    """전체 8,060곳 중 무장애 원문이 있는 곳은 1,229곳(15%)뿐이다."""
+    card = to_info_place_card(_response())
+
+    assert card is not None
+    assert card.accessible_restroom is None
+    assert card.elevator is None
+    assert card.visual_guide is None
+    assert card.nursing_room is None
+    assert card.seating is None
+    assert card.stroller_rental is None
+    assert card.guide_dog is None

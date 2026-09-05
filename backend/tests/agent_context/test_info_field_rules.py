@@ -352,3 +352,64 @@ class TestBarrierFree:
         fields = extract_info_fields("facility", _details(baby_carriage="가능"))
 
         assert fields == {"baby_carriage": "가능"}
+
+
+class TestBarrierFreeCleanup:
+    """무장애 원문에만 있는 두 가지 잡음을 다듬는다.
+
+    적재 쪽(`providers/tour_barrier_free.py`)은 원문을 그대로 저장하기로 정해
+    두었으므로 여기가 정리하는 자리다.
+    """
+
+    def test_출처_표시를_뗀다(self) -> None:
+        """뜻이 없는 꼬리다. 원문 15종을 통틀어 835곳에 붙어 있다."""
+        details = _details(accessible_restroom_raw="장애인 화장실 있음_무장애 편의시설")
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["accessible_restroom"] == "장애인 화장실 있음"
+
+    def test_분류명이_달라도_출처_표시로_본다(self) -> None:
+        """`_시각장애인 편의시설`(208건)·`_무장애 편의정보`(8건)도 같은 꼬리다."""
+        details = _details(
+            braille_block_raw="점자블록 있음(주요시설 앞)_시각장애인 편의시설",
+            accessible_parking_raw="장애인 주차구역 2면_무장애 편의정보",
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["braille_block"] == "점자블록 있음(주요시설 앞)"
+        assert fields["accessible_parking"] == "장애인 주차구역 2면"
+
+    def test_출처_표시_뒤에_이어지는_설명은_남긴다(self) -> None:
+        """꼬리 뒤에 설명이 붙어 오는 값이 3곳 있다. 앞말과 붙지 않게 띄운다."""
+        details = _details(
+            accessible_parking_raw=(
+                "장애인 주차구역 있음_무장애 편의시설지상 공터에 주차하는 것이 더 편리함"
+            )
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["accessible_parking"] == (
+            "장애인 주차구역 있음 지상 공터에 주차하는 것이 더 편리함"
+        )
+
+    def test_붙어_온_두_문장을_나눈다(self) -> None:
+        """구분자 없이 이어 붙은 원문이 있다(실측 18건).
+
+        `<br/>`이 아니라 아예 구분자가 없어 태그 정리만으로는 갈라지지 않는다.
+        """
+        details = _details(infant_family_etc_raw="영유아거치대 있음기저귀교환대 있음")
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["infant_family_etc"] == "영유아거치대 있음 / 기저귀교환대 있음"
+
+    def test_문장_끝의_있음은_그대로_둔다(self) -> None:
+        """뒤에 이어지는 말이 없으면 나눌 자리도 없다."""
+        details = _details(guide_dog_raw="보조견 동반 가능함")
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["guide_dog"] == "보조견 동반 가능함"

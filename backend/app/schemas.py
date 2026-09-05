@@ -1266,6 +1266,24 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 무장애 여행 정보(D-077). C의 ``PlaceCard``에서 그대로 옮겨온 값이고, 프론트는
+    # 편의시설 표와 분리된 "무장애 정보" 구획으로 그린다.
+    #
+    # 값이 없으면 None이다. 소비 측은 None인 항목의 줄 자체를 그리지 않는다 —
+    # 이 원문은 있으면 적고 없으면 비우는 식이라 빈 값을 "없음"으로 읽으면 있는
+    # 시설을 없다고 말하게 된다.
+    #
+    # ``stroller_rental``이 차면 위 ``baby_carriage``가 비고, 비면 반대다. 두 값이
+    # 같은 사실을 말하는데 서로 어긋나 C가 하나만 골라 보낸다.
+    accessible_restroom: str | None = None
+    accessible_parking: str | None = None
+    elevator: str | None = None
+    visual_guide: str | None = None
+    wheelchair_rental: str | None = None
+    nursing_room: str | None = None
+    seating: str | None = None
+    stroller_rental: str | None = None
+    guide_dog: str | None = None
     # 후기에서 추출한 취향 태그·대표 근거. 상세 모달 요청에서만 채운다.
     preference_insights: list[PlacePreferenceInsight] = Field(default_factory=list)
     population_current_level: str | None = None
