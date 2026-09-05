@@ -1,11 +1,15 @@
 /*
- * 역할: 네이버지도 "대중교통" 길찾기 딥링크를 만들고 연다(출발=현재 위치, 도착=장소).
- * 입력: deviceLocation("위도,경도" 문자열), 목적지 좌표·이름.
+ * 역할: 네이버지도 길찾기 딥링크를 만들고 연다(출발=현재 위치, 도착=장소).
+ *       수단은 대중교통(기본)·도보·자동차 중 고른다.
+ * 입력: deviceLocation("위도,경도" 문자열), 목적지 좌표·이름, 수단(생략 시 대중교통).
  * 출력: nmap:// 앱 딥링크를 열고, 앱이 없으면 네이버지도 웹 길찾기로 폴백한다.
  * 참고: API가 아니라 딥링크다 — 경로 계산은 네이버지도가 한다(키·비용 없음).
  *       appname은 검증되는 키가 아니라 "돌아가기"용 호출자 식별자라 현재 호스트명을
  *       그대로 쓴다.
  */
+
+/** 길찾기 수단. 화장실처럼 걸어서 가는 목적지는 "walk"를 쓴다. */
+export type NaverDirectionsMode = "public" | "walk" | "car";
 
 export interface NaverDirectionsArgs {
   /** 현재 위치. geolocation.ts가 만드는 "위도,경도" 문자열. */
@@ -13,7 +17,17 @@ export interface NaverDirectionsArgs {
   destLat: number;
   destLng: number;
   destName: string;
+  /** 생략하면 대중교통. 기존 호출부(추천·비교 카드)의 동작을 바꾸지 않기 위한 기본값이다. */
+  mode?: NaverDirectionsMode;
 }
+
+// 웹 길찾기 URL의 마지막 경로 조각. 앱 딥링크는 route/{키}를 그대로 쓰는데
+// 웹은 대중교통만 이름이 다르다(public → transit).
+const _WEB_MODE_SEGMENT: Record<NaverDirectionsMode, string> = {
+  public: "transit",
+  walk: "walk",
+  car: "car",
+};
 
 /** 주소만 가진 항목을 네이버지도에서 바로 찾는다.
  *
@@ -63,15 +77,18 @@ export function buildNaverDirections(
   // 출발점 라벨. 네이버 화면에서 출발지가 "내 위치"로 표시된다.
   const sname = encodeURIComponent("내 위치");
 
-  // route/public = 대중교통. (도보 route/walk, 자동차 route/car로 확장 가능)
+  const mode = args.mode ?? "public";
+
+  // route/public = 대중교통, route/walk = 도보, route/car = 자동차.
   const appUrl =
-    `nmap://route/public?slat=${origin.lat}&slng=${origin.lng}&sname=${sname}` +
+    `nmap://route/${mode}?slat=${origin.lat}&slng=${origin.lng}&sname=${sname}` +
     `&dlat=${args.destLat}&dlng=${args.destLng}&dname=${dname}&appname=${appname}`;
 
-  // 네이버지도 웹 길찾기(대중교통). 형식: /출발/도착/-/transit (경도,위도,이름 순).
+  // 네이버지도 웹 길찾기. 형식: /출발/도착/-/{수단} (경도,위도,이름 순).
   const webUrl =
     `https://map.naver.com/p/directions/` +
-    `${origin.lng},${origin.lat},${sname},,/${args.destLng},${args.destLat},${dname},,/-/transit`;
+    `${origin.lng},${origin.lat},${sname},,/${args.destLng},${args.destLat},${dname},,/-/` +
+    `${_WEB_MODE_SEGMENT[mode]}`;
 
   return { appUrl, webUrl };
 }
@@ -82,7 +99,7 @@ function isMobileBrowser(): boolean {
 }
 
 /**
- * 대중교통 길찾기를 연다. 우리 서비스는 웹이므로 플랫폼에 맞춘다.
+ * 길찾기를 연다(수단은 args.mode, 생략 시 대중교통). 우리 서비스는 웹이므로 플랫폼에 맞춘다.
  * - 데스크톱: 네이버지도 앱이 없으니 웹 길찾기를 새 탭으로 바로 연다(지연 없음).
  * - 모바일: 앱 딥링크를 시도하고, 앱으로 전환되지 않으면(미설치) 웹으로 폴백한다.
  * 열 수 없으면(출발 좌표 없음) false.

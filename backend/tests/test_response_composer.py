@@ -1431,6 +1431,45 @@ class TestComposeRealtimeCityInfoMessage:
 
         assert "실시간 주차장 정보를 찾았어요" in message
 
+    def _toilet_response(
+        self, *, fields: dict[str, str] | None = None, status: str = "success"
+    ) -> InfoContextResponse:
+        return InfoContextResponse(
+            request_id="toilet",
+            status=status,  # type: ignore[arg-type]
+            result=RealtimeCityInfoResult(
+                status=status,  # type: ignore[arg-type]
+                question_type="public_toilet",
+                requested_place_name="인사동",
+                resolved_place_name="인사동",
+                fields=fields
+                if fields is not None
+                else {
+                    "인사동마루 신관 개방화장실": "도보 50m · 지금 이용 가능 · 24시간",
+                    "쌈지길(지하1층)": "도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+                },
+            ),
+        )
+
+    def test_toilet_message_reads_both_places_in_the_bubble(self) -> None:
+        """급한 질문이라 "카드를 보세요"로 미루지 않고 이름·거리를 바로 읽어준다."""
+
+        message = compose_realtime_city_info_message(self._toilet_response())
+
+        assert "인사동마루 신관 개방화장실" in message
+        assert "도보 50m · 지금 이용 가능 · 24시간" in message
+        assert "쌈지길(지하1층)" in message
+        # 길찾기는 카드를 눌러야 하므로 그 안내만 붙는다.
+        assert "도보 길찾기" in message
+
+    def test_toilet_message_suggests_moving_when_none_nearby(self) -> None:
+        message = compose_realtime_city_info_message(
+            self._toilet_response(fields={}, status="no_data")
+        )
+
+        assert "1km 안에서는" in message
+        assert "이동한 뒤 다시 물어봐주시면" in message
+
 
 class TestComposeEventInfoMessage:
     """D-055 A 배선 — is_direct_match=False인 행사를 그 장소의 행사로 말하지 않는다."""

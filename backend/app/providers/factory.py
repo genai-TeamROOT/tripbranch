@@ -57,10 +57,16 @@ from app.providers.protocols import (
     PlaceImageProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    PublicToiletProvider,
     RealtimeCityDataProvider,
     RealtimeCommercialProvider,
     TravelRouteProvider,
     WeatherProvider,
+)
+from app.providers.public_toilet import (
+    FAKE_TOILETS,
+    FakePublicToiletProvider,
+    RealPublicToiletProvider,
 )
 from app.providers.real_place import RealPlaceProvider
 from app.providers.seoul_citydata import (
@@ -94,8 +100,10 @@ from app.repositories.fake_places import (
     FakePlaceLocationRepository,
     FakePlacePhotoRepository,
 )
+from app.repositories.fake_public_toilet import FakePublicToiletRepository
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
 from app.repositories.protocols import PlacePhotoRepository
+from app.repositories.public_toilet import SupabasePublicToiletRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.closure_extract import ClosureExtractor
 from app.tools.recommendation_cards import RecommendationCardTool
@@ -599,6 +607,41 @@ def get_municipal_parking_catalog_repository(
     if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
         return FakeMunicipalParkingCatalogRepository()
     return SupabaseMunicipalParkingRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_public_toilet_provider(client: httpx.AsyncClient) -> PublicToiletProvider:
+    """공중화장실 위치 전량 조회 Provider. 서울시 도시데이터와 같은 키를 쓴다.
+
+    사용자 요청 경로에는 쓰이지 않는다 — 적재 스크립트 전용이다(구·좌표 필터가
+    없어 매 요청 전량을 받을 수 없다).
+    """
+
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakePublicToiletProvider()
+    return RealPublicToiletProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_public_toilet_repository(
+    client: httpx.AsyncClient,
+) -> SupabasePublicToiletRepository | FakePublicToiletRepository:
+    """적재된 공중화장실 위치 저장소. Supabase 미설정 개발 환경은 fake를 쓴다.
+
+    fake는 인사동 주변 3곳만 들고 있어(providers/public_toilet.py의 Fake와 같은
+    데이터) 개발 환경에서도 카드 렌더까지 확인할 수 있다.
+    """
+
+    if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
+        return FakePublicToiletRepository(FAKE_TOILETS)
+    return SupabasePublicToiletRepository(
         supabase_url=settings.supabase_url,
         secret_key=settings.supabase_secret_key,
         client=client,

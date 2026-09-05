@@ -638,9 +638,17 @@ async def test_budget_speed_follows_the_radius_not_the_measured_mode(
 
 
 class _FakeCard:
-    def __init__(self, content_id: str, thumbnail_url: str | None) -> None:
+    def __init__(
+        self,
+        content_id: str,
+        thumbnail_url: str | None,
+        fallback_thumbnail_url: str | None = None,
+    ) -> None:
         self.content_id = content_id
         self.thumbnail_url = thumbnail_url
+        # 소비 측이 실제로 읽는 필드다. 비워 두면 폴백 배선이 한 줄도 실행되지 않은 채
+        # 테스트만 통과한다(이 저장소의 "조용한 fake" 유형).
+        self.fallback_thumbnail_url = fallback_thumbnail_url
 
 
 class _FakeCardResult:
@@ -652,15 +660,24 @@ class _FakeCardResult:
 class _FakeRecommendationCardTool:
     """RecommendationCardTool을 흉내 낸다 — get_cards만 duck-typing으로 만족한다."""
 
-    def __init__(self, thumbnails: dict[str, str]) -> None:
+    def __init__(
+        self,
+        thumbnails: dict[str, str],
+        fallbacks: dict[str, str] | None = None,
+    ) -> None:
         self._thumbnails = thumbnails
+        self._fallbacks = fallbacks or {}
         self.requested_place_ids: list[str] | None = None
 
     async def get_cards(self, content_ids: list[str]) -> _FakeCardResult:
         self.requested_place_ids = list(content_ids)
         return _FakeCardResult(
             [
-                _FakeCard(place_id, self._thumbnails[place_id])
+                _FakeCard(
+                    place_id,
+                    self._thumbnails[place_id],
+                    self._fallbacks.get(place_id),
+                )
                 for place_id in content_ids
                 if place_id in self._thumbnails
             ]
@@ -689,6 +706,35 @@ async def test_recommend_attaches_thumbnails_from_recommendation_card_tool() -> 
     # 썸네일이 없는 장소는 None으로 남는다 — 지어내지 않는다.
     assert by_id["b"].image_url is None
     assert set(cards.requested_place_ids or []) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_recommend_attaches_thumbnail_fallback_url() -> None:
+    """폴백 주소도 함께 붙인다.
+
+    작은 썸네일(firstimage2)만 관광공사 서버에서 사라진 장소가 있다 — 아현시장이
+    그렇다(2026-09-05 실측). 프론트가 그 카드에서만 원본으로 갈아타려면 두 주소가
+    다 내려가야 한다. 서버가 미리 확인해 고르지 않는 이유는 추천 한 번에 확인
+    요청이 5~10건 붙기 때문이다(schemas.RecommendationItem.image_url_fallback).
+    """
+    cards = _FakeRecommendationCardTool(
+        {"a": "https://img.test/a_image3.jpg", "b": "https://img.test/b_image3.jpg"},
+        fallbacks={"a": "https://img.test/a_image2.jpg"},
+    )
+    provider = RealRecommendationProvider(recommendation_cards=cards)
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a", "b"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    by_id = {
+        item.place_id: item
+        for item in [*result.recommendations, *result.unverified_recommendations]
+    }
+    assert by_id["a"].image_url_fallback == "https://img.test/a_image2.jpg"
+    # 대안이 없는 장소는 None이다 — image_url을 복사해 두면 프론트가 같은 404를
+    # 두 번 부른다.
+    assert by_id["b"].image_url_fallback is None
 
 
 @pytest.mark.asyncio

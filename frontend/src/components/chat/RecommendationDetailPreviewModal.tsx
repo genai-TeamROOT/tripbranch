@@ -433,12 +433,25 @@ function InfoTableSkeleton({
   rows,
   isEn,
   leadingRow,
+  showBars = true,
 }: {
   rows: number;
   isEn: boolean;
   leadingRow?: ReactNode;
+  /*
+   * 거짓이면 줄 자리는 그대로 두고 회색 바만 감춘다(useDelayedSkeleton의 첫 200ms).
+   *
+   * 줄 수를 지연에 묶으면 200ms 지점에 표가 커지면서 아래 내용이 통째로 밀린다 —
+   * 아는 값이 있으면 1줄에서 4줄로, 없으면 상자째 나타난다. 높이를 만드는 것은
+   * 바깥 h-5 껍데기이므로, 바를 invisible로 두면 자리는 유지한 채 조용해진다.
+   *
+   * 지연의 목적도 그대로 지킨다. 주석이 말하는 "떴다가 곧바로 사라져 번쩍이는"
+   * 것은 움직이는 회색 바이고, 그것은 여전히 200ms 뒤에만 나타난다.
+   */
+  showBars?: boolean;
 }) {
   const valueWidths = ["w-[70%]", "w-[45%]", "w-[60%]"];
+  const barVisibility = showBars ? "" : " invisible";
 
   return (
     <div role="status" className={INFO_CARD_BOX}>
@@ -455,16 +468,19 @@ function InfoTableSkeleton({
             decorative
             left={
               <>
-                <span className="h-[15px] w-[15px] animate-pulse rounded bg-chip" />
+                <span
+                  className={`h-[15px] w-[15px] animate-pulse rounded bg-chip${barVisibility}`}
+                />
                 <span className="flex h-5 items-center">
-                  <span className="h-3.5 w-14 animate-pulse rounded bg-chip" />
+                  <span className={`h-3.5 w-14 animate-pulse rounded bg-chip${barVisibility}`} />
                 </span>
               </>
             }
             right={
               <span className="flex h-5 items-center justify-end">
                 <span
-                  className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}`}
+                  data-testid="info-skeleton-bar"
+                  className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}${barVisibility}`}
                 />
               </span>
             }
@@ -1160,15 +1176,29 @@ function photoKey(url: string): string {
 const PHOTO_STRIP_HEIGHT = "h-[60px]";
 
 /** 사진 영역의 껍데기. 로딩·갤러리·이미지 없음 세 경우가 같은 높이를 쓴다. */
-function PhotoAreaShell({ main, strip }: { main: ReactNode; strip?: ReactNode }) {
+function PhotoAreaShell({
+  main,
+  strip,
+  reserveStrip = true,
+}: {
+  main: ReactNode;
+  strip?: ReactNode;
+  /*
+   * 뒤에 사진이 올 수 있는 동안만 자리를 잡는다. 사진이 없는 것이 확정된 자리에서는
+   * 60px이 끝까지 비어 있을 뿐이고, 그만큼 장소명과 정보가 아래로 밀린다.
+   */
+  reserveStrip?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-2">
       {main}
-      {/* 자리를 항상 남긴다는 것이 이 요소의 존재 이유라, 테스트가 그것을 집을 수
+      {/* 자리를 남긴다는 것이 이 요소의 존재 이유라, 테스트가 그것을 집을 수
           있게 표식을 둔다. */}
-      <div data-testid="photo-strip-slot" className={`${PHOTO_STRIP_HEIGHT} shrink-0`}>
-        {strip}
-      </div>
+      {reserveStrip && (
+        <div data-testid="photo-strip-slot" className={`${PHOTO_STRIP_HEIGHT} shrink-0`}>
+          {strip}
+        </div>
+      )}
     </div>
   );
 }
@@ -1380,6 +1410,24 @@ export function RecommendationDetailPreviewModal({
     placeNameProp ??
     (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
+  /*
+   * 사진이 아예 없을 것을 **열 때 이미 안다.**
+   *
+   * 카드 이미지가 없는 장소 844곳 중 843곳(99.9%)은 상세 사진도 0장이다(2026-09-05
+   * 실측, places ↔ place_image_embeddings 대조). 그래서 응답을 기다리지 않고 사진
+   * 영역을 통째로 비우면, 응답이 와도 레이아웃이 바뀌지 않는다 — 장소명부터 바로
+   * 시작해 첫 화면에 정보가 들어온다.
+   *
+   * 응답 후에 정하면 그 844곳이 전부 밀린다(10.5%). 이 방식에서 밀리는 것은 카드
+   * 이미지가 없는데 상세 사진은 있는 예외 1곳뿐이다(8,067분의 1).
+   *
+   * **미리 알 수 있을 때만 적용한다.** 사진 유사 검색·지난 추천은 이름과 place_id만
+   * 넘기고 열어서(호출부 참고) 판단 근거가 없다 — 그때는 종전대로 자리를 잡아 둔다.
+   * 사진이 1장인지 2장 이상인지는 어느 경로에서도 미리 알 수 없으므로, 작은 사진
+   * 줄의 자리 예약(PHOTO_STRIP_HEIGHT)은 그대로 둔다.
+   */
+  const knownImageUrl = item?.image_url ?? card?.thumbnail_url ?? null;
+  const expectsNoPhoto = (item != null || card != null) && knownImageUrl == null;
   const showSkeleton = useDelayedSkeleton(isLoading);
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
@@ -1481,11 +1529,24 @@ export function RecommendationDetailPreviewModal({
         animate={{ opacity: isClosing ? 0 : 1 }}
         transition={{ duration: 0.22 }}
       />
+      {/*
+       * 높이를 **고정한다**(max-h가 아니라 h). 시트가 내용 높이로 정해지면 상세
+       * 응답이 도착할 때 화면이 위로 자란다 — 개요·관련 정보·실시간 항목은 응답
+       * 전에 자리를 잡을 수 없고(길이를 모른다), 정보 표만 스켈레톤으로 잡혀 있다.
+       *
+       * 전에는 사진 영역(약 283px)이 로딩 시점에 이미 상한을 채워서 그 성장이
+       * 스크롤로 흡수됐다. 사진 없는 장소에서 영역을 접자 그게 드러났을 뿐,
+       * 원래 있던 움직임이다 — 화면이 큰 기기에서는 사진이 있어도 자란다.
+       *
+       * 정보가 적은 장소는 아래가 비지만, 읽는 도중 시트가 밀려 올라오는 것보다
+       * 낫다. 지도 앱들의 장소 시트가 같은 선택을 한다.
+       */}
       <motion.section
         role="dialog"
         aria-modal="true"
         aria-labelledby="recommendation-detail-title"
-        className="relative flex max-h-[88vh] w-full max-w-[640px] flex-col overflow-hidden rounded-t-3xl bg-bg shadow-card"
+        data-testid="place-detail-sheet"
+        className="relative flex h-[88vh] w-full max-w-[640px] flex-col overflow-hidden rounded-t-3xl bg-bg shadow-card"
         initial={{ y: "100%" }}
         animate={{ y: isClosing ? "100%" : 0 }}
         transition={{ type: "spring", damping: 32, stiffness: 320 }}
@@ -1507,9 +1568,16 @@ export function RecommendationDetailPreviewModal({
         </div>
 
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
-          {/* 세 경우 모두 PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서
-              갤러리로 바뀔 때 화면이 밀리지 않게 하려면 자리가 같아야 한다. */}
-          {isLoading ? (
+          {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
+              PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
+              화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
+              애초에 그 전환이 없으므로 자리를 잡지 않는다. */}
+          {detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
+            /* 예외 1곳(8,067분의 1)은 카드에 이미지가 없는데 상세에 사진이 있다.
+               그 장소에서는 사진이 도착한 시점에 갤러리가 생기며 아래가 밀린다 —
+               사진을 안 보여주는 것보다 낫다. */
+            <PlacePhotoGallery card={detailCard} title={title} item={item} />
+          ) : expectsNoPhoto && detailStatus !== "unavailable" ? null : isLoading ? (
             <PhotoAreaShell
               main={
                 /*
@@ -1558,10 +1626,10 @@ export function RecommendationDetailPreviewModal({
                 </div>
               }
             />
-          ) : detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
-            <PlacePhotoGallery card={detailCard} title={title} item={item} />
           ) : !hasRealtimeDetails ? (
             <PhotoAreaShell
+              // 여기서 끝이라 뒤에 올 사진이 없다. 실패 안내에는 줄 자리를 잡지 않는다.
+              reserveStrip={!expectsNoPhoto}
               main={
                 <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
                   {isEn
@@ -1594,26 +1662,24 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {isLoading
-            ? /* 운영시간을 이미 알면 그 줄은 실제 값이므로 스켈레톤을 한 줄 적게
-                 둔다. 지연(200ms) 중에는 아는 값만 있는 한 줄짜리 상자다. */
-              (showSkeleton || item?.operating_hours_display) && (
-                <InfoTableSkeleton
-                  rows={
-                    showSkeleton
-                      ? INFO_TABLE_SKELETON_ROWS - (item?.operating_hours_display ? 1 : 0)
-                      : 0
-                  }
-                  isEn={isEn}
-                  leadingRow={<QuickInfoPreview item={item} isEn={isEn} />}
-                />
-              )
-            : detailCard && (
-                <>
-                  <InfoTable card={detailCard} item={item} isEn={isEn} />
-                  <AccessibilityTable card={detailCard} isEn={isEn} />
-                </>
-              )}
+          {isLoading ? (
+            /* 운영시간을 이미 알면 그 줄은 실제 값이므로 스켈레톤을 한 줄 적게 둔다.
+               줄 수는 지연과 무관하게 처음부터 최종값이다 — 지연에 묶으면 200ms
+               지점에 표가 커지며 아래가 밀린다(showBars 주석 참고). */
+            <InfoTableSkeleton
+              rows={INFO_TABLE_SKELETON_ROWS - (item?.operating_hours_display ? 1 : 0)}
+              showBars={showSkeleton}
+              isEn={isEn}
+              leadingRow={<QuickInfoPreview item={item} isEn={isEn} />}
+            />
+          ) : (
+            detailCard && (
+              <>
+                <InfoTable card={detailCard} item={item} isEn={isEn} />
+                <AccessibilityTable card={detailCard} isEn={isEn} />
+              </>
+            )
+          )}
 
           {item?.recommendation_reason && (
             <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">

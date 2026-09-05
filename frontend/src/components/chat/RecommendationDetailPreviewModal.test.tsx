@@ -457,6 +457,166 @@ it("사진도 대표 이미지도 없으면 안내 문구를 보여준다", asyn
   expect(screen.queryByRole("img", { name: /경복궁/ })).not.toBeInTheDocument();
 });
 
+/*
+ * 카드 이미지가 없는 장소 844곳 중 843곳(99.9%)은 상세 사진도 0장이다(2026-09-05
+ * 실측). 열 때 이미 아는 사실이므로 응답을 기다렸다가 자리를 접지 않는다 —
+ * 기다렸다 접으면 그 844곳이 전부 밀린다.
+ */
+it("카드에 이미지가 없으면 사진 영역을 처음부터 그리지 않는다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: null })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("heading", { name: "경복궁" });
+
+  expect(screen.queryByTestId("photo-strip-slot")).not.toBeInTheDocument();
+  expect(screen.queryByText("상세 정보를 불러오는 중...")).not.toBeInTheDocument();
+});
+
+it("카드에 이미지가 없으면 응답이 와도 사진 영역이 생기지 않는다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: null })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ photos: [], thumbnail_url: null }),
+  });
+
+  await screen.findByRole("heading", { name: "경복궁" });
+
+  // 로딩 전후로 같은 모양이라 화면이 밀리지 않는다.
+  expect(screen.queryByTestId("photo-strip-slot")).not.toBeInTheDocument();
+  expect(screen.queryByText("등록된 이미지가 없어요.")).not.toBeInTheDocument();
+});
+
+/*
+ * 시트 높이는 내용과 무관하게 고정이다.
+ *
+ * 내용 높이로 정하면 상세 응답이 도착할 때 화면이 위로 자란다 — 개요·관련 정보는
+ * 응답 전에 자리를 잡을 수 없기 때문이다. 사진 영역이 있던 시절에는 그 283px이
+ * 로딩 시점에 상한을 채워 성장이 스크롤로 흡수됐을 뿐이다.
+ */
+it("상세 응답 전후로 시트 높이가 바뀌지 않는다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: "https://example.test/card-thumbnail.jpg" })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  const sheet = screen.getByTestId("place-detail-sheet");
+  const before = sheet.className;
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({
+      overview: "긴 개요 문장이 응답과 함께 도착한다. ".repeat(20),
+      photos: [{ url: "https://tong.visitkorea.or.kr/126508-1.jpg", image_name: null }],
+    }),
+  });
+
+  await screen.findByRole("heading", { name: "경복궁" });
+
+  expect(sheet.className).toBe(before);
+  expect(sheet.className).toContain("h-[88vh]");
+  // max-h로 두면 내용이 상한 밑일 때 시트가 내용만큼만 커져서 성장이 보인다.
+  expect(sheet.className).not.toContain("max-h-[88vh]");
+});
+
+it("사진 영역이 없는 장소도 같은 높이로 열린다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: null })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  const sheet = screen.getByTestId("place-detail-sheet");
+  // "h-[88vh]"는 "max-h-[88vh]"의 부분 문자열이라 둘 다 본다.
+  expect(sheet.className).toContain("h-[88vh]");
+  expect(sheet.className).not.toContain("max-h-[88vh]");
+  // 사진 영역을 접은 것이 시트 크기까지 줄이지는 않는다 — 정보가 위로 올라올 뿐이다.
+  expect(screen.queryByTestId("photo-strip-slot")).not.toBeInTheDocument();
+});
+
+it("카드에 이미지가 없어도 상세에 사진이 있으면 갤러리를 보여준다", async () => {
+  /*
+   * 카드 이미지가 없는 844곳 중 1곳은 상세 사진이 있다. 미리 접어 둔 자리가
+   * 그때는 펴져야 한다 — 밀리더라도 사진을 감추는 것보다 낫다.
+   */
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ photos: [], thumbnail_url: "https://example.test/found.jpg" }),
+  });
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: null })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByRole("img", { name: "경복궁 이미지" })).toBeInTheDocument();
+  expect(screen.getByTestId("photo-strip-slot")).toBeInTheDocument();
+});
+
+it("미리 알 수 없는 경로(사진 유사 검색·지난 추천)는 종전대로 자리를 잡아 둔다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  // item도 card도 없으면 판단 근거가 없다 — 접었다 펴는 것보다 잡아 두는 쪽이 낫다.
+  expect(screen.getByTestId("photo-strip-slot")).toBeInTheDocument();
+});
+
+it("카드에 이미지가 없어도 상세 조회 실패는 알린다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "unavailable",
+    requested_place_id: "126508",
+    place_card: null,
+  });
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ image_url: null })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  // 사진이 없는 것과 못 불러온 것은 다르다. 오류는 자리를 차지하더라도 보여준다.
+  expect(await screen.findByText("상세 정보를 불러오지 못했어요.")).toBeInTheDocument();
+});
+
 it("무장애 값이 있으면 편의시설 구획으로 그린다", async () => {
   renderModal(
     card({
@@ -510,13 +670,52 @@ it("상세를 기다리는 동안 표와 같은 줄 모양 스켈레톤을 그�
     { wrapper: TripProvider },
   );
 
-  // 로딩이 시작된 직후에는 아직 없다. 조회가 빨라지면 번쩍이지 않도록 200ms를
-  // 기다렸다가 띄운다.
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-
-  const skeleton = await screen.findByRole("status");
+  const skeleton = screen.getByRole("status");
   expect(within(skeleton).getByText("장소 상세 정보를 불러오는 중")).toBeInTheDocument();
   // 완성된 표의 중앙값이 4줄이라 그만큼 잡아 둔다(8,060곳 실측).
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
+});
+
+/*
+ * 줄 수는 처음부터 최종값이고, 200ms 지연은 회색 바에만 걸린다.
+ *
+ * 줄 수를 지연에 묶으면 200ms 지점에 표가 1줄(또는 0줄)에서 4줄로 커지면서 개요·
+ * 추천 이유 같은 아래 내용이 통째로 밀린다. 지연의 목적("조회가 빨라지면 번쩍이지
+ * 않게")은 움직이는 바를 늦추는 것으로 그대로 지켜진다.
+ */
+it("지연 200ms 동안에도 줄 자리는 그대로 두고 회색 바만 감춘다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  const rowsBefore = screen.getAllByTestId("info-skeleton-row").length;
+  expect(rowsBefore).toBe(4);
+  // 지연 중에는 바가 자리만 차지하고 보이지 않는다.
+  for (const bar of screen.getAllByTestId("info-skeleton-bar")) {
+    expect(bar).toHaveClass("invisible");
+  }
+
+  await waitFor(() => {
+    expect(screen.getAllByTestId("info-skeleton-bar")[0]).not.toHaveClass("invisible");
+  });
+
+  // 바가 켜져도 줄 수는 그대로다 — 이것이 밀림의 직접 원인이었다.
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(rowsBefore);
+});
+
+it("item이 없는 경로에서도 표 자리를 처음부터 잡는다", async () => {
+  /* 사진 유사 검색·지난 추천은 이름과 place_id만 넘기고 연다. 아는 운영시간이
+     없어서 예전에는 지연이 끝날 때까지 상자 자체가 없었고, 200ms에 상자째
+     나타나며 아래가 밀렸다. */
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  expect(screen.getByRole("status")).toBeInTheDocument();
   expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
 });
 

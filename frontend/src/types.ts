@@ -68,6 +68,15 @@ export interface RecommendationItem {
    * 못 찾은 장소는 null/undefined로 오고, 카드는 그때 자리표시 칩을 그린다.
    */
   image_url?: string | null;
+  /**
+   * image_url이 404일 때 대신 그릴 주소(places.first_image_url). 대안이 없으면
+   * null이다 — 같은 주소를 두 번 부르지 않도록 서버가 걸러 보낸다.
+   *
+   * 작은 썸네일(firstimage2)만 관광공사 서버에서 사라진 장소가 있다. 서버는 살아
+   * 있는지 확인하지 않는다(추천 한 번에 확인 요청이 5~10건 붙는다) — 실패한
+   * 카드에서만 PlaceThumbnail이 두 번째를 부른다.
+   */
+  image_url_fallback?: string | null;
 }
 
 export interface PreferenceTagSummary {
@@ -378,6 +387,10 @@ export interface RealtimeInfoDetailItem {
   details: Record<string, string>;
   thumbnail_url: string | null;
   external_url: string | null;
+  /** 항목별 길찾기 목적지 좌표. 공중화장실처럼 목록의 각 항목이 곧 목적지인
+   *  카드에서만 채워진다. 없으면 details["주소"]로 지도 검색을 폴백한다. */
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */

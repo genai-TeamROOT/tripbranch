@@ -9,6 +9,7 @@
 
 import { ChevronRight, Heart, MapPin } from "lucide-react";
 import type { Language, RecommendationItem } from "../types";
+import { PlaceThumbnail } from "./PlaceThumbnail";
 import { travelValue } from "../utils/travelDisplay";
 
 interface PlaceCardProps {
@@ -131,24 +132,10 @@ export function PlaceCard({
         }
       >
         <div className="group relative overflow-hidden rounded-2xl">
-          {item.image_url ? (
-            <img
-              src={item.image_url}
-              alt=""
-              loading="lazy"
-              className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
-              onError={(event) => {
-                // 원본이 사라졌을 수 있다(D-087과 같은 종류). 깨진 아이콘 대신 자리만 비운다.
-                event.currentTarget.style.visibility = "hidden";
-              }}
-            />
-          ) : (
-            // 배치 조회에서 못 찾은 장소는 image_url이 null/undefined로 온다 —
-            // 자리표시용 칩을 그린다.
-            <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
-              {item.category}
-            </span>
-          )}
+          {/* 배치 조회에서 못 찾은 장소는 image_url이 null/undefined로 온다. 주소가
+              있어도 원본이 사라졌을 수 있어(D-087과 같은 종류) 자리표시는 같다.
+              작은 썸네일만 죽은 장소는 image_url_fallback으로 갈아탄다. */}
+          <PlaceThumbnail src={item.image_url} fallbackSrc={item.image_url_fallback} />
 
           {onToggleSave && (
             <button

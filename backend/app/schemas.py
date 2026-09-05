@@ -169,6 +169,16 @@ class RecommendationItem(BaseModel):
     # (TECH-02: D가 C의 Tool을 직접 부르지 않는다). 채우지 못한 장소는 None이고,
     # 프론트는 그 경우 자리표시 칩을 그린다.
     image_url: str | None = None
+    # image_url이 404일 때 프론트가 대신 그릴 주소(places.first_image_url).
+    #
+    # 주소가 살아 있는지는 여기서 확인하지 않는다 — 추천 한 번에 카드가 5장이라 매
+    # 요청마다 외부 확인이 5~10건 붙고 응답이 그만큼 늦어진다. 두 주소를 다 내려보내고
+    # 실패한 카드에서만 프론트가 두 번째를 부른다(PlaceThumbnail).
+    #
+    # 필요한 이유는 image_url이 가리키는 작은 썸네일(firstimage2)만 관광공사 서버에서
+    # 사라지는 장소가 있어서다 — 아현시장이 그렇다. 그 장소도 원본(firstimage)은 살아
+    # 있고, 상세 카드는 원본을 먼저 고르기 때문에 사진이 나온다. 추천 카드만 비어 보인다.
+    image_url_fallback: str | None = None
 
 
 class TravelOriginToggle(BaseModel):
@@ -541,6 +551,10 @@ class QuestionType(StrEnum):
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
     REALTIME_TRAFFIC = "realtime_traffic"
+    # "근처에 화장실 있어?"처럼 주변 공중화장실 위치를 찾는 질문. 그 장소 안에
+    # 화장실이 있는지 묻는 건 FACILITY다 — 답하는 데이터가 다르다(전자는 서울시
+    # 공중화장실 목록, 후자는 그 관광지의 편의시설 안내).
+    PUBLIC_TOILET = "public_toilet"
 
 
 class PlaceContext(StrEnum):
@@ -1375,6 +1389,11 @@ class RealtimeInfoDetailItem(BaseModel):
     details: dict[str, str] = Field(default_factory=dict)
     thumbnail_url: str | None = None
     external_url: str | None = None
+    # 항목별 길찾기용 좌표. 공중화장실처럼 목록의 각 항목이 목적지가 되는
+    # 카드에서 채운다. 주소만 있는 항목(일부 민영주차장)은 없는 채로 둔다 —
+    # 프론트가 주소 검색으로 폴백한다.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

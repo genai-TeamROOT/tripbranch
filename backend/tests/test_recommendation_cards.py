@@ -184,6 +184,47 @@ async def test_missing_images_leave_thumbnail_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fallback_thumbnail_carries_the_other_url() -> None:
+    """두 주소를 다 넘긴다 — 작은 썸네일만 죽은 장소가 있다.
+
+    아현시장(2751432)은 firstimage2가 404인데 firstimage는 200이다(2026-09-05 실측).
+    주소가 null이 아니라 살아 있는 척 죽어 있어서, thumbnail_url의 `or` 폴백으로는
+    걸러지지 않는다. 프론트가 실패한 카드에서만 두 번째를 부른다.
+    """
+    rows = {"a": _row("a")}
+    tool = RecommendationCardTool(FakeRepository(rows))
+
+    result = await tool.get_cards(["a"])
+
+    assert result.cards[0].thumbnail_url == "https://example.test/thumb.jpg"
+    assert result.cards[0].fallback_thumbnail_url == "https://example.test/first.jpg"
+
+
+@pytest.mark.asyncio
+async def test_fallback_thumbnail_is_none_when_it_would_repeat_primary() -> None:
+    """이미 primary로 나간 주소는 대안이 아니다.
+
+    두 컬럼이 같은 파일을 가리키는 장소가 있고(실측), thumbnail_url이 비어 first_image_url이
+    primary가 된 경우도 마찬가지다. 그대로 두면 프론트가 같은 404를 두 번 부른다.
+    """
+    same = {"a": _row("a", thumbnail_url="https://example.test/first.jpg")}
+    tool = RecommendationCardTool(FakeRepository(same))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].fallback_thumbnail_url is None
+
+    promoted = {"a": _row("a", thumbnail_url=None)}
+    tool = RecommendationCardTool(FakeRepository(promoted))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].thumbnail_url == "https://example.test/first.jpg"
+    assert result.cards[0].fallback_thumbnail_url is None
+
+    none_at_all = {"a": _row("a", thumbnail_url=None, first_image_url=None)}
+    tool = RecommendationCardTool(FakeRepository(none_at_all))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].fallback_thumbnail_url is None
+
+
+@pytest.mark.asyncio
 async def test_parking_is_normalized_onto_the_card() -> None:
     rows = {"a": _row("a", parking_info_raw="불가능")}
     tool = RecommendationCardTool(FakeRepository(rows))

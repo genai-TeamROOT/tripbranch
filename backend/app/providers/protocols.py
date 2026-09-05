@@ -29,6 +29,7 @@ from app.domain.models import (
     PlaceDetails,
     PlaceOperatingDetails,
     PlacePhoto,
+    PublicToilet,
     RealtimeCityDataResult,
     RealtimeCommercialResult,
     TourPlacePage,
@@ -658,6 +659,17 @@ class MunicipalParkingProvider(Protocol):
         self, district: str
     ) -> ProviderResult[tuple[MunicipalParkingStatus, ...]]:
         """서울시 공영주차장 API에서 한 구의 최신 주차 현황을 가져온다."""
+        ...
+
+
+class PublicToiletProvider(Protocol):
+    async def list_all_toilets(self) -> ProviderResult[tuple[PublicToilet, ...]]:
+        """서울시 공중화장실 위치정보 전량을 가져온다.
+
+        구·좌표 필터 파라미터가 없어(실측 확인: 추가 경로 세그먼트를 무시하고 항상
+        전체를 준다) 부분 조회가 불가능하다. 그래서 이 Provider는 동기화 스크립트만
+        쓰고, 사용자 조회는 적재된 ``public_toilets`` 표에서 한다.
+        """
         ...
 
 

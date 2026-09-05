@@ -19,6 +19,7 @@
 import { useState } from "react";
 import type { PhotoSimilarPlace } from "../../types";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
+import { PlaceThumbnail } from "../PlaceThumbnail";
 
 /** 이 미만이면 벡터가 사진 한 장에 좌우된다(D-087). 표시를 달리한다. */
 const RELIABLE_PHOTO_COUNT = 2;
@@ -88,25 +89,12 @@ export function PhotoSimilarResultMessage({
                     onClick={() => setSelected(place)}
                     className="group text-left"
                   >
-                    {place.image_url ? (
-                      /*
-                       * 비교에 실제로 쓴 사진이다(place_image_embeddings의 첫 장).
-                       * places.first_image_url이 아니다 — 절반 이상이 다른 주소라
-                       * 대표 이미지를 쓰면 비교하지 않은 사진을 보여주게 된다.
-                       */
-                      <img
-                        src={place.image_url}
-                        alt=""
-                        loading="lazy"
-                        className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
-                        onError={(event) => {
-                          // 관광공사 원본이 사라진 경우가 있다. 깨진 아이콘 대신 자리만 비운다.
-                          event.currentTarget.style.visibility = "hidden";
-                        }}
-                      />
-                    ) : (
-                      <span className="block h-28 w-full rounded-2xl bg-chip" />
-                    )}
+                    {/*
+                     * 비교에 실제로 쓴 사진이다(place_image_embeddings의 첫 장).
+                     * places.first_image_url이 아니다 — 절반 이상이 다른 주소라
+                     * 대표 이미지를 쓰면 비교하지 않은 사진을 보여주게 된다.
+                     */}
+                    <PlaceThumbnail src={place.image_url} />
                     <span className="mt-2 flex items-baseline gap-1">
                       <span className="text-[11px] tabular-nums text-brand">{index + 1}</span>
                       <span className="line-clamp-2 text-xs font-bold text-ink">{place.title}</span>
