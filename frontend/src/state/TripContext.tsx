@@ -37,7 +37,11 @@ import type {
   SavedPlaceItem,
   UserConditions,
 } from "../types";
-import { buildAgentMessages, createMessageId } from "./agentMessages";
+import {
+  buildAgentMessages,
+  buildRecommendationMessages,
+  createMessageId,
+} from "./agentMessages";
 import { hasTimeGap } from "./timeSeparator";
 import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
 import { attachRecommendationsToTurns } from "./pastRecommendations";
@@ -219,6 +223,34 @@ interface InterpretedPayload {
   showDebug: boolean;
 }
 
+/*
+ * 새 턴이 시작될 때 걷어낼 메시지인가. 지난 답변을 기준으로 만들어진 버튼들이고,
+ * 남겨두면 그때 기준의 요청이 지금 맥락으로 나간다 — 옛 되묻기나 옛 추천의
+ * "다른 장소 보기"를 누르면 결과가 어긋난다.
+ *
+ * 카드·취향 표 같은 기록은 여기 들어오지 않는다. 지우면 대화를 위로 올렸을 때
+ * 그때 무엇을 받았는지가 사라진다. 버튼만 갈라서 메시지로 둔 것도 이 때문이다.
+ */
+function isPastTurnControl(message: ChatMessage): boolean {
+  return message.type === "follow_up_suggestions" || message.type === "recommendation_actions";
+}
+
+/*
+ * 지난 턴의 버튼을 걷어낸 메시지 목록. 되묻기는 통째로 지우지 않고 선택지만
+ * 비운다 — 그 메시지가 그 턴의 답변 자체라(agentMessages의 clarification 분기)
+ * 지우면 "질문 → (빈칸) → 사용자가 고른 답"이 되어 왜 그렇게 답했는지가 사라진다.
+ * 문구는 기록으로 남기고 누를 수 있는 것만 없앤다.
+ */
+function withoutPastTurnControls(messages: ChatMessage[]): ChatMessage[] {
+  return messages
+    .filter((message) => !isPastTurnControl(message))
+    .map((message) =>
+      message.type === "clarification" && message.options.length > 0
+        ? { ...message, options: [] }
+        : message,
+    );
+}
+
 /** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
 function buildInterpretationSummary(conditions: InterpretedConditions) {
   const categories =
@@ -320,14 +352,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
         messages: [
           ...state.messages,
-          {
-            id: createMessageId("result"),
-            type: "recommendation_result",
+          ...buildRecommendationMessages({
             recommendations: action.payload.recommendations,
-            unverified_recommendations: action.payload.unverified_recommendations,
-            elapsed_ms: action.payload.elapsed_ms_client,
-            server_elapsed_ms: action.payload.elapsed_ms,
-          },
+            unverifiedRecommendations: action.payload.unverified_recommendations,
+            elapsedMsClient: action.payload.elapsed_ms_client,
+            serverElapsedMs: action.payload.elapsed_ms,
+          }),
         ],
         phase: "ready",
         error: null,
@@ -400,7 +430,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           restored.push(
             ...(index === lastIndex
               ? turn
-              : turn.filter((item) => item.type !== "follow_up_suggestions")),
+              : withoutPastTurnControls(turn)),
           );
         });
       } else {
@@ -465,7 +495,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         last_turn_at: nowIso,
         messages: [
           ...freezeStreamingMessage(
-            state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+            withoutPastTurnControls(state.messages),
           ),
           /* 자리를 비웠다가 돌아와 이어 묻는 발화라면 그 위에 지금 시각을 둔다.
              바로 이어지는 발화에는 넣지 않는다 — 몇 분 간격의 줄이 계속 끼어들면
@@ -517,15 +547,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 },
               ]
             : []),
-          {
-            id: createMessageId("result"),
-            type: "recommendation_result",
+          ...buildRecommendationMessages({
             recommendations: recommendations.recommendations,
-            unverified_recommendations: recommendations.unverified_recommendations,
-            travel_origin_toggle: recommendations.travel_origin_toggle,
-            elapsed_ms: elapsedMsClient,
-            server_elapsed_ms: recommendations.elapsed_ms,
-          },
+            unverifiedRecommendations: recommendations.unverified_recommendations,
+            travelOriginToggle: recommendations.travel_origin_toggle,
+            elapsedMsClient,
+            serverElapsedMs: recommendations.elapsed_ms,
+          }),
         ],
       };
     }
@@ -810,8 +838,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return {
         ...state,
         messages: [
-          // 사진 검색도 새 턴이다 — START_CHAT_TURN과 같은 이유로 옛 제안을 걷어낸다.
-          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          // 사진 검색도 새 턴이다 — START_CHAT_TURN과 같은 이유로 옛 버튼을 걷어낸다.
+          ...withoutPastTurnControls(state.messages),
           {
             id: action.payload.messageId,
             type: "photo_similar_result",

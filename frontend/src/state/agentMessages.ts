@@ -14,13 +14,78 @@
  * 화면으로 나간 것이 아니라 개발자 화면의 부가 정보이고, 복원 대상도 아니다.
  */
 
-import type { AgentResponse, ChatMessage } from "../types";
+import type {
+  AgentResponse,
+  ChatMessage,
+  RecommendationItem,
+  TravelOriginToggle,
+} from "../types";
 
 export function createMessageId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/*
+ * 추천 응답 하나를 화면 메시지 셋으로 편다 — 카드 → 버튼 → 취향 표 순서다.
+ *
+ * **세 경로가 이 함수를 같이 쓴다**(단발 응답·스트리밍 result·레거시
+ * APPEND_RECOMMENDATIONS). 예전에 추천 메시지를 각자 조립하다가 한 곳만 고쳐져
+ * 경로에 따라 화면이 갈라진 적이 있어, 조립 규칙을 여기 한 벌만 둔다.
+ *
+ * 버튼을 따로 떼는 이유는 수명이다 — 다음 발화가 나가면 버튼 메시지만 걷어내고
+ * 카드와 표는 기록으로 남긴다(TripContext의 isPastTurnControl).
+ */
+export function buildRecommendationMessages({
+  recommendations,
+  unverifiedRecommendations,
+  travelOriginToggle,
+  elapsedMsClient,
+  serverElapsedMs,
+}: {
+  recommendations: RecommendationItem[];
+  unverifiedRecommendations: RecommendationItem[];
+  travelOriginToggle?: TravelOriginToggle | null;
+  elapsedMsClient: number;
+  serverElapsedMs: number;
+}): ChatMessage[] {
+  const messages: ChatMessage[] = [
+    {
+      id: createMessageId("result"),
+      type: "recommendation_result",
+      recommendations,
+      unverified_recommendations: unverifiedRecommendations,
+      travel_origin_toggle: travelOriginToggle,
+      elapsed_ms: elapsedMsClient,
+      server_elapsed_ms: serverElapsedMs,
+    },
+    {
+      id: createMessageId("result-actions"),
+      type: "recommendation_actions",
+      travel_origin_toggle: travelOriginToggle,
+      has_no_results: recommendations.length === 0 && unverifiedRecommendations.length === 0,
+    },
+  ];
+
+  const taggedItems = [...recommendations, ...unverifiedRecommendations].filter(
+    (item) => (item.preference_tags?.length ?? 0) > 0,
+  );
+  // 태그가 하나도 없으면 표가 스스로 null을 반환하므로 빈 메시지를 만들지 않는다.
+  if (taggedItems.length > 0) {
+    messages.push({
+      id: createMessageId("result-tags"),
+      type: "preference_tag_summary",
+      items: taggedItems.map((item) => ({
+        place_id: item.place_id,
+        name: item.name,
+        preference_tags: item.preference_tags,
+      })),
+    });
+  }
+
+  return messages;
 }
 
 interface BuildOptions {
@@ -52,15 +117,15 @@ export function buildAgentMessages(
    * 나가고 카드가 뒤따르므로 아래 순서를 그대로 둔다.
    */
   if (response.recommendations) {
-    messages.push({
-      id: createMessageId("result"),
-      type: "recommendation_result",
-      recommendations: response.recommendations.recommendations,
-      unverified_recommendations: response.recommendations.unverified_recommendations,
-      travel_origin_toggle: response.recommendations.travel_origin_toggle,
-      elapsed_ms: elapsedMsClient,
-      server_elapsed_ms: response.recommendations.elapsed_ms,
-    });
+    messages.push(
+      ...buildRecommendationMessages({
+        recommendations: response.recommendations.recommendations,
+        unverifiedRecommendations: response.recommendations.unverified_recommendations,
+        travelOriginToggle: response.recommendations.travel_origin_toggle,
+        elapsedMsClient,
+        serverElapsedMs: response.recommendations.elapsed_ms,
+      }),
+    );
   }
 
   if (message && clarificationOptions && clarificationOptions.length > 0) {

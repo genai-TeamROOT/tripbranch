@@ -22,7 +22,9 @@ import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { PhotoSimilarResultMessage } from "./PhotoSimilarResultMessage";
 import { PastRecommendationMessage } from "./PastRecommendationMessage";
+import { RecommendationActionsMessage } from "./RecommendationActionsMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
+import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
 import { SuggestedFollowUps } from "./SuggestedFollowUps";
@@ -401,19 +403,41 @@ export function ChatMessageList({
             );
           }
 
+          /* 추천 결과에서 갈라 나온 버튼. 새 발화가 나가면 이 메시지만 걷어내지므로
+             (TripContext의 isPastTurnControl) 지난 턴의 버튼은 화면에 남지 않는다. */
+          if (message.type === "recommendation_actions") {
+            return (
+              <RecommendationActionsMessage
+                key={message.id}
+                hasNoResults={message.has_no_results}
+                travelOriginToggle={message.travel_origin_toggle}
+                isLoading={isLoading}
+                onRequestMore={onRequestMore}
+                onRelaxRadius={onRelaxRadius}
+                onToggleTravelOrigin={onToggleTravelOrigin}
+                language={language}
+              />
+            );
+          }
+
+          if (message.type === "preference_tag_summary") {
+            return (
+              <PreferenceTagSummaryTable
+                key={message.id}
+                items={message.items}
+                language={language}
+              />
+            );
+          }
+
           return (
             <RecommendationResultMessage
               key={message.id}
               recommendations={message.recommendations}
               unverifiedRecommendations={message.unverified_recommendations}
-              travelOriginToggle={message.travel_origin_toggle}
               elapsedMs={message.elapsed_ms}
               serverElapsedMs={message.server_elapsed_ms}
               showElapsedTime={isDeveloperView}
-              isLoading={isLoading}
-              onRequestMore={onRequestMore}
-              onRelaxRadius={onRelaxRadius}
-              onToggleTravelOrigin={onToggleTravelOrigin}
               language={language}
             />
           );

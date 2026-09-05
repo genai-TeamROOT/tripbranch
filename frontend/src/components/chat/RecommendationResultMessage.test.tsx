@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
 
 import { TripProvider } from "../../state/TripContext";
-import type { RecommendationItem, TravelOriginToggle } from "../../types";
+import type { RecommendationItem } from "../../types";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 
 function item(overrides: Partial<RecommendationItem> = {}): RecommendationItem {
@@ -33,9 +33,6 @@ function renderResult(unverifiedRecommendations: RecommendationItem[]) {
       unverifiedRecommendations={unverifiedRecommendations}
       elapsedMs={0}
       serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
     />,
     { wrapper: TripProvider },
   );
@@ -55,31 +52,6 @@ it("운영시간 원문도 없는 후보만 확인 불가 섹션에 표시한다
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
   expect(screen.getByText("확인 불가")).toBeInTheDocument();
   expect(screen.queryByText("현재 운영시간이 아닌 장소")).not.toBeInTheDocument();
-});
-
-it("장소별 취향 태그와 문서 단위 언급 수를 표로 표시한다", () => {
-  renderResult([
-    item({
-      preference_tags: [
-        { code: "quiet", label: "조용히 머물기 좋은", mention_count: 7 },
-        { code: "date", label: "데이트하기 좋은", mention_count: 4 },
-        { code: "walk", label: "산책하기 좋은", mention_count: 3 },
-        { code: "nature", label: "자연을 즐기기 좋은", mention_count: 2 },
-      ],
-    }),
-  ]);
-
-  const table = screen.getByRole("table", { name: "장소별 방문자 취향 태그" });
-  expect(
-    screen.getByText("네이버 블로그 후기와 구글 지도 리뷰 약 30건에서 언급된 태그입니다."),
-  ).toBeInTheDocument();
-  expect(within(table).getByText("아키비스트 서촌")).toBeInTheDocument();
-  expect(within(table).getByText("조용히 머물기 좋은")).toBeInTheDocument();
-  expect(within(table).getByText("(7)")).toBeInTheDocument();
-  expect(within(table).getByText("데이트하기 좋은")).toBeInTheDocument();
-  expect(within(table).getByText("(4)")).toBeInTheDocument();
-  expect(within(table).queryByText("산책하기 좋은")).not.toBeInTheDocument();
-  expect(within(table).queryByText("자연을 즐기기 좋은")).not.toBeInTheDocument();
 });
 
 it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연다", async () => {
@@ -117,9 +89,6 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
       unverifiedRecommendations={[]}
       elapsedMs={0}
       serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
     />,
     { wrapper: TripProvider },
   );
@@ -148,109 +117,4 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-// --- 비차단형 전환 버튼(TravelOriginToggle, D-071) ---------------------------
-
-function toggle(overrides: Partial<TravelOriginToggle> = {}): TravelOriginToggle {
-  return {
-    alternative_origin: "search_center",
-    alternative_origin_name: "안국역",
-    ...overrides,
-  };
-}
-
-it("travelOriginToggle이 없으면 전환 버튼을 렌더링하지 않는다", () => {
-  render(
-    <RecommendationResultMessage
-      recommendations={[item()]}
-      unverifiedRecommendations={[]}
-      elapsedMs={0}
-      serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
-    />,
-    { wrapper: TripProvider },
-  );
-
-  expect(screen.queryByText(/기준으로 다시 보기/)).not.toBeInTheDocument();
-});
-
-it("travelOriginToggle이 있으면 대상 이름을 딴 전환 버튼을 렌더링하고 클릭 시 그대로 넘긴다", async () => {
-  const user = userEvent.setup();
-  const onToggleTravelOrigin = vi.fn();
-  render(
-    <RecommendationResultMessage
-      recommendations={[item()]}
-      unverifiedRecommendations={[]}
-      travelOriginToggle={toggle()}
-      elapsedMs={0}
-      serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
-      onToggleTravelOrigin={onToggleTravelOrigin}
-    />,
-    { wrapper: TripProvider },
-  );
-
-  const button = screen.getByRole("button", { name: "안국역 기준으로 다시 보기" });
-  await user.click(button);
-
-  expect(onToggleTravelOrigin).toHaveBeenCalledWith(toggle());
-});
-
-it("영어 화면에서는 추천 카드의 고정 문구와 전환 버튼을 영어로 표시한다", () => {
-  render(
-    <RecommendationResultMessage
-      recommendations={[
-        item({
-          remaining_minutes: 120,
-          recommendation_reason: "날씨·운영시간·거리 조건을 종합한 1순위 추천이에요.",
-        }),
-      ]}
-      unverifiedRecommendations={[]}
-      travelOriginToggle={toggle({ alternative_origin_name: "Myeongdong" })}
-      elapsedMs={0}
-      serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
-      onToggleTravelOrigin={() => {}}
-      language="en"
-    />,
-    { wrapper: TripProvider },
-  );
-
-  expect(screen.getByText("Here are some places that match your preferences.")).toBeInTheDocument();
-  expect(screen.getByText("Recommended places")).toBeInTheDocument();
-  expect(
-    screen.getByText("Recommended #1 based on weather, opening hours, and distance."),
-  ).toBeInTheDocument();
-  expect(screen.getByText("Preview")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show more places" })).toBeInTheDocument();
-  expect(
-    screen.getByRole("button", { name: "View results based on Myeongdong" }),
-  ).toBeInTheDocument();
-});
-
-it("결과가 0건이어도 travelOriginToggle이 있으면 반경 확대 버튼과 함께 전환 버튼을 보여준다", () => {
-  render(
-    <RecommendationResultMessage
-      recommendations={[]}
-      unverifiedRecommendations={[]}
-      travelOriginToggle={toggle({ alternative_origin_name: "혜화역" })}
-      elapsedMs={0}
-      serverElapsedMs={0}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
-      onToggleTravelOrigin={() => {}}
-    />,
-    { wrapper: TripProvider },
-  );
-
-  expect(screen.getByText("조건에 맞는 장소를 찾지 못했어요.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "혜화역 기준으로 다시 보기" })).toBeInTheDocument();
 });

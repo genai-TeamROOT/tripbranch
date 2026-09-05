@@ -554,6 +554,82 @@ test("requesting more places sends a follow-up chat turn with the session id", a
   expect(requestBody.user_input).toBe("다른 곳 보여줘");
 });
 
+test("지난 턴의 추천 버튼은 새 턴이 오면 사라지고 카드는 남는다", async () => {
+  /*
+   * 옛 버튼이 남아 있으면 그때 기준의 요청이 지금 맥락으로 나가 결과가 어긋난다.
+   * 그래서 버튼만 별도 메시지로 두고 새 발화에서 걷어낸다 — 카드와 취향 표는
+   * 그때 무엇을 받았는지 보여주는 기록이라 그대로 남긴다.
+   */
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "다른 장소 보기" })).toHaveLength(1);
+
+  await userEvent.click(screen.getByRole("button", { name: "다른 장소 보기" }));
+
+  // 카드는 두 턴 것이 모두 남는다.
+  await waitFor(() => expect(screen.getAllByText("테스트 박물관")).toHaveLength(2));
+  // 버튼은 방금 턴의 것 하나뿐이다.
+  expect(screen.getAllByRole("button", { name: "다른 장소 보기" })).toHaveLength(1);
+});
+
+test("지난 턴의 되묻기 선택지는 새 턴이 오면 사라지고 문구는 남는다", async () => {
+  /*
+   * 되묻기는 통째로 지우지 않는다 — 그 메시지가 그 턴의 답변이라, 지우면
+   * "질문 → (빈칸) → 사용자가 고른 답"이 되어 왜 그 답을 했는지 알 수 없다.
+   * 누를 수 있는 것만 없애고 문구는 기록으로 남긴다.
+   */
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  let chatTurn = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        chatTurn += 1;
+        // 첫 턴만 되묻는다. 선택지를 누르면 그것이 다음 발화가 되어 두 번째 턴이 된다.
+        if (chatTurn === 1) {
+          return streamResponse({
+            llm_output: {
+              ...interpretResponse,
+              recommend: null,
+              clarification: {
+                options: [
+                  { id: "indoor", label: "실내" },
+                  { id: "outdoor", label: "실외" },
+                ],
+              },
+            },
+            state: { session_id: "sess_test", run_id: "run_test" },
+            recommendations: null,
+            message: "실내와 실외 중 어디가 좋으세요?",
+          });
+        }
+        return streamResponse();
+      }
+      if (url.endsWith("/sessions")) return Response.json({ sessions: [] });
+      if (url.endsWith("/schedules")) return Response.json({ items: [] });
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("실내와 실외 중 어디가 좋으세요?")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "실내" }));
+
+  // 다음 턴이 도착하면 선택지는 사라진다.
+  await waitFor(() => expect(screen.queryByRole("button", { name: "실외" })).not.toBeInTheDocument());
+  // 무엇을 물었는지는 기록으로 남는다.
+  expect(screen.getByText("실내와 실외 중 어디가 좋으세요?")).toBeInTheDocument();
+});
+
 test("clarification turn hints a fuller phrasing in the composer placeholder", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   // 위치를 말하지 않아 Agent가 되묻는 상황: 추천 없이 메시지만 온다.

@@ -150,6 +150,15 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (message.type === "follow_up_suggestions") {
     return Array.isArray(message.suggestions);
   }
+  /* 추천 결과에서 갈라져 나온 버튼과 취향 표. 위와 같은 이유로 케이스를 반드시
+     둔다 — 빠지면 추천이 한 번이라도 나온 대화가 새로고침에서 통째로 버려진다.
+     같은 버그의 여섯 번째·일곱 번째가 될 자리다. */
+  if (message.type === "recommendation_actions") {
+    return typeof message.has_no_results === "boolean";
+  }
+  if (message.type === "preference_tag_summary") {
+    return Array.isArray(message.items);
+  }
   return false;
 }
 
