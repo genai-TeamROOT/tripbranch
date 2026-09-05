@@ -151,6 +151,13 @@ data: {
   "elapsed_ms": 0
 }
 
+event: location_resolved
+data: {
+  "elapsed_ms": 900,
+  "current_location": "안국역",
+  "search_center": "광화문역"
+}
+
 event: result
 data: {
   "state": { "session_id": "...", "run_id": "...", "...": "..." },
@@ -188,6 +195,15 @@ data: {
 `result`는 카드 렌더링에 필요한 확정 데이터만 먼저 담는다. `message`는 비워 두고,
 `message_delta`로 누적한다. `done.response`는 저장·Audit·재현에 쓰는 완전한 최종
 `AgentResponse`다.
+
+`location_resolved`는 조건 병합(`apply()`) 직후, `fetching_context` 진행 이벤트보다
+앞서 나간다. 이번 턴이 실제로 쓸 출발지·검색 기준이 그 시점에 확정되고, 화면
+우상단 위치 칩이 이 값을 보여준다 — `done`까지 기다리면 도구 조회·채점·답변
+스트리밍이 모두 끝난 뒤라, 발화로 위치를 바꿔도 결과가 다 나올 때까지 이전 위치가
+그대로 보인다. 모든 Intent가 지나가는 공통 경로에서 보내며, 두 값은 각각 null일 수
+있다(그때는 서버도 위치를 모른다는 뜻이라 화면은 지금 값을 유지한다). 영어 요청에서도
+숨기지 않는다 — 장소 이름은 번역 대상이 아니고 `done.response.state`가 어차피 같은
+값을 담아 온다. 단발 `POST /api/chat`에는 이 이벤트가 없다.
 
 **`follow_ups`는 `done` 뒤에 오는 유일한 이벤트다**(D-102). 후속 질문 생성은 답변이
 이미 화면에 다 뜬 뒤에 도는 LLM 호출이라, `done` 앞에 두면 그 시간만큼 턴이 안 끝나

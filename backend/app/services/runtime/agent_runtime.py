@@ -3231,6 +3231,22 @@ async def _run_agent_flow(
         except Exception:
             logger.warning("조건 병합 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
+    # 이번 턴이 쓸 위치가 여기서 확정된다 — 화면 우상단 위치 칩이 이 값을 보여준다.
+    # done까지 기다리면 도구 조회(fetching_context)와 채점(scoring), 답변 스트리밍이
+    # 전부 끝난 뒤라, 사용자는 "광화문역 근처"라고 말해 놓고 결과가 다 나올 때까지
+    # 이전 위치를 보게 된다. 그 사이가 이 턴에서 제일 긴 구간이다.
+    #
+    # 모든 Intent가 지나가는 공통 경로다. 단발 POST /api/chat은 sink가 없어 그냥
+    # 통과하고, 화면은 done의 state로 같은 값을 다시 받는다.
+    await _emit_stream_event(
+        stream_event_sink,
+        "location_resolved",
+        {
+            "current_location": state_response.user_conditions.current_location,
+            "search_center": state_response.user_conditions.search_center,
+        },
+    )
+
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
 

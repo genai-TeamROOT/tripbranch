@@ -268,6 +268,13 @@ export function DeveloperChatPage() {
               });
               return;
             }
+            if (event.type === "location_resolved") {
+              /* 개발자 화면은 위치 설정을 쓰지 않는다 — 발화 요청에
+                 selected_search_center를 싣지도 않고 상단 위치 칩도 없다.
+                 반영할 곳이 없으니 흘려보내되, 분기는 둬야 아래 done 처리가
+                 이 이벤트까지 done으로 좁혀 읽지 않는다. */
+              return;
+            }
             if (event.type === "error") throw new ApiError(event.data);
             const response = event.data.response;
             const elapsedMsClient = performance.now() - startedAt;
