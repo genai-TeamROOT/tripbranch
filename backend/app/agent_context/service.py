@@ -46,6 +46,7 @@ from app.agent_context.info_field_rules import (
     resolve_stroller_rental,
 )
 from app.agent_context.info_schemas import (
+    CommercialPaymentCategoryInfo,
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
     EventInfoResult,
@@ -55,11 +56,13 @@ from app.agent_context.info_schemas import (
     PlaceCard,
     PlaceInfoResult,
     PlacePhotoItem,
+    PopulationAgeShareInfo,
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    SeoulRealtimeSummaryInfo,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
@@ -101,7 +104,9 @@ from app.domain.models import (
     RealtimeBusStop,
     RealtimeCityEvent,
     RealtimeCommercialCategory,
+    RealtimeCommercialResult,
     RealtimeParkingLot,
+    RealtimePopulationResult,
     RealtimeSubwayArrival,
 )
 from app.errors import AppError
@@ -968,6 +973,11 @@ class ContextService:
                 else [],
                 source_url=_CITYDATA_SOURCE_URL,
                 map_url=_seoul_realtime_map_url(area),
+                # 상권 값은 별도 호출이 아니라 방금 받은 같은 응답에서 꺼낸다.
+                realtime_summary=_to_seoul_realtime_summary(
+                    population,
+                    tool_result.citydata.commercial if tool_result.citydata is not None else None,
+                ),
                 stale_area_detected=stale_area_detected,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
@@ -1166,6 +1176,7 @@ class ContextService:
                     area_activity_level=commercial.area_activity_level,
                 ),
                 source_url=_CITYDATA_SOURCE_URL,
+                realtime_summary=_to_seoul_realtime_summary(population, commercial),
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -2386,6 +2397,72 @@ def _select_commercial_category(
         ):
             return label, category.activity_level
     return None
+
+
+def _top_payment_categories(
+    categories: tuple[RealtimeCommercialCategory, ...],
+) -> list[CommercialPaymentCategoryInfo]:
+    """결제 금액이 큰 순서로 업종 최대 3건을 고른다.
+
+    서울시가 준 업종을 거르지 않는다 — 강남역은 금액 1위가 "의료 · 병원"인데
+    여행지 카드에 안 어울린다고 빼면, 우리가 만든 순위를 서울시 데이터인 것처럼
+    보여주게 된다. 금액은 구간으로만 오므로 상한 기준으로 정렬하고 상한이 없으면
+    하한으로 대신한다(둘 다 없는 업종은 순위에서 빠진다).
+    """
+
+    ranked = [
+        (category, category.payment_amount_max or category.payment_amount_min)
+        for category in categories
+    ]
+    ranked = [(category, amount) for category, amount in ranked if amount is not None]
+    ranked.sort(key=lambda pair: pair[1], reverse=True)
+    return [
+        CommercialPaymentCategoryInfo(
+            label=" · ".join(
+                value
+                for value in (category.large_category, category.middle_category)
+                if value is not None
+            )
+            or "기타",
+            activity_level=category.activity_level,
+            payment_count=category.payment_count,
+            payment_amount_min=category.payment_amount_min,
+            payment_amount_max=category.payment_amount_max,
+        )
+        for category, _ in ranked[:3]
+    ]
+
+
+def _to_seoul_realtime_summary(
+    population: RealtimePopulationResult | None,
+    commercial: RealtimeCommercialResult | None,
+) -> SeoulRealtimeSummaryInfo | None:
+    """같은 citydata 응답의 인구·상권 값을 공통 요약 한 덩이로 묶는다.
+
+    두 구획은 서로 독립이다 — 상권 미제공 지역(121곳 중 39곳, D-084)은 인구만,
+    인구 값이 비면 상권만 찬다. 둘 다 비면 아예 만들지 않아 소비 측이 빈 구획을
+    그리지 않게 한다.
+    """
+
+    summary = SeoulRealtimeSummaryInfo(
+        population_min=population.current_population_min if population is not None else None,
+        population_max=population.current_population_max if population is not None else None,
+        age_shares=[
+            PopulationAgeShareInfo(label=share.label, rate=share.rate)
+            for share in (population.age_shares if population is not None else ())
+        ],
+        commercial_level=commercial.area_activity_level if commercial is not None else None,
+        commercial_observed_at=commercial.observed_at if commercial is not None else None,
+        payment_count=commercial.payment_count if commercial is not None else None,
+        payment_amount_min=commercial.payment_amount_min if commercial is not None else None,
+        payment_amount_max=commercial.payment_amount_max if commercial is not None else None,
+        top_payment_categories=_top_payment_categories(
+            commercial.categories if commercial is not None else ()
+        ),
+    )
+    has_population = summary.population_max is not None or bool(summary.age_shares)
+    has_commercial = summary.commercial_level is not None or bool(summary.top_payment_categories)
+    return summary if has_population or has_commercial else None
 
 
 def _to_commercial_detail_items(

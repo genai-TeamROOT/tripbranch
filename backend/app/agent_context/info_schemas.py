@@ -138,6 +138,47 @@ class RealtimeInfoDetailItem(BaseModel):
     longitude: float | None = None
 
 
+class PopulationAgeShareInfo(BaseModel):
+    """실시간 인구의 연령대별 비율 한 건. 순서는 어린 연령대부터다."""
+
+    label: str
+    rate: float = Field(ge=0)
+
+
+class CommercialPaymentCategoryInfo(BaseModel):
+    """업종 한 건의 최근 10분 결제 실적. 금액 단위는 원이고 구간으로만 온다."""
+
+    label: str
+    activity_level: str | None = None
+    payment_count: int | None = Field(default=None, ge=0)
+    payment_amount_min: int | None = Field(default=None, ge=0)
+    payment_amount_max: int | None = Field(default=None, ge=0)
+
+
+class SeoulRealtimeSummaryInfo(BaseModel):
+    """서울시 실시간 도시데이터 한 응답에서 뽑은 인구·상권 공통 요약.
+
+    ``concentration``과 ``realtime_commercial``은 둘 다 같은 ``citydata`` 응답
+    하나를 받아오므로, 어느 쪽 질문이든 같은 요약을 채울 수 있다 — 추가 호출이
+    없다는 게 이 모델을 두 결과에 함께 매다는 이유다.
+
+    상권 구획(``commercial_*``·``payment_*``)은 서울시가 인구 121곳 중 82곳에만
+    제공한다(D-084). 경복궁처럼 빠지는 지역에서는 인구 값만 차고 상권 값은 전부
+    ``None``이므로, 소비 측은 값이 없는 구획을 통째로 감춘다.
+    """
+
+    population_min: int | None = Field(default=None, ge=0)
+    population_max: int | None = Field(default=None, ge=0)
+    age_shares: list[PopulationAgeShareInfo] = Field(default_factory=list)
+    commercial_level: str | None = None
+    commercial_observed_at: str | None = None
+    payment_count: int | None = Field(default=None, ge=0)
+    payment_amount_min: int | None = Field(default=None, ge=0)
+    payment_amount_max: int | None = Field(default=None, ge=0)
+    # 결제 금액이 큰 순서로 최대 3건. 서울시 원문 업종을 거르지 않고 그대로 싣는다.
+    top_payment_categories: list[CommercialPaymentCategoryInfo] = Field(default_factory=list)
+
+
 class RealtimeCommercialInfoResult(BaseModel):
     """서울시 실시간 상권현황을 지역·업종 기준으로 정규화한 결과.
 
@@ -161,6 +202,7 @@ class RealtimeCommercialInfoResult(BaseModel):
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
     detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
     source_url: str | None = None
+    realtime_summary: SeoulRealtimeSummaryInfo | None = None
     error: ContextError | None = None
 
 
@@ -184,6 +226,7 @@ class RealtimePopulationInfoResult(BaseModel):
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
     source_url: str | None = None
     map_url: str | None = None
+    realtime_summary: SeoulRealtimeSummaryInfo | None = None
     error: ContextError | None = None
     # 우리 121곳 목록엔 없지만 서울시 API는 지원하는 지역을 찾았을 때만 채워진다
     # (TP-141/D-084). 응답 판정(area_name 등)에는 영향을 주지 않는다 — 감사

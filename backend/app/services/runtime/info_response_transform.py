@@ -8,10 +8,12 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PopulationAgeShareInfo,
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimePopulationInfoResult,
+    SeoulRealtimeSummaryInfo,
 )
 from app.agent_context.info_schemas import (
     RealtimeInfoDetailItem as ContextRealtimeInfoDetailItem,
@@ -23,6 +25,8 @@ from app.schemas import (
     PopulationForecastBar,
     QuestionType,
     RealtimeInfoDetailItem,
+    SeoulRealtimePaymentCategory,
+    SeoulRealtimeSummary,
 )
 from app.services.runtime.info_display import (
     format_citydata_timestamp,
@@ -35,10 +39,10 @@ from app.services.runtime.info_display import (
 _CONGESTION_LEVEL_RANK = {"여유": 0, "보통": 1, "약간 붐빔": 2, "붐빔": 3}
 
 
-def _summarize_population_peak(
+def _peak_forecast(
     observed_at: str | None, forecasts: list[PopulationForecastInfo]
-) -> str | None:
-    """향후 예측 중 가장 붐비는 시간대를 한 줄 요약으로 만든다.
+) -> tuple[PopulationForecastInfo, int] | None:
+    """향후 예측 중 가장 붐비는 슬롯과 몇 시간 뒤인지를 고른다.
 
     과거 추이는 서울시 API가 애초에 제공하지 않아(미래 방향만 응답) 다루지
     않는다. 관측 시각과 예측 시각을 둘 다 실제 파싱해 시간 차를 구한다 —
@@ -76,7 +80,20 @@ def _summarize_population_peak(
             best_forecast, best_rank, best_hours_ahead = forecast, rank, hours_ahead
     if best_forecast is None or best_hours_ahead is None or best_hours_ahead <= 0:
         return None
+    if parse_citydata_timestamp(best_forecast.forecast_at) is None:
+        return None
+    return best_forecast, best_hours_ahead
 
+
+def _summarize_population_peak(
+    observed_at: str | None, forecasts: list[PopulationForecastInfo]
+) -> str | None:
+    """가장 붐빌 시간대를 카드에 실을 한 줄 요약으로 만든다."""
+
+    peak = _peak_forecast(observed_at, forecasts)
+    if peak is None:
+        return None
+    best_forecast, best_hours_ahead = peak
     peak_at = parse_citydata_timestamp(best_forecast.forecast_at)
     if peak_at is None:
         return None
@@ -84,6 +101,89 @@ def _summarize_population_peak(
     return (
         f"{peak_at.hour}시({best_hours_ahead}시간 후)에 가장 붐빌 것으로 예상돼요. "
         f"혼잡정도는 {level}일 것으로 예상돼요."
+    )
+
+
+def _peak_forecast_hour_label(
+    observed_at: str | None, forecasts: list[PopulationForecastInfo]
+) -> tuple[str, str | None] | None:
+    """가장 붐빌 시간대를 "오후 5시" 꼴 짧은 라벨과 그때의 단계로 돌려준다.
+
+    서울시 앱의 "오늘의 인기 시간대"와 달리 이건 과거를 포함한 하루 통계가
+    아니라 앞으로의 예측이다 — 원본이 미래 12시간만 주기 때문이다(D-090).
+    """
+
+    peak = _peak_forecast(observed_at, forecasts)
+    if peak is None:
+        return None
+    best_forecast, _ = peak
+    peak_at = parse_citydata_timestamp(best_forecast.forecast_at)
+    if peak_at is None:
+        return None
+    meridiem = "오전" if peak_at.hour < 12 else "오후"
+    return f"{meridiem} {peak_at.hour % 12 or 12}시", best_forecast.congestion_level
+
+
+def _top_age_share(shares: list[PopulationAgeShareInfo]) -> PopulationAgeShareInfo | None:
+    """비율이 가장 높은 연령대 한 건. 동률이면 어린 연령대가 이긴다(응답 순서)."""
+
+    return max(shares, key=lambda share: share.rate, default=None)
+
+
+def _is_not_busier_than_now(peak_level: str | None, current_level: str | None) -> bool:
+    """예측 피크가 현재보다 더 붐비지 않는지 본다.
+
+    두 단계 중 하나라도 우리가 모르는 값이면 판단하지 않고 False를 돌려준다 —
+    모르는 단계 때문에 있는 정보를 감추지 않는다.
+    """
+
+    peak_rank = _CONGESTION_LEVEL_RANK.get(peak_level or "")
+    current_rank = _CONGESTION_LEVEL_RANK.get(current_level or "")
+    if peak_rank is None or current_rank is None:
+        return False
+    return peak_rank <= current_rank
+
+
+def _to_seoul_realtime_summary(
+    summary: SeoulRealtimeSummaryInfo | None,
+    *,
+    observed_at: str | None,
+    forecasts: list[PopulationForecastInfo],
+    current_level: str | None,
+) -> SeoulRealtimeSummary | None:
+    """C의 실시간 요약을 카드 계약으로 옮기고, 표시용 라벨만 여기서 만든다."""
+
+    if summary is None:
+        return None
+    peak = _peak_forecast_hour_label(observed_at, forecasts)
+    if peak is not None and _is_not_busier_than_now(peak[1], current_level):
+        # 지금이 이미 예측 피크만큼 붐비면 "가장 붐빌 시간대"라고 짚을 시각이
+        # 없다. 그대로 두면 강남역처럼 현재 붐빔·예측 최고 약간 붐빔인 지역에서
+        # 지금보다 덜 붐비는 시각을 피크로 보여준다(2026-09-05 실측).
+        peak = None
+    top_age = _top_age_share(summary.age_shares)
+    return SeoulRealtimeSummary(
+        population_min=summary.population_min,
+        population_max=summary.population_max,
+        peak_forecast_hour_label=peak[0] if peak is not None else None,
+        peak_forecast_level=peak[1] if peak is not None else None,
+        top_age_label=top_age.label if top_age is not None else None,
+        top_age_rate=top_age.rate if top_age is not None else None,
+        commercial_level=summary.commercial_level,
+        commercial_observed_at=format_citydata_timestamp(summary.commercial_observed_at),
+        payment_count=summary.payment_count,
+        payment_amount_min=summary.payment_amount_min,
+        payment_amount_max=summary.payment_amount_max,
+        top_payment_categories=[
+            SeoulRealtimePaymentCategory(
+                label=category.label,
+                activity_level=category.activity_level,
+                payment_count=category.payment_count,
+                payment_amount_min=category.payment_amount_min,
+                payment_amount_max=category.payment_amount_max,
+            )
+            for category in summary.top_payment_categories
+        ],
     )
 
 
@@ -275,6 +375,12 @@ def _to_realtime_commercial_card(
         realtime_observed_at=format_citydata_timestamp(result.observed_at),
         realtime_source_url=result.source_url,
         realtime_detail_items=_to_realtime_detail_items(result.detail_items),
+        seoul_realtime_summary=_to_seoul_realtime_summary(
+            result.realtime_summary,
+            observed_at=result.population_observed_at,
+            forecasts=result.population_forecasts,
+            current_level=result.population_current_level,
+        ),
     )
 
 
@@ -330,6 +436,12 @@ def _to_realtime_population_card(
             ]
             if result.current_congestion_message is not None
             else []
+        ),
+        seoul_realtime_summary=_to_seoul_realtime_summary(
+            result.realtime_summary,
+            observed_at=result.observed_at,
+            forecasts=result.population_forecasts,
+            current_level=result.current_congestion_level,
         ),
     )
 

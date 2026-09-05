@@ -1,6 +1,7 @@
 """INFO 장소 상세 카드의 C→A 최종 응답 변환을 검증한다."""
 
 from app.agent_context.info_schemas import (
+    CommercialPaymentCategoryInfo,
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
     EventInfoResult,
@@ -9,10 +10,13 @@ from app.agent_context.info_schemas import (
     PlaceCard,
     PlaceInfoResult,
     PlacePhotoItem,
+    PopulationAgeShareInfo,
+    PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    SeoulRealtimeSummaryInfo,
 )
 from app.services.runtime.info_response_transform import to_info_place_card
 
@@ -294,6 +298,160 @@ def test_realtime_commercial_area_overall_card_discloses_scope() -> None:
 
     assert card is not None
     assert card.answer_fields["상권 기준"] == "지역 전체 상권 (요청 업종 세부값 미제공)"
+
+
+def test_realtime_population_card_carries_seoul_realtime_summary() -> None:
+    """인구 혼잡도 카드는 같은 citydata 응답의 상권 값까지 함께 싣는다."""
+
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="summary-card",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="강남역",
+                area_name="강남역",
+                current_congestion_level="보통",
+                observed_at="2026-09-05 16:25",
+                population_forecasts=[
+                    PopulationForecastInfo(
+                        forecast_at="2026-09-05 17:00",
+                        congestion_level="붐빔",
+                        population_min=76000,
+                        population_max=78000,
+                    ),
+                    PopulationForecastInfo(
+                        forecast_at="2026-09-05 18:00",
+                        congestion_level="여유",
+                        population_min=20000,
+                        population_max=22000,
+                    ),
+                ],
+                realtime_summary=SeoulRealtimeSummaryInfo(
+                    population_min=78000,
+                    population_max=80000,
+                    age_shares=[
+                        PopulationAgeShareInfo(label="10대", rate=6.3),
+                        PopulationAgeShareInfo(label="20대", rate=29.0),
+                    ],
+                    commercial_level="보통",
+                    commercial_observed_at="20260905 1640",
+                    payment_count=329,
+                    payment_amount_min=7_900_000,
+                    payment_amount_max=8_000_000,
+                    top_payment_categories=[
+                        CommercialPaymentCategoryInfo(
+                            label="의료 · 병원",
+                            activity_level="한산한",
+                            payment_amount_min=1_300_000,
+                            payment_amount_max=1_400_000,
+                        )
+                    ],
+                ),
+            ),
+        )
+    )
+
+    assert card is not None
+    summary = card.seoul_realtime_summary
+    assert summary is not None
+    assert (summary.population_min, summary.population_max) == (78_000, 80_000)
+    assert (summary.top_age_label, summary.top_age_rate) == ("20대", 29.0)
+    # 예측 피크(붐빔)가 현재(보통)보다 붐비므로 짚어준다.
+    assert summary.peak_forecast_hour_label == "오후 5시"
+    assert summary.peak_forecast_level == "붐빔"
+    assert summary.commercial_observed_at == "9월 5일 16:40"
+    assert summary.top_payment_categories[0].label == "의료 · 병원"
+
+
+def test_seoul_realtime_summary_drops_peak_when_now_is_already_busier() -> None:
+    """지금이 이미 예측 피크만큼 붐비면 "가장 붐빌 시간대"를 비운다.
+
+    강남역 실측(2026-09-05 16:25)이 현재 붐빔·예측 최고 약간 붐빔이었다 —
+    그대로 두면 지금보다 덜 붐비는 시각을 피크라고 보여준다.
+    """
+
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="summary-peak",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="강남역",
+                area_name="강남역",
+                current_congestion_level="붐빔",
+                observed_at="2026-09-05 16:25",
+                population_forecasts=[
+                    PopulationForecastInfo(
+                        forecast_at="2026-09-05 17:00",
+                        congestion_level="약간 붐빔",
+                        population_min=76000,
+                        population_max=78000,
+                    ),
+                    PopulationForecastInfo(
+                        forecast_at="2026-09-05 18:00",
+                        congestion_level="보통",
+                        population_min=40000,
+                        population_max=42000,
+                    ),
+                ],
+                realtime_summary=SeoulRealtimeSummaryInfo(
+                    population_min=78000, population_max=80000
+                ),
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.seoul_realtime_summary is not None
+    assert card.seoul_realtime_summary.peak_forecast_hour_label is None
+    # 기존 요약 문장은 이 가드와 무관하게 그대로 둔다.
+    assert card.population_peak_forecast_summary is not None
+
+
+def test_realtime_commercial_card_carries_seoul_realtime_summary() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="commercial-summary",
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name="테스트 카페",
+                area_name="용리단길",
+                commercial_level="바쁜 시간대",
+                realtime_summary=SeoulRealtimeSummaryInfo(
+                    commercial_level="바쁜 시간대",
+                    payment_amount_min=1_600_000,
+                    payment_amount_max=1_700_000,
+                ),
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.seoul_realtime_summary is not None
+    assert card.seoul_realtime_summary.payment_amount_max == 1_700_000
+
+
+def test_card_without_summary_leaves_seoul_realtime_summary_empty() -> None:
+    """상권·인구 값이 아예 없는 지역이면 C가 요약을 안 보내고, 카드도 비운다."""
+
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="no-summary",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                area_name="경복궁",
+                current_congestion_level="여유",
+                observed_at="2026-09-05 16:25",
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.seoul_realtime_summary is None
 
 
 def test_realtime_city_card_keeps_detail_items_and_data_source() -> None:

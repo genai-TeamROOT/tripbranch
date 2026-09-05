@@ -46,6 +46,7 @@ import {
   PopulationForecastBars,
   RoadTrafficStatusSection,
 } from "./CongestionForecastBars";
+import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
 
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
@@ -1730,6 +1731,7 @@ export function RecommendationDetailPreviewModal({
                   <section className="overflow-hidden rounded-xl border border-border bg-white">
                     <ConcentrationForecastBars card={detailCard} />
                     <PopulationForecastBars card={detailCard} />
+                    <SeoulRealtimeSummarySection card={detailCard} />
                     <RoadTrafficStatusSection card={detailCard} />
                   </section>
                 )}

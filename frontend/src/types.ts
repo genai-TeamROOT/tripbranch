@@ -320,6 +320,43 @@ export interface InfoPlaceCard {
   realtime_source_url?: string | null;
   realtime_map_url?: string | null;
   realtime_detail_items?: RealtimeInfoDetailItem[];
+  /**
+   * 서울시 실시간 인구·상권 요약. 실시간 혼잡도(concentration)와 실시간 상권
+   * (realtime_commercial) 카드에만 실린다 — 두 유형만 서울시 citydata를 이미
+   * 호출하므로 추가 호출 없이 채울 수 있다.
+   */
+  seoul_realtime_summary?: SeoulRealtimeSummary | null;
+}
+
+export interface SeoulRealtimePaymentCategory {
+  label: string;
+  activity_level?: string | null;
+  payment_count?: number | null;
+  /** 최근 10분 결제 금액 구간(원). 서울시가 단일 값을 주지 않는다. */
+  payment_amount_min?: number | null;
+  payment_amount_max?: number | null;
+}
+
+export interface SeoulRealtimeSummary {
+  /** 현재 인구 지표 구간(명). 현재 단계·기준 시각은 population_* 필드에 있다. */
+  population_min?: number | null;
+  population_max?: number | null;
+  /**
+   * 앞으로 가장 붐빌 시간대. 서울시 앱의 "오늘의 인기 시간대"와 달리 과거를 포함한
+   * 하루 통계가 아니라 예측이다 — 원본이 미래 12시간만 준다. 지금이 이미 예측
+   * 피크만큼 붐비면 백엔드가 비워 보낸다.
+   */
+  peak_forecast_hour_label?: string | null;
+  peak_forecast_level?: string | null;
+  top_age_label?: string | null;
+  top_age_rate?: number | null;
+  /** 상권 구획은 서울시가 121곳 중 82곳에만 제공한다 — 없으면 통째로 감춘다. */
+  commercial_level?: string | null;
+  commercial_observed_at?: string | null;
+  payment_count?: number | null;
+  payment_amount_min?: number | null;
+  payment_amount_max?: number | null;
+  top_payment_categories?: SeoulRealtimePaymentCategory[];
 }
 
 export interface PopulationForecastBar {
