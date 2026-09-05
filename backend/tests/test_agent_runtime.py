@@ -381,7 +381,8 @@ async def test_recommend_stream_shows_template_and_cards_before_llm_tip() -> Non
     )
 
     names = [event for event, _ in events]
-    assert names[:4] == ["progress", "progress", "progress", "progress"]
+    # 조건 병합 직후의 location_resolved가 두 번째 progress 뒤에 끼어든다.
+    assert names[:4] == ["progress", "progress", "location_resolved", "progress"]
     assert names.index("result") < names.index("message_start") < names.index("message_delta")
     result_payload = next(payload for event, payload in events if event == "result")
     assert result_payload["message"] == "이런 곳들을 찾아봤어요:"
@@ -396,6 +397,87 @@ async def test_recommend_stream_shows_template_and_cards_before_llm_tip() -> Non
         "".join(payload["text"] for event, payload in events if event == "message_delta")
         == response.message
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_the_resolved_location_before_fetching_context() -> None:
+    """위치는 조건 병합에서 확정된다 — 도구 조회를 기다릴 이유가 없다.
+
+    **순서가 이 이벤트의 전부다.** done까지 미루면 도구 조회(fetching_context)와
+    채점(scoring), 답변 스트리밍이 모두 끝난 뒤라 — 그 사이가 턴에서 제일 긴
+    구간이다 — 사용자는 "광화문역 근처"라고 말해 놓고 결과가 다 나올 때까지
+    화면 우상단에서 이전 위치를 보게 된다.
+    """
+
+    store = InMemoryStateStore()
+    providers = _providers()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        stream_event_sink=sink,
+        stream_recommendation_summary=True,
+        **providers,
+    )
+
+    names = [event for event, _ in events]
+    stages = [payload["stage"] for event, payload in events if event == "progress"]
+    resolved = next(payload for event, payload in events if event == "location_resolved")
+
+    assert names.index("location_resolved") < names.index("result")
+    assert stages.index("merging_conditions") < stages.index("fetching_context")
+    # progress는 이벤트 목록에서 stage와 함께 세야 위치를 집을 수 있다.
+    fetching_at = next(
+        index
+        for index, (event, payload) in enumerate(events)
+        if event == "progress" and payload["stage"] == "fetching_context"
+    )
+    assert names.index("location_resolved") < fetching_at
+
+    # 이 턴이 실제로 쓴 값과 같아야 한다 — 다른 값을 보내면 화면이 서버와 다른
+    # 위치를 말하게 된다.
+    assert resolved["search_center"] == response.state.user_conditions.search_center
+    assert resolved["current_location"] == response.state.user_conditions.current_location
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_the_location_picked_on_the_settings_screen() -> None:
+    """발화가 위치를 말하지 않으면 위치 설정 화면에서 고른 값이 그대로 실린다.
+
+    _apply_selected_locations()가 조건 병합보다 앞에서 채우므로, 이 이벤트는 그
+    결과를 본다. 화면은 이 값으로 자기 저장소를 서버 기준에 맞춘다.
+    """
+
+    store = InMemoryStateStore()
+    providers = _providers()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="조용한 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="안국역",
+        ),
+        store=store,
+        stream_event_sink=sink,
+        stream_recommendation_summary=True,
+        **providers,
+    )
+
+    resolved = next(payload for event, payload in events if event == "location_resolved")
+    assert resolved["search_center"] == "안국역"
 
 
 @pytest.mark.asyncio
