@@ -1157,6 +1157,23 @@ export interface AgentStreamResultEvent {
   message?: string;
 }
 
+/*
+ * 이번 턴이 실제로 쓸 출발지·검색 기준. 조건 병합 직후에 오므로 도구 조회·채점·
+ * 답변 스트리밍보다 앞선다 — 상단 위치 칩이 결과를 기다리지 않고 바뀐다.
+ *
+ * 두 값은 각각 null일 수 있다. 그때는 "이 위치를 지우라"가 아니라 "서버도 위치를
+ * 모른다"는 뜻이라, 화면은 지금 값을 그대로 둔다
+ * (state/locationSettings.ts의 syncLocationSettingsFromConditions).
+ *
+ * 단발 POST /api/chat 폴백에는 이 이벤트가 없다 — 그 경로는 done의 state로 같은
+ * 값을 받는다.
+ */
+export interface AgentStreamLocationResolvedEvent {
+  elapsed_ms: number;
+  current_location: string | null;
+  search_center: string | null;
+}
+
 export interface AgentStreamMessageDeltaEvent {
   elapsed_ms: number;
   text: string;
@@ -1180,6 +1197,7 @@ export interface AgentStreamErrorEvent extends ApiErrorBody {
 export type AgentStreamEvent =
   | { type: "progress"; data: AgentProgressEvent }
   | { type: "result"; data: AgentStreamResultEvent }
+  | { type: "location_resolved"; data: AgentStreamLocationResolvedEvent }
   | { type: "message_start"; data: AgentStreamMessageStartEvent }
   | { type: "message_delta"; data: AgentStreamMessageDeltaEvent }
   | { type: "done"; data: AgentStreamDoneEvent }
