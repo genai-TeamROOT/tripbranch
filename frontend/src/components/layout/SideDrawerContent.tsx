@@ -7,7 +7,7 @@
  * 출발지/검색기준 지정·10개 제한), 저장한 일정은 일정 화면
  * (`components/schedule/SavedScheduleList`). 사이드바 쪽은 목록과 삭제만 있는
  * 축소판이었고, 즐겨찾기는 "추가" 버튼이 어차피 위치 설정 화면으로 보냈다.
- * 출력: 라우트 이동, 언어 변경, 대화 목록 편집, 계정 팝업(계정 만들기·로그아웃).
+ * 출력: 라우트 이동, 언어 변경, 대화 목록 편집, 로그인 입구(게스트) 또는 계정 팝업.
  * 호출 시점: DesktopSidebar(768px 이상 상시 패널)와 모바일 드로어가 공유한다.
  *   컨테이너만 다르고 내용은 하나다 — 두 번 만들지 않는다(DESIGN_SYSTEM.md 6.17).
  * 근거: package_D/DESIGN_SYSTEM.md §6.17.
@@ -15,15 +15,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import {
-  Home,
-  LogOut,
-  MapPin,
-  MoreHorizontal,
-  Route,
-  Sparkles,
-  UserPlus,
-} from "lucide-react";
+import { Home, LogIn, LogOut, MapPin, MoreHorizontal, Route, Sparkles } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { identityDisplay, isGuestSession, type IdentityDisplay } from "../../auth/identityLabel";
 import { detachChatRequest } from "../../state/chatAbortController";
@@ -128,8 +120,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const [renameDraft, setRenameDraft] = useState("");
   /* 계정 관련 항목은 이 팝업 안에만 있다 — §6 주석 참고. */
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  /* 게스트 로그아웃은 되돌릴 수 없어 한 번 끊는다 — handleSignOut 주석 참고. */
-  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -199,35 +189,26 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }
 
   /*
-   * 게스트에게 로그아웃은 되돌릴 수 없다 — 다시 로그인할 수단이 없어 그 uid로
-   * 돌아갈 길이 사라지고, 그 uid에 달린 대화·보관함도 함께 닿을 수 없게 된다
-   * (AuthContext.signOut 주석과 같은 근거). 그래서 게스트일 때만 한 번 끊는다.
+   * **계정 사용자만 이 팝업을 본다**(§6). 게스트에게는 로그아웃 자리가 아예 없어서
+   * 예전에 있던 "정말 나가시겠어요" 확인 단계도 함께 없앴다 — 게스트 로그아웃은
+   * 되돌릴 수 없어 한 번 끊었던 것인데, 이제 그 버튼에 닿을 길이 없다.
    *
-   * 계정 사용자는 확인을 받지 않는다. 다시 로그인하면 그대로 돌아오므로, 되돌릴 수
-   * 있는 동작에까지 확인을 붙이면 확인이라는 신호 자체가 값싸진다.
-   *
-   * AuthStatusBadge가 이미 같은 확인을 갖고 있는데 그 배지는 개발자 화면에서만
-   * 쓰인다. 사용자가 실제로 누르는 것은 이쪽 버튼이었고, 여기엔 확인이 없었다.
+   * 계정 사용자에게는 확인을 붙이지 않는다. 다시 로그인하면 그대로 돌아오므로,
+   * 되돌릴 수 있는 동작에까지 확인을 붙이면 확인이라는 신호 자체가 값싸진다.
    */
   function closeAccountMenu() {
     setAccountMenuOpen(false);
-    /* 확인 화면을 띄운 채 닫히면 다시 열었을 때 그것이 그대로 남아 있다 — 무엇을
-       누르려던 것인지 잊은 채 빨간 "로그아웃"만 보게 된다. */
-    setConfirmingSignOut(false);
   }
 
   async function handleSignOut() {
-    if (session && isGuestSession(session) && !confirmingSignOut) {
-      setConfirmingSignOut(true);
-      return;
-    }
     try {
       await signOut();
       /* 신원만 끊고 이 기기의 데이터를 두면 다음 신원의 화면에 앞사람의 대화·취향·
          즐겨찾기·검색 위치가 그대로 남는다. 함께 비운다(state/localUserData.ts). */
       clearLocalUserData();
       dispatch({ type: "RESET" });
-      /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 관문으로 보낸다. */
+      /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 게스트 신원을
+         새로 발급해 같은 자리에서 앱이 계속 열려 있다. */
     } finally {
       closeAccountMenu();
       onNavigate?.();
@@ -321,7 +302,10 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   return (
     <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
       {/* 1. 내비게이션 */}
-      <nav aria-label={state.language === "en" ? "Main menu" : "주요 메뉴"} className="flex flex-col gap-1">
+      <nav
+        aria-label={state.language === "en" ? "Main menu" : "주요 메뉴"}
+        className="flex flex-col gap-1"
+      >
         {navItems.map((item) => (
           <button
             key={item.key}
@@ -340,7 +324,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
       {/* 2. 언어 */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Language" : "언어"}</h2>
+        <h2 className="text-xs font-bold text-label">
+          {state.language === "en" ? "Language" : "언어"}
+        </h2>
         <div className="grid grid-cols-2 gap-1.5">
           {LANGUAGES.map((lang) => (
             <button
@@ -403,7 +389,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                         쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
                       <button
                         type="button"
-                        aria-label={isEn ? `Open conversation ${entry.label}` : `${entry.label} 대화 열기`}
+                        aria-label={
+                          isEn ? `Open conversation ${entry.label}` : `${entry.label} 대화 열기`
+                        }
                         onClick={() => openConversation(entry.id)}
                         className="min-w-0 flex-1 text-left"
                       >
@@ -427,11 +415,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                       <button
                         type="button"
                         aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
-                        onClick={() =>
-                          setOpenMenu((open) =>
-                            open === entry.id ? null : entry.id,
-                          )
-                        }
+                        onClick={() => setOpenMenu((open) => (open === entry.id ? null : entry.id))}
                         className="shrink-0 text-muted hover:text-ink"
                       >
                         <MoreHorizontal size={15} />
@@ -501,13 +485,22 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       </section>
 
       {/*
-        6. 계정 — 아바타+이름 버튼 하나만 두고 나머지는 눌렀을 때 팝업으로 낸다
-        (2026-09-04).
+        6. 계정 — 로그인 여부로 자리가 갈린다.
 
-        예전에는 신원 라벨 한 줄 + "계정 만들기" + "로그아웃"이 모두 사이드바 바닥에
-        펼쳐져 있었다. 두 가지가 문제였다 — 라벨이 `identityLabel`이라 **이메일이
-        사이드바에 상시 노출**됐고(가입 때 받은 이름이 있어도 이메일이 먼저 걸린다),
-        **되돌릴 수 없는 동작인 로그아웃이 상시 눌리는 자리**에 있었다.
+        - **로그인 안 한 상태(게스트)**: "로그인" 버튼 하나다(2026-09-06). 진입이
+          게스트로 자동으로 열리게 바뀌면서(`RequireUser`) 여기가 로그인으로 가는
+          유일한 입구가 됐다. 신원 표시를 그리지 않는 이유는, 게스트에게 보여줄
+          것이 "게스트 / 게스트로 이용 중"뿐이라 이름 자리를 차지하고도 아무것도
+          알려주지 못하기 때문이다 — 그 자리에는 할 수 있는 동작이 오는 게 낫다.
+        - **계정**: 아바타+이름 버튼 하나를 두고 나머지는 눌렀을 때 팝업으로 낸다
+          (2026-09-04). 예전에는 신원 라벨 한 줄 + "계정 만들기" + "로그아웃"이 모두
+          바닥에 펼쳐져 있었다 — 라벨이 `identityLabel`이라 **이메일이 상시 노출**됐고
+          (이름이 있어도 이메일이 먼저 걸린다), **되돌릴 수 없는 로그아웃이 상시
+          눌리는 자리**에 있었다.
+
+        게스트용 "계정 만들기" 줄은 팝업에서 **뺐다**(2026-09-06). 게스트는 이제 이
+        팝업 자체를 보지 않고, 가입은 로그인 화면의 "회원가입" 링크로 닿는다 —
+        그 화면이 게스트 세션을 그대로 승격시킨다(AuthContext.signUpWithEmail).
 
         팝업에 "프로필"·"설정"·"도움말" 줄은 만들지 않는다. 그 화면이 없다 —
         라우트는 /, /chat, /preferences, /location, /schedule 뿐이다. 없는 화면
@@ -515,117 +508,77 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         그리지 않은 것과 같은 이유다(LANGUAGES 주석).
       */}
       <div className="relative mt-auto">
-        {status === "ready" && session && identity && (
-          <>
-            {accountMenuOpen && (
-              <>
-                {/* 대화 줄 메뉴와 같은 방식이다 — 바깥을 누르면 닫힌다. */}
-                <button
-                  type="button"
-                  aria-label={isEn ? "Close account menu" : "계정 메뉴 닫기"}
-                  onClick={closeAccountMenu}
-                  className="fixed inset-0 z-20 cursor-default"
-                />
-                {/* 계정 버튼이 사이드바 맨 아래라 위로 띄운다(bottom-full). */}
-                <div className="absolute bottom-full left-0 right-0 z-30 mb-2 flex flex-col rounded-2xl bg-white p-1.5 shadow-card">
-                  {confirmingSignOut ? (
-                    /* 잃는 것과 대신 할 수 있는 것을 함께 말한다. "정말 하시겠어요?"만
-                       물으면 사용자는 무엇을 잃는지 모른 채 고른다. */
-                    <div className="flex flex-col items-start gap-2 p-2">
-                      <p role="alert" className="text-xs text-rust">
-                        {isEn
-                          ? "Signing out means you won't be able to return to your past conversations. Create an account to keep using them."
-                          : "로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로 이어서 쓸 수 있어요."}
-                      </p>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleSignOut()}
-                          className="rounded px-2 py-1 text-sm font-medium text-rust"
-                        >
-                          {isEn ? "Sign out" : "로그아웃"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingSignOut(false)}
-                          className="rounded px-2 py-1 text-sm font-medium text-muted"
-                        >
-                          {isEn ? "Cancel" : "취소"}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      {/* 어느 계정의 메뉴인지 팝업 안에서도 보인다 — 팝업이 계정
-                          버튼을 덮는 자리에 뜨기 때문이다. 누를 수는 없다(계정
-                          화면이 없다). */}
-                      <div className="flex items-center gap-2.5 px-2 py-2">
-                        <IdentityRow identity={identity} />
-                      </div>
-                      <div className="mx-2 my-1 h-px bg-border" />
-                      {/* role="menu" 는 menuitem 만 감싼다 — 위의 신원 헤더와
-                          로그아웃 확인 화면은 menuitem 이 아니다. */}
-                      <div
-                        role="menu"
-                        aria-label={isEn ? "Account" : "계정"}
-                        className="flex flex-col"
-                      >
-                        {/*
-                          게스트에게만 보인다. **이 버튼이 없으면 승계 경로에 닿을
-                          방법이 없었다** — /signup으로 가는 링크가 로그인 관문에만
-                          있는데 게스트는 세션이 있어서 그 화면으로 못 들어간다
-                          (LoginPage의 Navigate). 그래서 가입하려면 먼저 로그아웃해야
-                          했고, 로그아웃하면 그 uid로 돌아갈 길이 없어 이어받을 기록
-                          자체가 사라졌다.
-
-                          문구를 "로그인"이 아니라 "계정 만들기"로 둔다. 게스트에게
-                          필요한 동작은 지금 쓰던 것을 계정으로 굳히는 것이지 다른
-                          계정으로 갈아타는 것이 아니고, 가입 화면이 게스트 세션을
-                          그대로 승격시킨다(AuthContext.signUpWithEmail).
-                        */}
-                        {isGuest && (
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              closeAccountMenu();
-                              go("/signup");
-                            }}
-                            className={`${ACCOUNT_MENU_ITEM_CLASS} text-ink hover:bg-chip`}
-                          >
-                            <UserPlus size={15} aria-hidden />
-                            {isEn ? "Create account" : "계정 만들기"}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => void handleSignOut()}
-                          className={`${ACCOUNT_MENU_ITEM_CLASS} text-rust hover:bg-chip`}
-                        >
-                          <LogOut size={15} aria-hidden />
-                          {isEn ? "Sign out" : "로그아웃"}
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-            {/* 이름을 읽어주는 것이 이 버튼의 이름이다 — aria-label로 "계정 메뉴"라고
-                덮으면 어느 계정인지 소리로 확인할 방법이 없어진다. 무엇이 열리는지는
-                aria-haspopup이 알린다. */}
+        {status === "ready" &&
+          session &&
+          identity &&
+          (isGuest ? (
+            /* 목적지를 state로 실어 보낸다 — 로그인을 마쳤을 때 홈이 아니라 보던
+               화면으로 돌아온다. LoginPage가 이 값을 `from`으로 읽는다. */
             <button
               type="button"
-              aria-haspopup="menu"
-              aria-expanded={accountMenuOpen}
-              onClick={() => setAccountMenuOpen((open) => !open)}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition-colors hover:bg-chip"
+              onClick={() => {
+                navigate("/login", { state: { from: location.pathname } });
+                onNavigate?.();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-ink transition-colors hover:bg-chip"
             >
-              <IdentityRow identity={identity} />
+              <LogIn size={17} aria-hidden />
+              {isEn ? "Sign in" : "로그인"}
             </button>
-          </>
-        )}
+          ) : (
+            <>
+              {accountMenuOpen && (
+                <>
+                  {/* 대화 줄 메뉴와 같은 방식이다 — 바깥을 누르면 닫힌다. */}
+                  <button
+                    type="button"
+                    aria-label={isEn ? "Close account menu" : "계정 메뉴 닫기"}
+                    onClick={closeAccountMenu}
+                    className="fixed inset-0 z-20 cursor-default"
+                  />
+                  {/* 계정 버튼이 사이드바 맨 아래라 위로 띄운다(bottom-full). */}
+                  <div className="absolute bottom-full left-0 right-0 z-30 mb-2 flex flex-col rounded-2xl bg-white p-1.5 shadow-card">
+                    {/* 어느 계정의 메뉴인지 팝업 안에서도 보인다 — 팝업이 계정
+                      버튼을 덮는 자리에 뜨기 때문이다. 누를 수는 없다(계정
+                      화면이 없다). */}
+                    <div className="flex items-center gap-2.5 px-2 py-2">
+                      <IdentityRow identity={identity} />
+                    </div>
+                    <div className="mx-2 my-1 h-px bg-border" />
+                    {/* role="menu" 는 menuitem 만 감싼다 — 위의 신원 헤더는
+                      menuitem 이 아니다. */}
+                    <div
+                      role="menu"
+                      aria-label={isEn ? "Account" : "계정"}
+                      className="flex flex-col"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => void handleSignOut()}
+                        className={`${ACCOUNT_MENU_ITEM_CLASS} text-rust hover:bg-chip`}
+                      >
+                        <LogOut size={15} aria-hidden />
+                        {isEn ? "Sign out" : "로그아웃"}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+              {/* 이름을 읽어주는 것이 이 버튼의 이름이다 — aria-label로 "계정 메뉴"라고
+                덮으면 어느 계정인지 소리로 확인할 방법이 없어진다. 무엇이 열리는지는
+                aria-haspopup이 알린다. */}
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={accountMenuOpen}
+                onClick={() => setAccountMenuOpen((open) => !open)}
+                className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition-colors hover:bg-chip"
+              >
+                <IdentityRow identity={identity} />
+              </button>
+            </>
+          ))}
       </div>
     </div>
   );

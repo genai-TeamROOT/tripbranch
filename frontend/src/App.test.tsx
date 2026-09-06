@@ -235,11 +235,11 @@ test("user chat hides condition debug card and shows recommendations", async () 
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
-  // 신원 표시는 사이드바에 상시 떠 있다(D-062) — 채팅 화면에서도 사이드바를 통해
-  // 이어진다. 데스크톱 사이드바(role=complementary)로 좁혀서 찾는다(모바일
-  // 드로어도 같은 SideDrawerContent를 렌더해 텍스트가 중복된다).
+  // 로그인 안 한 상태의 계정 자리는 사이드바에 상시 떠 있다(2026-09-06) — 채팅
+  // 화면에서도 사이드바를 통해 이어진다. 데스크톱 사이드바(role=complementary)로
+  // 좁혀서 찾는다(모바일 드로어도 같은 SideDrawerContent를 렌더해 중복된다).
   expect(
-    within(screen.getByRole("complementary")).getByText("게스트로 이용 중"),
+    within(screen.getByRole("complementary")).getByRole("button", { name: "로그인" }),
   ).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
