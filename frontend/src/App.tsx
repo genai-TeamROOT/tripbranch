@@ -20,6 +20,7 @@ import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
 import { PageTransition } from "./components/layout/PageTransition";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import { SplashScreen } from "./components/SplashScreen";
 
 /*
  * 개발자 화면과 인증 화면은 따로 받아온다.
@@ -142,6 +143,12 @@ function App() {
           </RouteErrorBoundary>
         </BrowserRouter>
       </TripProvider>
+      {/*
+       * 라우터 **밖·뒤**에 둔다. 밖인 이유는 특정 화면의 것이 아니라 앱이 뜨는
+       * 순간을 덮는 층이기 때문이고, 뒤인 이유는 DOM 순서만으로도 위에 오게
+       * 해서 z-index 하나에만 기대지 않기 위해서다.
+       */}
+      <SplashScreen />
     </AuthProvider>
   );
 }

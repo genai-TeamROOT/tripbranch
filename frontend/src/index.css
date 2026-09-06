@@ -300,3 +300,75 @@
     animation: tb-page-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 }
+
+/*
+ * 진입 스플래시(components/SplashScreen.tsx).
+ *
+ * 셸 위의 모든 층(바텀시트 z-30대, 모달 z-50)보다 위다 — 앱이 뜨는 순간에 시트가
+ * 함께 복원되는 경로(state.backgroundLocation)가 있어서, 그때 시트가 스플래시를
+ * 뚫고 보이면 안 된다.
+ *
+ * 바탕을 흰색이 아니라 옅은 브랜드 톤에서 시작한다. 흰 화면에서 흰 화면으로
+ * 넘어가면 걷히는 동작 자체가 보이지 않아 "조금 보여주고 부드럽게" 라는 요구가
+ * 화면에 남지 않는다.
+ */
+.tb-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #e6edfd 0%, #f6f8fe 52%, #ffffff 100%);
+}
+
+.tb-splash__mark {
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-brand);
+}
+
+/*
+ * 페이드는 어떤 설정에서도 건다 — tb-page-enter와 같은 근거다(위 주석). 덮은
+ * 층이 즉시 사라지는 것은 "줄여야 할 움직임"이 아니라 그 자체로 거슬리는 전환이다.
+ */
+@keyframes tb-splash-leave {
+  to {
+    opacity: 0;
+  }
+}
+
+.tb-splash--leaving {
+  animation: tb-splash-leave 420ms ease-in forwards;
+}
+
+@keyframes tb-splash-mark-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 걷힐 때 살짝 커진다 — 위로 걷어내는 인상을 준다. 1.06을 넘기면 사라지는 게
+   아니라 화면으로 다가오는 것처럼 보인다. */
+@keyframes tb-splash-leave-motion {
+  to {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tb-splash__mark {
+    animation: tb-splash-mark-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .tb-splash--leaving {
+    animation: tb-splash-leave-motion 420ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+}
