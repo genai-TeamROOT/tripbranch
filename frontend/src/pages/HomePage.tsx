@@ -41,7 +41,7 @@ const HOME_TEXT = {
     subtitle: {
       lead: "지금 ",
       accent: "상황",
-      tail: "을 말해주면 바로 대체 장소를 찾아볼게요.",
+      tail: "을 말해주시면 바로 대체 장소를 찾아볼게요.",
     },
     locationNotice:
       "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
@@ -343,8 +343,8 @@ export function HomePage() {
            * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
            * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
            *
-           * 부각은 **제목에만 색을 쓴다.** 부제까지 파랗게 하면 파란 낱말이 둘이
-           * 되어 어느 쪽을 보라는 것인지 흐려진다 — 부제는 굵기와 먹색으로만 든다.
+           * 부각하는 낱말은 "일정"과 "상황" 둘 다 브랜드색이다(2026-09-07 사용자
+           * 결정). 이 화면이 무엇에 대한 화면인지가 그 두 낱말에 다 들어 있다.
            */}
           <h1 className="mt-5 text-2xl font-bold leading-[1.32] tracking-[-0.035em] text-ink sm:text-[30px]">
             {text.headline.lead}
@@ -353,31 +353,30 @@ export function HomePage() {
           </h1>
           <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">
             {text.subtitle.lead}
-            <span className="font-semibold text-ink">{text.subtitle.accent}</span>
+            <span className="font-semibold text-brand">{text.subtitle.accent}</span>
             {text.subtitle.tail}
           </p>
+          <div className="mt-6 flex flex-wrap items-start justify-center gap-2">
+            {text.prompts.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                disabled={isLoading}
+                onClick={() => setUserInput(prompt)}
+                /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
+                   오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
+                className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
         <div className="min-h-3 flex-1" />
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
-
-        <div className="mt-2 flex flex-wrap items-start justify-center gap-2">
-          {text.prompts.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              disabled={isLoading}
-              onClick={() => setUserInput(prompt)}
-              /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
-                 오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
-              className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
 
         {/*
          * 위치 권한 고지. 채팅 바 바로 위다(2026-09-07) — 권한을 실제로 묻는 것은
