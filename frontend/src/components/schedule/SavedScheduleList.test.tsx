@@ -107,10 +107,20 @@ function renderList() {
   );
 }
 
-test("저장한 일정이 없으면 그 사실을 알린다", async () => {
-  renderList();
+/*
+ * 저장한 일정이 없으면 **아무것도 그리지 않는다.**
+ *
+ * 예전에는 "아직 저장한 일정이 없어요"를 냈는데, 일정도 없고 저장한 것도 없는 첫
+ * 화면에서 그 문장이 "아직 짠 일정이 없어요" 바로 아래 붙어 **비었다는 안내가 두
+ * 개** 보였다. 비었을 때 무엇을 안내할지는 SchedulePage가 정한다 — 거기만 "지금
+ * 일정"과 "저장한 일정"을 둘 다 알고 있다.
+ */
+test("저장한 일정이 없으면 구획을 통째로 그리지 않는다", async () => {
+  const { container } = renderList();
 
-  expect(await screen.findByText("아직 저장한 일정이 없어요")).toBeInTheDocument();
+  /* 위치 표시기(LocationProbe)만 남는다 — 목록 구획은 없다. */
+  await waitFor(() => expect(screen.queryByText("저장한 일정")).not.toBeInTheDocument());
+  expect(container.querySelector("section")).toBeNull();
 });
 
 test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", async () => {

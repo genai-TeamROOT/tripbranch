@@ -20,6 +20,7 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { useTripState } from "../state/TripContext";
 import { fetchSavedSchedule } from "../api/trip";
 import { SavedScheduleList } from "../components/schedule/SavedScheduleList";
+import { useSavedSchedules } from "../hooks/useSavedSchedules";
 import { ScheduleRibbon } from "../components/schedule/ScheduleRibbon";
 import { ScheduleRoute } from "../components/schedule/ScheduleRoute";
 import { buildScheduleTimeline, clockLabel, locateNow } from "../utils/scheduleTimeline";
@@ -31,6 +32,10 @@ export function SchedulePage() {
   const isEn = state.language === "en";
   const [searchParams] = useSearchParams();
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+  /* 저장 목록이 비었는지는 빈 화면에서 무엇을 안내할지 정하는 데 쓴다.
+     아직 못 받아온 동안(null)에는 안내를 띄우지 않는다 — 저장한 일정이 있는
+     사람에게 "아직 짠 일정이 없어요"가 잠깐 스쳤다 사라지면 안 된다. */
+  const savedList = useSavedSchedules();
 
   /*
    * ?saved=<id>로 들어오면 저장한 일정을 보여준다(SCHEDULE 카드 2). 없으면
@@ -117,19 +122,29 @@ export function SchedulePage() {
             </p>
           </div>
         ) : !schedule || schedule.items.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-14 text-center">
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
-              <RouteIcon size={22} />
-            </span>
-            <p className="text-sm text-muted">{isEn ? "No schedule yet." : "아직 짠 일정이 없어요."}</p>
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              className="rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-deep active:scale-[0.98]"
-            >
-              {isEn ? "Plan a schedule from home" : "홈에서 일정 짜기"}
-            </button>
-          </div>
+          /*
+            **저장한 일정이 있으면 빈 안내를 띄우지 않는다.** 아래 저장 목록이 이미
+            "여기서 무엇을 할 수 있는지"를 보여주고 있어서, 그 위에 "아직 짠 일정이
+            없어요"까지 붙으면 비었다는 안내가 두 번이 된다. 목록을 아직 못 받아온
+            동안(null)에도 띄우지 않는다 — 잠깐 스쳤다 사라진다.
+          */
+          savedList !== null && savedList.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-14 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
+                <RouteIcon size={22} />
+              </span>
+              <p className="text-sm text-muted">
+                {isEn ? "No schedule yet." : "아직 짠 일정이 없어요."}
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate("/")}
+                className="rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-deep active:scale-[0.98]"
+              >
+                {isEn ? "Plan a schedule from home" : "홈에서 일정 짜기"}
+              </button>
+            </div>
+          ) : null
         ) : (
           <>
             {/*

@@ -10,10 +10,14 @@ import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "../auth/AuthContext";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
+import { resetSavedSchedulesCache } from "../state/savedSchedules";
 import { SchedulePage } from "./SchedulePage";
 
 beforeEach(() => {
   sessionStorage.clear();
+  /* 저장 목록 캐시는 모듈 수준이라 같은 파일의 앞 테스트 결과가 그대로 남는다.
+     이 화면은 그 목록으로 무엇을 그릴지 정하므로 테스트마다 비운다. */
+  resetSavedSchedulesCache();
 });
 
 afterEach(() => {
@@ -34,7 +38,15 @@ test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준�
     </AuthProvider>,
   );
 
-  expect(screen.getByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
+  /*
+   * **받아오기 전에는 안내가 없다.** 저장한 일정이 있는 사람에게 "아직 짠 일정이
+   * 없어요"가 한 번 스쳤다 사라지면 안 된다 — 그래서 목록이 도착하기 전인 이
+   * 순간을 먼저 확인한다(비동기 대기 없이 바로 본다).
+   */
+  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+
+  /* 목록이 도착하고, 비어 있으니 그제야 안내가 뜬다. */
+  expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
 
   const cta = screen.getByRole("button", { name: "홈에서 일정 짜기" });
   await user.click(cta);
@@ -248,10 +260,29 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
  * 있어야 한다 — 특히 "아직 짠 일정이 없어요"와 불러오기 실패 화면에서는 다른
  * 일정을 고를 유일한 입구다. 목록을 빼도 나머지 테스트는 전부 통과했다(되돌림 확인).
  */
-test("저장한 일정 목록이 세 상태 모두에 있다", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ items: [] })));
+/*
+ * 저장한 일정 목록은 **저장한 것이 있을 때** 세 상태 모두에서 보인다
+ * (짠 일정 없음 / 있음 / ?saved= 불러오기 실패).
+ *
+ * 예전에는 "세 상태 모두에 구획이 있다"였는데, 비었을 때도 "아직 저장한 일정이
+ * 없어요"를 내는 바람에 첫 화면에서 **비었다는 안내가 두 개 겹쳐** 보였다.
+ * 지금은 비면 구획째 사라지고, 무엇을 안내할지는 이 화면이 정한다.
+ */
+test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다", async () => {
+  const saved = {
+    items: [
+      {
+        id: "aaaaaaaa-1111-4222-8333-444444444444",
+        title: "성수 저녁 코스",
+        session_id: null,
+        created_at: "2026-09-01T18:00:00+09:00",
+        updated_at: "2026-09-01T18:00:00+09:00",
+      },
+    ],
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(saved)));
 
-  const heading = () => screen.getByRole("heading", { name: "저장한 일정" });
+  const listed = () => screen.findByRole("heading", { name: "저장한 일정" });
 
   // ① 짠 일정이 없을 때
   const empty = render(
@@ -265,7 +296,9 @@ test("저장한 일정 목록이 세 상태 모두에 있다", async () => {
       </MemoryRouter>
     </AuthProvider>,
   );
-  expect(heading()).toBeInTheDocument();
+  expect(await listed()).toBeInTheDocument();
+  /* 목록이 있으면 빈 안내는 뜨지 않는다 — 이것이 이번에 고친 것이다. */
+  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
   empty.unmount();
 
   // ② 짠 일정이 있을 때
@@ -281,19 +314,19 @@ test("저장한 일정 목록이 세 상태 모두에 있다", async () => {
       </MemoryRouter>
     </AuthProvider>,
   );
-  expect(heading()).toBeInTheDocument();
+  expect(await listed()).toBeInTheDocument();
   filled.unmount();
 
-  // ③ 저장한 일정을 못 불러왔을 때
+  // ③ 저장한 일정을 못 불러왔을 때 — 다른 일정을 고를 유일한 입구다.
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) =>
       String(input).includes("/schedules/")
         ? new Response(null, { status: 404 })
-        : Response.json({ items: [] }),
+        : Response.json(saved),
     ),
   );
   renderSaved("gone");
   expect(await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요.")).toBeInTheDocument();
-  expect(heading()).toBeInTheDocument();
+  expect(await listed()).toBeInTheDocument();
 });
