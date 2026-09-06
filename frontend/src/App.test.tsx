@@ -934,7 +934,7 @@ test("renders no follow-up buttons when the server sends no follow_ups event", a
  * 받을 이유가 없어 전체 페이지로 통일했다 — 이 아래 세 테스트가 그 전환을
  * 잠근다. 옛 시트 동작(§5.2 바텀시트)을 검증하던 자리다.
  */
-test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 뒤로가기를 누르면 홈으로 돌아온다", async () => {
+test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 브라우저 뒤로가기로 홈에 돌아온다", async () => {
   await renderApp();
 
   // 데스크톱 사이드바(role=complementary)로 좁힌다 — 모바일 드로어도 같은
@@ -948,11 +948,12 @@ test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 뒤
   // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다(시트였다면 남아
   // 있었을 것이다).
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
-  // 시트가 아니므로 닫기(X)가 아니라 일반 헤더의 뒤로가기가 보인다. 기본
-  // matchMedia 모의값은 좁은 폭이라(src/test/setup.ts) 뒤로가기가 그려진다.
+  // 시트가 아니라 닫기(X)는 없다. 뒤로가기 화살표도 없다(2026-09-07) — 헤더가
+  // 돌아가는 버튼을 아예 그리지 않으므로, 돌아가는 길은 브라우저 뒤로가기뿐이다.
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("button", { name: "뒤로가기" }));
+  window.history.back();
 
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "현재 위치 사용" })).not.toBeInTheDocument(),
@@ -960,7 +961,7 @@ test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 뒤
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
-test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 설정에 뒤로가기가 없다", async () => {
+test("사이드바 상시 패널이 보이는 폭(데스크톱)에서도 위치 설정에 뒤로가기 화살표가 없다", async () => {
   // useIsDesktopSidebar가 참을 반환하도록 matchMedia를 데스크톱 폭으로 흉내낸다.
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: true,
@@ -980,8 +981,8 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
-  // 뒤로가기가 없다(2026-09-06) — 사이드바가 상시 보이는 폭에서는 돌아갈 곳이
-  // 이미 화면 왼쪽에 다 펼쳐져 있어 헤더의 화살표가 같은 일을 두 번 한다.
+  // 뒤로가기 화살표가 없다(2026-09-07) — 폭에 상관없이 헤더가 화살표를 그리지
+  // 않는다. 데스크톱 폭에서도 되살아나지 않는지 이 폭에서 따로 확인한다.
   expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
@@ -999,7 +1000,9 @@ test("사이드바에서 일정을 열면 전체 페이지로 뜬다", async () 
   expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
   // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다.
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
+  // 뒤로가기 화살표는 그리지 않는다(2026-09-07) — 돌아가는 길은 브라우저
+  // 뒤로가기다.
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 // --- 응답 대기 중 취소(package_D/DESIGN_SYSTEM.md §7.2) ------------------------

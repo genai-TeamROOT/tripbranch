@@ -1,13 +1,13 @@
 /*
  * 역할: 화면 상단의 프로스티드 헤더 — 두 가지 모드로 스스로 판단해 모양을 바꾼다.
- *   일반 모드: 모바일 전용 햄버거(드로어 열기) + 라벨이 있을 때만 위치 pill +
- *   onBack이 있고 좁은 폭일 때만 뒤로가기. 시트 모드: 우측 X 버튼만.
+ *   일반 모드: 모바일 전용 햄버거(드로어 열기) + 라벨이 있을 때만 위치 pill.
+ *   뒤로가기 화살표는 그리지 않는다(2026-09-07). 시트 모드: 우측 X 버튼만(지금은 죽은 분기).
  * 입력: 표시할 위치 라벨, 뒤로가기/닫기 콜백(있는 화면만).
  * 호출 시점: 신원이 필요한 화면들이 상단에 렌더링할 때.
  * 근거: DESIGN_SYSTEM.md §6.1, §5(isOpenAsSheet로 시트 여부 판정).
  */
 
-import { ArrowRight, ChevronLeft, MapPinned, Menu, Navigation, X } from "lucide-react";
+import { ArrowRight, MapPinned, Menu, Navigation, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
 import { isOpenAsSheet } from "../../state/sheetNav";
@@ -22,6 +22,7 @@ interface AppHeaderProps {
    * 고르면 카드의 이동시간을 어디서 쟀는지가 화면에서 사라진다(D-067).
    */
   location?: LocationChipModel | null;
+  /** 화살표로는 안 그린다(2026-09-07) — 시트 모드(죽은 분기)의 닫기 콜백과 헤더 접힘 판정에만 쓴다. */
   onBack?: () => void;
 }
 
@@ -35,19 +36,17 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
   const isDesktop = useIsDesktopSidebar();
 
   /*
-   * **뒤로가기는 좁은 폭에서만 낸다**(2026-09-06). 사이드바가 상시 보이는 폭에서는
-   * 취향·위치·일정 어디서든 돌아갈 곳이 이미 화면 왼쪽에 다 펼쳐져 있다 — 헤더의
-   * 화살표는 같은 일을 하는 두 번째 길이라, 자리만 차지하고 어디로 가는지는 덜
-   * 알려준다.
+   * **뒤로가기 화살표는 이제 어디서도 그리지 않는다**(2026-09-07). 데스크톱은
+   * 전부터 안 그렸고(사이드바가 이미 돌아갈 길이라 화살표는 같은 일을 두 번
+   * 함) — 모바일도 같은 이유로 뺐다. 모바일에서 돌아가는 길은 브라우저/제스처
+   * 뒤로가기와 햄버거 드로어(새 채팅 등)다.
    *
-   * onBack 자체를 없애지 않는 이유는 좁은 폭에서는 여전히 필요하기 때문이다.
-   * 호출부(취향·위치·일정)는 셋 다 그대로 넘긴다.
+   * onBack 자체는 그래도 받는다. 시트 모드(지금은 죽은 분기, 아래 참고)의 닫기
+   * 버튼이 여전히 이 콜백을 쓰고, 아래 md:hidden 판정에도 쓴다.
    *
-   * **버튼만 빼고 띠는 남긴다.** 띠까지 접었더니 제목이 화면 맨 위에 붙어 위쪽
-   * 여백이 사라졌다(2026-09-06 사용자 확인). 이 띠는 뒤로가기를 담는 자리이기도
-   * 하지만 본문이 시작하기 전의 여백이기도 하다.
+   * **띠 자체는 남긴다.** 접었더니 제목이 화면 맨 위에 붙어 위쪽 여백이
+   * 사라졌었다(2026-09-06 사용자 확인) — 이 띠는 본문이 시작하기 전의 여백이다.
    */
-  const showBack = Boolean(onBack) && !isDesktop;
 
   /*
    * **지금은 이 분기를 타는 화면이 없다**(2026-09-07). 위치·일정이 취향 설정과
@@ -108,17 +107,6 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
           >
             <Menu size={18} />
           </button>
-
-          {showBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="뒤로가기"
-              className={FROSTED_BUTTON_CLASS}
-            >
-              <ChevronLeft size={20} />
-            </button>
-          )}
 
           {locationChip && (
             <button
