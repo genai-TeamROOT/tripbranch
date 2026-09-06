@@ -357,11 +357,22 @@ export function HomePage() {
             decoding="async"
             className="tb-orb__img"
           />
-          <h1 className="mt-5 text-[30px] leading-[1.32] tracking-[-0.035em]">
-            <span className="block font-light text-brand">{text.headlineSoft}</span>
-            <span className="block font-bold text-ink">{text.headlineHard}</span>
+          {/*
+           * 한 줄이다(2026-09-07). 두 줄로 쪼개 놓으면 가운데 정렬에서 윗줄이
+           * 짧아 축이 흔들려 보인다 — 톤은 그대로 두고 줄만 붙인다.
+           *
+           * 좁은 화면에서 접히지 않게 글자를 줄인다 — 24px 이면 "갑자기 일정이
+           * 바뀌셨나요?" 가 241px 이라 360px 화면의 본문 폭(328px)에 들어간다.
+           *
+           * **nowrap 은 쓰지 않는다.** 영어 문구가 더 길어서(Did your plans change
+           * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
+           * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
+           */}
+          <h1 className="mt-5 text-2xl leading-[1.32] tracking-[-0.035em] sm:text-[30px]">
+            <span className="font-light text-brand">{text.headlineSoft}</span>{" "}
+            <span className="font-bold text-ink">{text.headlineHard}</span>
           </h1>
-          <p className="mt-3 max-w-[30ch] text-sm leading-relaxed text-muted">{text.subtitle}</p>
+          <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">{text.subtitle}</p>
           {/*
            * 위치 권한 고지. 예전에는 통짜 파란 패널이라 headline 다음으로 큰 색
            * 덩어리였다 — 고지는 먼저 읽히는 글이 아니라 필요할 때 찾는 글이다.
@@ -370,7 +381,7 @@ export function HomePage() {
            * 왼쪽 세로선은 뺐다 — 가운데로 모인 글 밑에 왼쪽 선만 남으면 어느
            * 쪽에도 안 맞아 부러진 것처럼 보인다.
            */}
-          <p className="mt-3 max-w-[34ch] text-[11px] leading-relaxed text-muted">
+          <p className="mt-3 text-[11px] leading-relaxed text-muted">
             {text.locationNotice}
           </p>
         </div>
