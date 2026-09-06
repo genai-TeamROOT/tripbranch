@@ -390,20 +390,20 @@
  */
 .tb-orb__img {
   display: block;
-  width: 148px;
+  width: 104px;
   height: auto;
   filter: drop-shadow(0 14px 20px rgba(16, 24, 40, 0.24));
 }
 
 @media (max-height: 780px) {
   .tb-orb__img {
-    width: 120px;
+    width: 88px;
   }
 }
 
 @media (max-height: 680px) {
   .tb-orb__img {
-    width: 98px;
+    width: 76px;
   }
 }
 

@@ -341,8 +341,23 @@ export function HomePage() {
           </button>
         </div>
 
-        <div className="pt-6">
-          <h1 className="text-[30px] leading-[1.32] tracking-[-0.035em]">
+        {/*
+         * 오브가 맨 위에 오고 글이 그 아래에 가운데로 붙는다(2026-09-07).
+         *
+         * 오브는 장식이라 aria-hidden 이다 — 누르는 기능도 움직임도 없다.
+         * 화면이 낮으면 이미지 자체가 작아진다(.tb-orb__img).
+         */}
+        <div className="flex flex-col items-center pt-3 text-center">
+          <img
+            src="/glass-object.webp"
+            alt=""
+            aria-hidden
+            width={104}
+            height={103}
+            decoding="async"
+            className="tb-orb__img"
+          />
+          <h1 className="mt-5 text-[30px] leading-[1.32] tracking-[-0.035em]">
             <span className="block font-light text-brand">{text.headlineSoft}</span>
             <span className="block font-bold text-ink">{text.headlineHard}</span>
           </h1>
@@ -350,34 +365,22 @@ export function HomePage() {
           {/*
            * 위치 권한 고지. 예전에는 통짜 파란 패널이라 headline 다음으로 큰 색
            * 덩어리였다 — 고지는 먼저 읽히는 글이 아니라 필요할 때 찾는 글이다.
-           * 헤드라인 밑 잔글씨로 내리고 세로선만 남겨 "부연"이라는 뜻을 지킨다.
+           * 잔글씨로 내린다.
+           *
+           * 왼쪽 세로선은 뺐다 — 가운데로 모인 글 밑에 왼쪽 선만 남으면 어느
+           * 쪽에도 안 맞아 부러진 것처럼 보인다.
            */}
-          <p className="mt-3 max-w-[34ch] border-l-2 border-sky-soft pl-2.5 text-[11px] leading-relaxed text-muted">
+          <p className="mt-3 max-w-[34ch] text-[11px] leading-relaxed text-muted">
             {text.locationNotice}
           </p>
         </div>
 
-        {/*
-         * 유리 오브. 남는 세로 공간을 통째로 갖는다 — 화면이 길수록 여백이
-         * 늘어나 공기감이 생기고, 낮으면 이미지 자체가 작아진다(.tb-orb__img).
-         *
-         * 장식이라 aria-hidden 이다. 누르는 기능도 움직임도 없다.
-         */}
-        <div className="flex flex-1 items-center justify-center py-3">
-          <img
-            src="/glass-object.webp"
-            alt=""
-            aria-hidden
-            width={148}
-            height={146}
-            decoding="async"
-            className="tb-orb__img"
-          />
-        </div>
+        {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
+        <div className="min-h-3 flex-1" />
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
 
-        <div className="mt-2 flex flex-wrap items-start gap-2">
+        <div className="mt-2 flex flex-wrap items-start justify-center gap-2">
           {text.prompts.map((prompt) => (
             <button
               key={prompt}
