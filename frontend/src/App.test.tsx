@@ -926,9 +926,15 @@ test("renders no follow-up buttons when the server sends no follow_ups event", a
   expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
 });
 
-// --- 바텀시트 내비게이션(package_D/DESIGN_SYSTEM.md §5) ---------------------
+// --- 위치·일정 내비게이션(package_D/DESIGN_SYSTEM.md §5) ---------------------
 
-test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨고, 닫으면 홈으로 돌아온다", async () => {
+/*
+ * **위치·일정은 취향 설정과 같은 전체 페이지다**(2026-09-07 사용자 결정).
+ * 예전에는 모바일에서 홈 위에 겹치는 바텀시트로 떴는데, 그 둘만 다른 취급을
+ * 받을 이유가 없어 전체 페이지로 통일했다 — 이 아래 세 테스트가 그 전환을
+ * 잠근다. 옛 시트 동작(§5.2 바텀시트)을 검증하던 자리다.
+ */
+test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 뒤로가기를 누르면 홈으로 돌아온다", async () => {
   await renderApp();
 
   // 데스크톱 사이드바(role=complementary)로 좁힌다 — 모바일 드로어도 같은
@@ -936,26 +942,25 @@ test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨�
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
-  // LocationPage에는 별도 제목이 없다(Figma "Location (Sheet)") — 항상 있는
-  // "현재 위치 사용" 버튼으로 시트가 열렸는지 확인한다.
+  // LocationPage에는 별도 제목이 없다 — 항상 있는 "현재 위치 사용" 버튼으로
+  // 화면이 열렸는지 확인한다.
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
-  // 시트 모드 헤더는 햄버거·위치 pill 대신 닫기(X) 버튼만 보인다(§6.1). 뒤에
-  // 깔리는 어두운 배경도 같은 이름("닫기")의 버튼이라 두 개가 잡힌다(§5.2).
-  const closeButtons = screen.getAllByRole("button", { name: "닫기" });
-  expect(closeButtons).toHaveLength(2);
-  // 새 페이지로 갈아치운 게 아니라 위에 뜬 시트라, 밑에 깔린 홈이 여전히 DOM에 있다.
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+  // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다(시트였다면 남아
+  // 있었을 것이다).
+  expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  // 시트가 아니므로 닫기(X)가 아니라 일반 헤더의 뒤로가기가 보인다. 기본
+  // matchMedia 모의값은 좁은 폭이라(src/test/setup.ts) 뒤로가기가 그려진다.
+  expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
 
-  await userEvent.click(closeButtons[1]);
+  await userEvent.click(screen.getByRole("button", { name: "뒤로가기" }));
 
-  // 닫히는 애니메이션(AnimatePresence exit)이 끝나야 시트가 DOM에서 빠진다.
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "현재 위치 사용" })).not.toBeInTheDocument(),
   );
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
-test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 설정이 시트가 아니라 전체 페이지로 뜬다", async () => {
+test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 설정에 뒤로가기가 없다", async () => {
   // useIsDesktopSidebar가 참을 반환하도록 matchMedia를 데스크톱 폭으로 흉내낸다.
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: true,
@@ -973,31 +978,28 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
-  // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 없고, 시트 배경에 가려졌던
-  // 홈도 더 이상 DOM에 없다.
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
-  // 뒤로가기도 없다(2026-09-06) — 사이드바가 상시 보이는 폭에서는 돌아갈 곳이
+  // 뒤로가기가 없다(2026-09-06) — 사이드바가 상시 보이는 폭에서는 돌아갈 곳이
   // 이미 화면 왼쪽에 다 펼쳐져 있어 헤더의 화살표가 같은 일을 두 번 한다.
   expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 /*
- * 일정도 위치와 같은 시트 경로를 탄다(state/sheetNav.ts의 SHEET_PATH_PATTERNS).
- * SchedulePage 자체는 별도 파일에서 직접 렌더해 검증하고, 여기서는 "사이드바에서
- * 눌렀을 때 홈을 갈아치우지 않고 그 위에 뜨는가"만 본다 — 이 배선이 빠지면
- * 대화가 사라진다.
+ * 일정도 위치와 같은 전체 페이지다. SchedulePage 자체는 별도 파일에서 직접
+ * 렌더해 검증하고, 여기서는 "사이드바에서 눌렀을 때 실제로 그 화면으로
+ * 가는가"만 본다 — 이 배선이 빠지면 대화가 사라진다.
  */
-test("사이드바에서 일정을 열면 홈 위에 바텀시트로 뜬다", async () => {
+test("사이드바에서 일정을 열면 전체 페이지로 뜬다", async () => {
   await renderApp();
 
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "일정" }));
 
   expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
-  // 밑에 깔린 홈이 그대로 있어야 시트다(전체 페이지 전환이면 사라진다).
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: "닫기" })).toHaveLength(2);
+  // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다.
+  expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
 });
 
 // --- 응답 대기 중 취소(package_D/DESIGN_SYSTEM.md §7.2) ------------------------

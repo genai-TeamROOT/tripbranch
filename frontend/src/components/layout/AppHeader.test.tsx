@@ -151,11 +151,13 @@ test("햄버거가 열림 여부를 알린다", () => {
 });
 
 /*
- * pill은 단순 표시가 아니라 위치 설정으로 가는 입구다. 시트로 열기 위해
- * 현재 위치를 backgroundLocation으로 실어 보내는지까지 확인한다 —
- * 이게 빠지면 전체 페이지로 갈아치워져 대화가 사라진다.
+ * pill은 단순 표시가 아니라 위치 설정으로 가는 입구다. **시트로 열지 않는다**
+ * (2026-09-07) — 위치 설정이 취향 설정과 같은 전체 페이지로 바뀌면서
+ * backgroundLocation을 실어 보낼 이유가 없어졌다. 예전에는 이 값이 "/chat"
+ * (여는 시점의 배경 화면)이어야 했는데, 지금은 반대로 **없어야** 맞다 —
+ * 남아 있으면 시트로 되돌아간 것이라 이 값으로 잠근다.
  */
-test("위치 pill을 누르면 위치 설정을 시트로 연다", async () => {
+test("위치 pill을 누르면 위치 설정으로 이동한다", async () => {
   const user = userEvent.setup();
 
   function LocationProbe() {
@@ -180,7 +182,7 @@ test("위치 pill을 누르면 위치 설정을 시트로 연다", async () => {
     }),
   );
 
-  expect(screen.getByTestId("probe")).toHaveTextContent("/chat");
+  expect(screen.getByTestId("probe")).toHaveTextContent("no-background");
 });
 
 /*

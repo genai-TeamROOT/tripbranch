@@ -18,7 +18,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Home, MapPin, MoreHorizontal, Route, Sparkles } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { detachChatRequest } from "../../state/chatAbortController";
-import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import {
@@ -132,10 +131,13 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
   const hasConversation = state.messages.length > 0;
 
-  function go(path: string, options?: { sheet?: boolean }) {
-    // 위치·일정은 새 페이지가 아니라 지금 화면 위에 바텀시트로 뜬다(§5) — 지금
-    // location을 backgroundLocation으로 실어 보내야 닫았을 때 여기로 돌아온다.
-    navigate(path, options?.sheet ? { state: sheetState(location) } : undefined);
+  /*
+   * 위치·일정도 취향 설정과 같은 전체 페이지다(2026-09-07). 예전에는 모바일에서
+   * 시트로 떴는데, 그 둘만 다른 취급을 받을 이유가 없어 go() 하나로 합쳤다 —
+   * sheet 옵션이 있던 자리다.
+   */
+  function go(path: string) {
+    navigate(path);
     onNavigate?.();
   }
 
@@ -227,14 +229,14 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       label: state.language === "en" ? "Location" : "위치 설정",
       icon: MapPin,
       active: pathname === "/location",
-      onClick: () => go("/location", { sheet: true }),
+      onClick: () => go("/location"),
     },
     {
       key: "schedule",
       label: state.language === "en" ? "Schedule" : "일정",
       icon: Route,
       active: pathname === "/schedule",
-      onClick: () => go("/schedule", { sheet: true }),
+      onClick: () => go("/schedule"),
     },
   ];
 

@@ -10,7 +10,7 @@
 import { ArrowRight, ChevronLeft, MapPinned, Menu, Navigation, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
-import { isOpenAsSheet, sheetState } from "../../state/sheetNav";
+import { isOpenAsSheet } from "../../state/sheetNav";
 import { cn } from "../../utils/cn";
 import type { LocationChipModel } from "../../utils/locationChip";
 import { useAppShell } from "./AppShellContext";
@@ -49,8 +49,16 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
    */
   const showBack = Boolean(onBack) && !isDesktop;
 
-  // 바텀시트는 모바일 전용이라, 데스크톱에서는 시트로 열린 화면도 전체 페이지로
-  // 그려진다(AppShell 참고) — 헤더도 시트 모드(X만)가 아니라 일반 모드로 보인다.
+  /*
+   * **지금은 이 분기를 타는 화면이 없다**(2026-09-07). 위치·일정이 취향 설정과
+   * 같은 전체 페이지로 바뀌면서, location.state.backgroundLocation을 실어
+   * 보내는 곳이 앱에 더는 없다 — isOpenAsSheet는 항상 false를 돌려준다.
+   *
+   * 그래도 지우지 않는다. 시트 자체(BottomSheetLayer, AppShell의 스택 계산)는
+   * 이 화면 전용이 아니라 범용 메커니즘이라, 나중에 다른 화면이 다시 시트로
+   * 열리기로 하면 이 분기가 그대로 되살아난다. 바텀시트는 모바일 전용 패턴이라
+   * 데스크톱에서는 시트로 열린 화면도 전체 페이지로 그려진다(AppShell 참고).
+   */
   if (isOpenAsSheet(location) && !isDesktop) {
     return (
       <div className="sticky top-0 z-20 flex justify-end px-4 pb-3 pt-5">
@@ -115,7 +123,7 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
           {locationChip && (
             <button
               type="button"
-              onClick={() => navigate("/location", { state: sheetState(location) })}
+              onClick={() => navigate("/location")}
               aria-label={`위치 설정으로 이동 (${locationChip.description})`}
               /* min-w-0을 두어야 안쪽 이름이 줄어들 수 있다. 없으면 칩이 제 내용
                  폭을 고집해 좁은 화면에서 헤더 밖으로 밀려난다. */
