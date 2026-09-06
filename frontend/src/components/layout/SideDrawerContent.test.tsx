@@ -1017,3 +1017,53 @@ test("팝업 바깥을 누르면 닫힌다", async () => {
  * "대화와 저장한 일정의 id가 겹쳐도 메뉴는 하나만 뜬다"는 두 목록이 메뉴 상태를
  * 한 벌로 나눠 쓸 때만 성립하던 가드라 옮기지 않고 지웠다.
  */
+
+/*
+ * **접었을 때도 계정에 닿아야 한다**(2026-09-06).
+ *
+ * 레일은 SideDrawerContent 를 아예 그리지 않아서, 접어 두면 로그인도 로그아웃도
+ * 할 수 없었다 — 펴야만 되는 동작이 있으면 접기가 기능을 감추는 셈이다.
+ *
+ * 두 신원을 짝으로 잠근다. 한쪽만 보면 "계정일 때만 나오는" 구현으로도 통과한다.
+ */
+test("사이드바를 접어도 로그인 입구가 레일에 남는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
+
+  await user.click(within(sidebar()).getByRole("button", { name: "로그인" }));
+  expect(await screen.findByLabelText("이메일")).toBeInTheDocument();
+});
+
+test("사이드바를 접어도 계정 프로필을 눌러 로그아웃할 수 있다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
+
+  /* 레일에는 글자가 없으므로 이름·부제가 버튼의 접근 가능한 이름이 된다 — 펼친
+     쪽 버튼도 그 둘을 품고 있어 같은 문구로 읽힌다. */
+  await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
+  await user.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
+
+  /* 로그아웃하면 관문으로 튕기지 않고 로그인 안 한 상태로 남는다 — 레일도
+     로그인 입구로 바뀐다. */
+  expect(await within(sidebar()).findByRole("button", { name: "로그인" })).toBeInTheDocument();
+});
+
+/* 레일 계정은 펼친 사이드바와 **같은 컴포넌트**다. 한 벌 더 만들면 로그아웃이 두
+   곳에 생기고, 한쪽만 고쳐지면 접었을 때와 폈을 때가 갈린다. 팝업 내용이 양쪽에서
+   같은지 확인해 그 사실을 잠근다. */
+test("레일 계정 팝업도 펼친 쪽과 같은 내용을 낸다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
+  await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
+
+  /* 신원 헤더 + 로그아웃. 그 밖의 줄은 만들지 않는다(갈 화면이 없다). */
+  expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
+  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(1);
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+});

@@ -11,6 +11,7 @@ import { Home, MapPin, PanelLeftClose, PanelLeftOpen, Route, Sparkles } from "lu
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import { SideDrawerContent } from "./SideDrawerContent";
+import { SidebarAccount } from "./SidebarAccount";
 
 interface DesktopSidebarProps {
   collapsed: boolean;
@@ -79,7 +80,9 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
   return (
     <aside className={`tb-sidebar ${collapsed ? "tb-sidebar--collapsed" : ""}`}>
       {collapsed ? (
-        <div className="flex flex-col items-center gap-2 py-5">
+        /* flex-1 이라야 계정 자리의 mt-auto 가 밀어낼 높이를 갖는다 — 내용만큼만
+           높으면 바닥이 아니라 마지막 아이콘 바로 밑에 붙는다. */
+        <div className="flex flex-1 flex-col items-center gap-2 py-5">
           <button
             type="button"
             onClick={onToggle}
@@ -103,6 +106,15 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
               <item.icon size={18} />
             </button>
           ))}
+          {/*
+           * 접었을 때도 계정에 닿아야 한다(2026-09-06). 예전에는 레일이
+           * SideDrawerContent 를 아예 안 그려서, 접어 두면 로그인도 로그아웃도
+           * 할 수 없었다 — 펴야만 보이는 동작이 있으면 접기가 기능을 감추는 셈이다.
+           *
+           * 펼친 사이드바와 **같은 컴포넌트**다. 레일용으로 한 벌 더 만들면
+           * 로그아웃이 두 곳에 생기고, 한쪽만 고쳐지면 접었을 때와 폈을 때가 갈린다.
+           */}
+          <SidebarAccount compact />
         </div>
       ) : (
         <>
