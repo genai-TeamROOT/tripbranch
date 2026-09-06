@@ -276,3 +276,90 @@ def test_map_realtime_traffic_response_extracts_avg_road_data() -> None:
 
 def test_map_realtime_traffic_response_returns_none_when_missing() -> None:
     assert map_realtime_traffic_response({"CITYDATA": {"AREA_NM": "종로"}}) is None
+
+
+def _traffic_payload(acdnt_cntrl_stts: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "CITYDATA": {
+            "AREA_NM": "명동 관광특구",
+            "ROAD_TRAFFIC_STTS": {
+                "AVG_ROAD_DATA": {
+                    "ROAD_TRAFFIC_IDX": "서행",
+                    "ROAD_TRAFFIC_SPD": 15,
+                    "ROAD_TRAFFIC_TIME": "2026-09-06 18:30",
+                },
+            },
+            "ACDNT_CNTRL_STTS": acdnt_cntrl_stts,
+        }
+    }
+
+
+def test_map_realtime_traffic_response_counts_incidents_by_category() -> None:
+    """실측(2026-09-06, 명동 관광특구)에서 확인한 원문 유형 조합을 그대로 검증한다."""
+
+    payload = _traffic_payload(
+        [
+            {"ACDNT_TYPE": "공사", "ACDNT_DTYPE": "도로보수"},
+            {"ACDNT_TYPE": "집회및행사", "ACDNT_DTYPE": "행사"},
+            {"ACDNT_TYPE": "기타", "ACDNT_DTYPE": "기타"},
+        ]
+    )
+
+    result = map_realtime_traffic_response(payload)
+
+    assert result is not None
+    counts = {c.label: c.count for c in result.incident_counts}
+    assert counts == {"사고/고장": 0, "공사/집회": 2, "기상/화재": 0, "기타": 1}
+    # 4분류 순서가 고정이다 — 지도 화면과 같은 순서로 항상 이 순서를 지킨다.
+    assert [c.label for c in result.incident_counts] == [
+        "사고/고장",
+        "공사/집회",
+        "기상/화재",
+        "기타",
+    ]
+
+
+def test_map_realtime_traffic_response_classifies_accident_breakdown_weather_fire() -> None:
+    """서울시 원문에서 아직 실측하지 못한 유형(사고·고장·기상·화재)도 키워드로 분류한다.
+
+    코드표 API(OA-13312)가 서비스 종료라 전체 값 목록을 직접 조회할 수 없어,
+    ITS 국가교통정보센터의 표준 돌발유형 체계를 참고해 분류했다.
+    """
+
+    payload = _traffic_payload(
+        [
+            {"ACDNT_TYPE": "교통사고", "ACDNT_DTYPE": "추돌사고"},
+            {"ACDNT_TYPE": "고장차량", "ACDNT_DTYPE": "고장"},
+            {"ACDNT_TYPE": "기상특보", "ACDNT_DTYPE": "폭설"},
+            {"ACDNT_TYPE": "화재", "ACDNT_DTYPE": "화재"},
+        ]
+    )
+
+    result = map_realtime_traffic_response(payload)
+
+    assert result is not None
+    counts = {c.label: c.count for c in result.incident_counts}
+    assert counts == {"사고/고장": 2, "공사/집회": 0, "기상/화재": 2, "기타": 0}
+
+
+def test_map_realtime_traffic_response_unknown_type_falls_back_to_other() -> None:
+    payload = _traffic_payload([{"ACDNT_TYPE": "알수없음", "ACDNT_DTYPE": ""}])
+
+    result = map_realtime_traffic_response(payload)
+
+    assert result is not None
+    counts = {c.label: c.count for c in result.incident_counts}
+    assert counts["기타"] == 1
+
+
+def test_map_realtime_traffic_response_always_fills_four_categories_even_with_zero() -> None:
+    """돌발상황이 하나도 없는 지역(대다수)도 4분류를 전부 0건으로 채운다.
+
+    값이 없는 분류를 조용히 감추면 "이 지역엔 그 유형이 없다"는 뜻으로 읽혀
+    서울시 지도 화면(사고/고장 0건 · 공사/집회 0건 · ...)과 어긋난다.
+    """
+
+    result = map_realtime_traffic_response(_traffic_payload([]))
+
+    assert result is not None
+    assert [c.count for c in result.incident_counts] == [0, 0, 0, 0]

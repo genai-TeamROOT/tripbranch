@@ -147,5 +147,12 @@ export function authErrorMessage(error: SupabaseAuthErrorLike | null | undefined
   /* 429는 code가 없어도 의미가 분명하다. */
   if (error.status === 429) return BY_CODE.over_request_rate_limit;
 
+  /*
+   * status 0은 응답을 못 받았다는 뜻이다(AuthRetryableFetchError). 우리가 건 15초
+   * 타임아웃이 여기로 온다(supabaseClient.fetchWithTimeout, TP-240). 입력이 틀린
+   * 것과 서버에 못 닿은 것은 다음에 할 일이 달라서 뭉뚱그리지 않는다.
+   */
+  if (error.status === 0) return "서버에 닿지 못했어요. 잠시 후 다시 시도해주세요.";
+
   return FALLBACK;
 }

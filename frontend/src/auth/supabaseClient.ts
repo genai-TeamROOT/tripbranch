@@ -121,6 +121,36 @@ export function onPasswordRecoveryChange(listener: (active: boolean) => void): (
   };
 }
 
+/*
+ * auth-js에는 타임아웃이 없다(TP-240).
+ *
+ * 설치본 2.112.3의 `lib/fetch.js`에 AbortController·AbortSignal·setTimeout이 한 건도
+ * 없다. 그래서 로그인·회원가입·비밀번호 변경·getSession()의 토큰 갱신이 응답을 못
+ * 받으면 영영 매달리고, 그 위 화면의 버튼은 `finally`가 안 돌아 잠긴 채로 남는다.
+ * 요청 하나하나를 감싸는 대신 클라이언트가 쓰는 fetch를 여기서 한 번 갈아 끼운다.
+ *
+ * **세션을 지우지는 않는다.** abort는 auth-js에서 네트워크 오류로 취급돼
+ * AuthRetryableFetchError가 되고, `_callRefreshToken`은 그 오류에서 `_removeSession()`
+ * 분기를 건너뛴다. 즉 여기서 끊겨도 로그인이 풀리지 않는다.
+ */
+const AUTH_FETCH_TIMEOUT_MS = 15_000;
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AUTH_FETCH_TIMEOUT_MS);
+
+  /* auth-js가 자기 신호를 주는 경우(예: signOut)를 덮어쓰지 않는다. */
+  const external = init?.signal;
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 export function getSupabaseClient(): SupabaseClient {
   if (cached) return cached;
 
@@ -143,6 +173,7 @@ export function getSupabaseClient(): SupabaseClient {
       // /reset-password/new가 항상 "만료된 링크"로 보인다.
       detectSessionInUrl: true,
     },
+    global: { fetch: fetchWithTimeout },
   });
 
   /* createClient 바로 뒤, 같은 tick에 붙인다. 초기화는 비동기라 이 시점에는 아직

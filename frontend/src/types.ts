@@ -351,6 +351,16 @@ export interface InfoPlaceCard {
    * 호출하므로 추가 호출 없이 채울 수 있다.
    */
   seoul_realtime_summary?: SeoulRealtimeSummary | null;
+  /**
+   * 도로 위 돌발상황 4분류(사고/고장 · 공사/집회 · 기상/화재 · 기타) 진행 건수.
+   * realtime_traffic 전용, 0건 포함 항상 4개다.
+   */
+  road_incident_counts?: RoadIncidentCategoryCount[];
+}
+
+export interface RoadIncidentCategoryCount {
+  label: string;
+  count: number;
 }
 
 export interface SeoulRealtimePaymentCategory {

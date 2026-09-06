@@ -216,7 +216,14 @@ export function LocationPage() {
 
   async function runSearch(rawQuery: string) {
     const trimmed = rawQuery.trim();
-    if (!trimmed || isSearching) return;
+    if (!trimmed) return;
+    /* 검색 중에 다시 누르면 예전에는 조용히 무시했다. 요청이 매달려 있을 때는
+       "안 눌렸나"와 "잠겼나"가 화면에서 구분되지 않아서, 무시하더라도 무시했다고
+       말한다(TP-240). */
+    if (isSearching) {
+      setSearchError(isEn ? "Still searching. One moment." : "아직 검색 중이에요. 잠시만요.");
+      return;
+    }
     setQuery(trimmed);
     setIsSearching(true);
     setSearchError(null);

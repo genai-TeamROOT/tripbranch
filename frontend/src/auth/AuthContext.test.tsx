@@ -6,10 +6,15 @@
  * TODO: 정식 로그인이 들어오면 계정 연결(linkIdentity) 경로도 여기서 검증한다.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../App";
-import { GUEST_SESSION, setMockSession, setMockSignInError } from "../test/supabaseMock";
+import {
+  GUEST_SESSION,
+  hangMockGetSession,
+  setMockSession,
+  setMockSignInError,
+} from "../test/supabaseMock";
 import { resetSupabaseClient } from "./supabaseClient";
 
 /* 데스크톱 사이드바(항상 렌더)와 모바일 드로어가 같은 SideDrawerContent를 각자
@@ -118,4 +123,33 @@ test("Supabase 설정이 없으면 통과시키지 않고 설정 오류를 드�
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
 
   vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
+});
+
+/*
+ * TP-240. getSession()이 안 끝나면 status가 loading에 머물러 "불러오는 중이에요…"가
+ * 영영 남는다. 새로고침해도 같은 자리에서 또 멈춘다.
+ *
+ * 시한이 지나면 status가 "ready"(세션 null)로 확정되고, 그다음은 이 화면에
+ * 로그인 관문이 없으므로(2026-09-06) RequireUser가 곧장 게스트로 자동
+ * 로그인한다 — signInAsGuest는 signInAnonymously만 부르고 getSession을
+ * 다시 부르지 않아 이 매달림과 무관하게 끝난다. 그래서 여기서 확인할 것은
+ * "게스트로 시작하기" 버튼이 아니라 메인 화면이 실제로 열리는지다.
+ */
+test("저장된 세션 확인이 응답하지 않아도 화면이 멈추지 않는다", async () => {
+  vi.useFakeTimers();
+  hangMockGetSession();
+
+  render(<App />);
+
+  expect(screen.getByText("불러오는 중이에요…")).toBeInTheDocument();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+
+  /* findByRole 내부 폴링(waitFor)이 setTimeout을 쓴다 — 가짜 타이머를 켠 채로
+     두면 더 이상 진행하지 않고 그대로 멎는다. 뒤이은 게스트 자동 로그인은
+     타이머가 아니라 순수 Promise라 실제 타이머로 돌려도 놓치지 않는다. */
+  vi.useRealTimers();
+  expect(await screen.findByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
