@@ -161,3 +161,12 @@ test("처음 보는 코드여도 영어 원문을 띄우지 않는다", () => {
   expect(message).toContain("링크를 확인하지 못했어요");
   expect(message).not.toMatch(/[a-z]{4,}/);
 });
+
+/* 우리가 건 15초 타임아웃(supabaseClient.fetchWithTimeout)이 이 모양으로 온다 —
+   auth-js가 abort를 AuthRetryableFetchError(status 0)로 감싼다. */
+test("서버에 못 닿은 것과 입력이 틀린 것을 다르게 말한다", () => {
+  const message = authErrorMessage({ message: "Aborted", status: 0 });
+
+  expect(message).toContain("서버에 닿지 못했어요");
+  expect(message).not.toContain("비밀번호");
+});

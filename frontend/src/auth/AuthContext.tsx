@@ -70,6 +70,10 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
 }
 
+/* 저장된 세션 확인을 여기까지만 기다린다. 클라이언트에 끼운 fetch 타임아웃(15초)보다
+   넉넉해야 네트워크가 느린 것과 아예 매달린 것이 구분된다. */
+const INITIAL_SESSION_TIMEOUT_MS = 20_000;
+
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -118,7 +122,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     let active = true;
+
+    /*
+     * 첫 세션 확인이 안 끝나면 status가 loading에 머물고, RequireUser는 계속
+     * "불러오는 중이에요…"만 보여준다. 새로고침해도 같은 자리에서 또 멈춘다.
+     * getSession()은 fetch가 아니라 브라우저 lock에서도 매달릴 수 있어 클라이언트에
+     * 끼운 fetch 타임아웃만으로는 안 덮인다(TP-240).
+     *
+     * 시한이 지나면 **"세션 없음"으로 확정하지 않고** 관문을 열어준다. 로그인 화면은
+     * 세션이 나중에 도착하면 원래 목적지로 다시 보내므로(LoginPage), 늦게 온 답도
+     * 버려지지 않는다. 멈춘 화면보다는 누를 것이 있는 화면이 낫다.
+     */
+    const sessionDeadline = setTimeout(() => {
+      if (!active) return;
+      setStatus("ready");
+    }, INITIAL_SESSION_TIMEOUT_MS);
+
     void client.auth.getSession().then(({ data }) => {
+      clearTimeout(sessionDeadline);
       if (!active) return;
       setSession(data.session ?? null);
       setStatus("ready");
@@ -131,6 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       active = false;
+      clearTimeout(sessionDeadline);
       listener.subscription.unsubscribe();
       setAuthTokenProvider(null);
     };

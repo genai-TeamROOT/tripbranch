@@ -15,6 +15,8 @@ import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
 import { LocationPage } from "./LocationPage";
 import { searchPlaces } from "../api/trip";
+import { ApiError } from "../api/client";
+import type { PlaceSearchResponse } from "../types";
 import { resetFavoritesSync } from "../state/favoritesSync";
 import {
   loadLocationSettings,
@@ -477,4 +479,60 @@ test("검색 전에는 결과 영역 자체를 보여주지 않는다", () => {
 
   expect(screen.queryByText("검색 결과")).not.toBeInTheDocument();
   expect(screen.queryByText("찾은 장소가 없어요")).not.toBeInTheDocument();
+});
+
+/* TP-240. 예전에는 응답이 안 오면 isSearching이 true로 굳어 버튼이 잠기고, 다시
+   눌러도 가드가 조용히 삼켰다. 새로고침 말고는 빠져나갈 길이 없었다. */
+test("검색이 끊겨도 새로고침 없이 같은 화면에서 다시 검색할 수 있다", async () => {
+  const user = userEvent.setup();
+  searchPlacesMock.mockRejectedValueOnce(
+    new ApiError({
+      code: "request_timeout",
+      message: "서버가 응답하지 않아 요청을 끊었어요. 다시 시도해주세요.",
+      retryable: true,
+      details: null,
+    }),
+  );
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("서버가 응답하지 않아");
+  /* 잠금이 풀렸다는 것 자체가 확인 대상이다. */
+  expect(screen.getByRole("button", { name: "검색" })).toBeEnabled();
+
+  searchPlacesMock.mockResolvedValueOnce({ places: [ANGUK], outside_service_area_count: 0 });
+  await user.click(screen.getByRole("button", { name: "검색" }));
+
+  expect(
+    await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }),
+  ).toBeInTheDocument();
+});
+
+/* 검색 버튼은 검색 중에 disabled라 브라우저가 Enter 제출까지 막는다. 반면 최근
+   검색 줄은 잠기지 않아서, 눌러도 가드에 걸려 아무 일도 안 일어나는 자리가 된다. */
+test("검색 중에 최근 검색을 누르면 조용히 무시하지 않고 진행 중임을 알린다", async () => {
+  const user = userEvent.setup();
+  let release: (value: PlaceSearchResponse) => void = () => {};
+  searchPlacesMock.mockReturnValueOnce(
+    new Promise<PlaceSearchResponse>((resolve) => {
+      release = resolve;
+    }),
+  );
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  expect(await screen.findByRole("button", { name: "검색 중" })).toBeDisabled();
+
+  /* 검색어는 결과가 오기 전에 최근 검색으로 남는다 — 그 줄이 아직 잠기지 않았다. */
+  await user.click(screen.getByRole("button", { name: "안국역" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("아직 검색 중이에요");
+
+  release({ places: [ANGUK], outside_service_area_count: 0 });
+  expect(
+    await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }),
+  ).toBeInTheDocument();
 });

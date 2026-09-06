@@ -46,6 +46,15 @@ interface AuthCall {
 let authCalls: AuthCall[] = [];
 let emailAuthError: { message: string; code?: string } | null = null;
 
+/* 저장된 세션 확인이 영영 안 끝나는 상황. getSession()은 fetch가 아니라 브라우저
+   lock에서도 매달릴 수 있어서, 클라이언트에 끼운 fetch 타임아웃으로는 안 덮인다.
+   resetSupabaseMock()이 매 테스트 앞에서 끈다. */
+let getSessionHangs = false;
+
+export function hangMockGetSession(): void {
+  getSessionHangs = true;
+}
+
 export function setMockSession(session: Session | null): void {
   currentSession = session;
   listeners.forEach((listener) => listener("SIGNED_IN", session));
@@ -80,6 +89,7 @@ export function resetSupabaseMock(): void {
   listeners = [];
   authCalls = [];
   emailAuthError = null;
+  getSessionHangs = false;
 }
 
 /* 이메일 확인이 켜져 있을 때 실제 Supabase가 돌려주는 모양이다 — user는 있고
@@ -90,7 +100,10 @@ const CONFIRMATION_PENDING = { user: { id: "pending", identities: [] }, session:
 export function createMockSupabaseClient(): SupabaseClient {
   return {
     auth: {
-      getSession: async () => ({ data: { session: currentSession }, error: null }),
+      getSession: async () => {
+        if (getSessionHangs) return new Promise<never>(() => {});
+        return { data: { session: currentSession }, error: null };
+      },
       onAuthStateChange: (listener: AuthListener) => {
         listeners.push(listener);
         return {
