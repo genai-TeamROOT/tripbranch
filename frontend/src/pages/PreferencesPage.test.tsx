@@ -226,15 +226,14 @@ test("저장하면 홈 화면으로 보낸다", async () => {
 });
 
 /*
- * 저장하면 추천 순위에 반영된다(SCORING_VERSION 1.5.0, 2026-09-07). 예전
- * 부제는 "아직 준비 중"이라고 적어 반대로 말했었다 — 부제가 지금은 반영된다는
- * 사실과, 홈 화면에는 안 보인다는 사실을 함께 밝히는지 잠근다.
+ * 저장하면 추천 순위에 반영된다(SCORING_VERSION 1.5.0). 부제는 이 사실만
+ * 말한다(2026-09-07) — 홈 화면에 안 보인다는 부수적인 사실은 뺐다.
  */
-test("부제가 추천에 반영된다는 사실과 홈에는 안 보인다는 사실을 함께 밝힌다", () => {
+test("부제가 추천에 반영된다는 사실을 밝힌다", () => {
   renderPage();
 
-  expect(screen.getByText(/추천 결과에는 반영돼요/)).toBeInTheDocument();
-  expect(screen.getByText(/홈 화면에는 안 보이지만/)).toBeInTheDocument();
+  expect(screen.getByText(/고르신 취향이 추천 결과에 반영돼요/)).toBeInTheDocument();
+  expect(screen.queryByText(/홈 화면/)).not.toBeInTheDocument();
 });
 
 

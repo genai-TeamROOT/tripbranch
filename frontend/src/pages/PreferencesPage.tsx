@@ -7,8 +7,8 @@
  *   SHEET_PATH_PATTERNS에 /preferences가 없다).
  *
  * **저장하면 추천 순위에 반영된다**(SCORING_VERSION 1.5.0 취향 RAG 질의
- * 보강). 부제도 그에 맞춰 고쳤다 — 예전에는 "반영은 아직 준비 중"이라고
- * 적었는데, 파이프라인이 이미 반영하므로 그 문구가 거짓이 돼 있었다.
+ * 보강). 부제는 이 사실만 말한다(2026-09-07) — 홈 화면에 안 보인다는 사실은
+ * 뺐다, 그건 이 화면을 쓰는 이유가 아니라 부수적인 정보라서다.
  *
  * 칩 목록과 각 칩이 대응하는 DB 코드는 preferenceOptions.ts에 있다 —
  * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
@@ -289,8 +289,8 @@ export function PreferencesPage() {
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-muted">
             {isEn
-              ? `Your picks aren't shown on the home screen, but they do shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
-              : `고른 취향은 홈 화면에는 안 보이지만, 추천 결과에는 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
+              ? `Your picks shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
+              : `고르신 취향이 추천 결과에 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
           </p>
 
           {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
