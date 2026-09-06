@@ -374,38 +374,11 @@
 }
 
 /*
- * 홈 히어로 — 바탕 워시 + 유리 오브(components/… 아님, pages/HomePage).
+ * 홈 히어로 유리 오브(pages/HomePage).
  *
- * 워시는 취향 설정 화면이 이미 쓰는 수법이다(위에서 옅게 시작해 사라지는 띠).
- * 다른 점은 여기서는 화면 전체를 덮는다는 것 — 홈은 채워야 할 본문이 적어서
- * 흰 바탕을 그대로 두면 비어 보인다.
+ * 바탕 워시는 뺐다(2026-09-07 사용자 결정) — 오브 자체가 유리라 뒤에 색을 더
+ * 깔면 둘이 겹쳐 탁해진다. 지금 화면에서 색이 있는 곳은 오브 뒤 번짐 하나뿐이다.
  */
-.tb-home-wash {
-  position: relative;
-  background: linear-gradient(180deg, #e4ebfb 0%, #f2f6fe 34%, #ffffff 72%);
-  /*
-   * **반드시 가로를 잘라야 한다.** 아래 ::before 번짐이 오른쪽으로 90px 걸쳐
-   * 있는데, 이 요소는 세로 스크롤 컨테이너(overflow-y:auto)라 CSS 규칙상
-   * overflow-x 가 visible 로 남지 못하고 auto 로 계산된다 — 그 90px 이 그대로
-   * 가로 스크롤이 됐다(430·1280 양쪽에서 scrollWidth 가 90px 더 컸다,
-   * 2026-09-07 실측). documentElement 는 멀쩡해서 눈에 잘 안 띈다.
-   */
-  overflow-x: hidden;
-}
-
-/* 오른쪽 위에서 번지는 옅은 빛. 워시만으로는 가로로 평평해서 띠처럼 보인다. */
-.tb-home-wash::before {
-  content: "";
-  position: absolute;
-  top: -110px;
-  right: -90px;
-  width: 320px;
-  height: 320px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(169, 192, 242, 0.5), rgba(169, 192, 242, 0) 68%);
-  pointer-events: none;
-}
-
 .tb-orb {
   position: relative;
   display: grid;
@@ -422,8 +395,8 @@
  */
 .tb-orb__glow {
   position: absolute;
-  width: 300px;
-  height: 300px;
+  width: 214px;
+  height: 214px;
   border-radius: 50%;
   background:
     radial-gradient(circle at 38% 34%, rgba(169, 192, 242, 0.75), rgba(169, 192, 242, 0) 62%),
@@ -444,30 +417,30 @@
 .tb-orb__img {
   position: relative;
   display: block;
-  width: 208px;
+  width: 148px;
   height: auto;
-  filter: drop-shadow(0 20px 26px rgba(16, 24, 40, 0.28));
+  filter: drop-shadow(0 14px 20px rgba(16, 24, 40, 0.24));
 }
 
 @media (max-height: 780px) {
   .tb-orb__img {
-    width: 156px;
+    width: 120px;
   }
 
   .tb-orb__glow {
-    width: 226px;
-    height: 226px;
+    width: 174px;
+    height: 174px;
   }
 }
 
 @media (max-height: 680px) {
   .tb-orb__img {
-    width: 122px;
+    width: 98px;
   }
 
   .tb-orb__glow {
-    width: 178px;
-    height: 178px;
+    width: 142px;
+    height: 142px;
   }
 }
 

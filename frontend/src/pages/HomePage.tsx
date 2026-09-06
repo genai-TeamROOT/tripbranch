@@ -316,7 +316,7 @@ export function HomePage() {
   );
 
   return (
-    <main className="tb-home-wash flex h-full flex-col overflow-y-auto">
+    <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader location={locationChip} />
 
       {/*
@@ -367,10 +367,10 @@ export function HomePage() {
           <div className="tb-orb" aria-hidden>
             <span className="tb-orb__glow" />
             <img
-              src="/glass-object.png"
+              src="/glass-object.webp"
               alt=""
-              width={208}
-              height={233}
+              width={148}
+              height={146}
               decoding="async"
               className="tb-orb__img"
             />
