@@ -32,11 +32,17 @@ import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const HOME_TEXT = {
   ko: {
-    /* 두 줄을 다른 톤으로 낸다 — 앞줄은 브랜드색 Light, 뒷줄은 먹색 Bold.
-       세리프를 들이지 않고 대비를 만드는 자리다(2026-09-07). */
-    headlineSoft: "갑자기 일정이",
-    headlineHard: "바뀌셨나요?",
-    subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
+    /*
+     * 문장 가운데 한 낱말을 부각한다(2026-09-07). 이 화면이 무엇에 대한
+     * 화면인지가 "일정"과 "상황" 두 낱말에 다 들어 있다 — 앞뒤를 따로 들고
+     * 있어야 그 자리에만 색·굵기를 줄 수 있다.
+     */
+    headline: { lead: "갑자기 ", accent: "일정", tail: "이 바뀌셨나요?" },
+    subtitle: {
+      lead: "지금 ",
+      accent: "상황",
+      tail: "을 말해주면 바로 대체 장소를 찾아볼게요.",
+    },
     locationNotice:
       "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
     prompts: [
@@ -51,9 +57,12 @@ const HOME_TEXT = {
     requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
   },
   en: {
-    headlineSoft: "Did your plans",
-    headlineHard: "change suddenly?",
-    subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
+    headline: { lead: "Did your ", accent: "plans", tail: " change suddenly?" },
+    subtitle: {
+      lead: "Tell us your ",
+      accent: "situation",
+      tail: ", and we’ll find a place to visit in Seoul.",
+    },
     locationNotice:
       "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
     prompts: [
@@ -311,19 +320,21 @@ export function HomePage() {
          * 오브는 장식이라 aria-hidden 이다 — 누르는 기능도 움직임도 없다.
          * 화면이 낮으면 이미지 자체가 작아진다(.tb-orb__img).
          */}
-        <div className="flex flex-col items-center pt-3 text-center">
+        {/* pt 로 히어로를 아래로 내린다(2026-09-07). 아래 flex-1 칸이 그만큼
+            줄어들어 아래쪽 묶음은 제자리에 남는다. */}
+        <div className="flex flex-col items-center pt-10 text-center">
           <img
-            src="/glass-object.webp"
+            src="/glass-object.png"
             alt=""
             aria-hidden
-            width={104}
-            height={103}
+            width={76}
+            height={75}
             decoding="async"
             className="tb-orb__img"
           />
           {/*
            * 한 줄이다(2026-09-07). 두 줄로 쪼개 놓으면 가운데 정렬에서 윗줄이
-           * 짧아 축이 흔들려 보인다 — 톤은 그대로 두고 줄만 붙인다.
+           * 짧아 축이 흔들려 보인다.
            *
            * 좁은 화면에서 접히지 않게 글자를 줄인다 — 24px 이면 "갑자기 일정이
            * 바뀌셨나요?" 가 241px 이라 360px 화면의 본문 폭(328px)에 들어간다.
@@ -331,12 +342,20 @@ export function HomePage() {
            * **nowrap 은 쓰지 않는다.** 영어 문구가 더 길어서(Did your plans change
            * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
            * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
+           *
+           * 부각은 **제목에만 색을 쓴다.** 부제까지 파랗게 하면 파란 낱말이 둘이
+           * 되어 어느 쪽을 보라는 것인지 흐려진다 — 부제는 굵기와 먹색으로만 든다.
            */}
-          <h1 className="mt-5 text-2xl leading-[1.32] tracking-[-0.035em] sm:text-[30px]">
-            <span className="font-light text-brand">{text.headlineSoft}</span>{" "}
-            <span className="font-bold text-ink">{text.headlineHard}</span>
+          <h1 className="mt-5 text-2xl font-bold leading-[1.32] tracking-[-0.035em] text-ink sm:text-[30px]">
+            {text.headline.lead}
+            <span className="text-brand">{text.headline.accent}</span>
+            {text.headline.tail}
           </h1>
-          <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">{text.subtitle}</p>
+          <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">
+            {text.subtitle.lead}
+            <span className="font-semibold text-ink">{text.subtitle.accent}</span>
+            {text.subtitle.tail}
+          </p>
         </div>
 
         {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
