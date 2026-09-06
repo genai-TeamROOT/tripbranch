@@ -1,26 +1,24 @@
 /*
  * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면을 옮긴 것이다.
  *   저장하면 **계정에 남고**(PUT /api/preferences) 이 기기에도 함께 남는다
- *   (state/preferenceSync.ts). 홈 화면이 그 값을 다시 보여준다 — 확인하러 이
- *   화면까지 들어오지 않아도 되게.
- * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
- *   SHEET_PATH_PATTERNS에 /preferences가 없다).
+ *   (state/preferenceSync.ts). 홈 화면에는 보이지 않는다(2026-09-07) — 홈의
+ *   취향 칩 줄을 지운 뒤로는 확인하려면 이 화면에 다시 들어와야 한다.
+ * 호출 시점: 사이드바 "취향 설정"에서 연다. 위치·일정과 함께 전체 페이지다 —
+ *   시트로 여는 화면은 이제 앱에 없다(2026-09-07, AppShell).
  *
- * **저장해도 추천 순위는 아직 달라지지 않는다.** 고른 값을 추천 요청에 싣는
- * 경로는 순위가 바뀌는 변경이라 실측한 뒤에 넣기로 했다. 그래서 부제도 Figma의
- * "상황별 추천에 반영돼요"를 그대로 쓰지 않았다 — 안 되는 일을 된다고 말하는
- * 문구가 된다.
+ * **저장하면 추천 순위에 반영된다**(SCORING_VERSION 1.5.0 취향 RAG 질의
+ * 보강). 부제는 이 사실만 말한다(2026-09-07) — 홈 화면에 안 보인다는 사실은
+ * 뺐다, 그건 이 화면을 쓰는 이유가 아니라 부수적인 정보라서다.
  *
  * 칩 목록과 각 칩이 대응하는 DB 코드는 preferenceOptions.ts에 있다 —
  * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
  */
 
-import { Compass, Plus, Sparkles, Users } from "lucide-react";
+import { Compass, Sparkles, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
-import { AddKeywordModal } from "../components/layout/AddKeywordModal";
 import { loadPreferences, type SavedPreference } from "../state/preferenceStorage";
 import { pushPreferences, syncPreferences } from "../state/preferenceSync";
 import { useTripState } from "../state/TripContext";
@@ -41,6 +39,7 @@ function ChipGroup({
   options,
   selected,
   onToggle,
+  blockUnselected,
   isEn,
 }: {
   icon: typeof Sparkles;
@@ -48,6 +47,14 @@ function ChipGroup({
   options: readonly PreferenceOption[];
   selected: Set<string>;
   onToggle: (option: string) => void;
+  /*
+   * 아직 안 고른 칩을 못 누르게 한다. 예전에는 상한에 걸리면 `toggle`이 조용히
+   * 무시했는데, 눌러도 아무 일이 안 나는 것과 고장은 화면에서 구분되지 않는다 —
+   * 못 누른다는 사실이 칩 자체에 보여야 한다.
+   *
+   * 이미 고른 칩은 빼는 동작이라 언제나 누를 수 있다.
+   */
+  blockUnselected: boolean;
   isEn: boolean;
 }) {
   return (
@@ -64,8 +71,10 @@ function ChipGroup({
               key={option.label}
               type="button"
               aria-pressed={isSelected}
+              disabled={!isSelected && blockUnselected}
               onClick={() => onToggle(option.label)}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+              /* disabled:opacity-40은 이 화면의 "선택 초기화"와 같은 표현이다. */
+              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
                 isSelected ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
               }`}
             >
@@ -96,10 +105,15 @@ export function PreferencesPage() {
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(restored.map((preference) => preference.label)),
   );
+  /*
+   * **새로 만들 수는 없고, 이미 저장한 것만 보여준다**(2026-09-06). "키워드 직접
+   * 입력"을 없앴지만 그 전에 저장해 둔 값은 계속 그려야 한다 — 안 그리면 선택
+   * 개수(N/5)에는 잡히는데 화면에 없는 칩이 생겨서, 5개를 다 못 고르는데 이유가
+   * 어디에도 보이지 않는다. 여기 있으면 눌러서 빼고 저장하는 것으로 정리된다.
+   */
   const [customKeywords, setCustomKeywords] = useState<string[]>(() =>
     restored.filter((preference) => preference.source === "custom").map(({ label }) => label),
   );
-  const [showAddKeyword, setShowAddKeyword] = useState(false);
   const [cleared, setCleared] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -144,6 +158,34 @@ export function PreferencesPage() {
   }
 
   /*
+   * **동행은 하나만 고른다**(2026-09-06 사용자 결정). 안 고르는 것도 된다 —
+   * 필수는 아니다.
+   *
+   * 다른 동행을 누르면 막지 않고 **바꾼다.** 막으면 먼저 빼고 다시 눌러야 해서
+   * 한 번에 될 일이 두 번 걸린다. 먼저 빼고 넣으므로 개수가 늘지 않고, 그래서
+   * 5개를 다 고른 상태에서도 동행 교체는 된다 — 상한 판정(blockUnselected)에서
+   * 동행만 예외인 이유가 이것이다. 이 둘을 따로 만들면 "5개 찼을 때 동행을 못
+   * 바꾸는" 상태가 생긴다.
+   *
+   * 예전에 동행을 둘 이상 저장해 둔 값은 열 때 손대지 않는다 — 저장한 것을
+   * 말없이 지우지 않는다. 동행 칩을 한 번 누르면 그때 하나로 정리된다.
+   */
+  function toggleCompanion(option: string) {
+    touchedRef.current = true;
+    setCleared(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(option)) {
+        next.delete(option);
+        return next;
+      }
+      for (const companion of COMPANION_OPTIONS) next.delete(companion.label);
+      if (next.size < MAX_SELECTED) next.add(option);
+      return next;
+    });
+  }
+
+  /*
    * 초기화는 저장해 둔 값까지 지운다. 화면만 비우면 저장값을 되돌릴 방법이
    * 없어서다 — 저장 버튼은 3개 미만이면 눌리지 않으므로 "다 빼고 저장"이라는
    * 경로가 존재하지 않는다.
@@ -170,19 +212,13 @@ export function PreferencesPage() {
     }
   }
 
-  function handleAddKeyword(keyword: string) {
-    if (selected.size >= MAX_SELECTED || selected.has(keyword)) return;
-    touchedRef.current = true;
-    setCleared(false);
-    setCustomKeywords((prev) => (prev.includes(keyword) ? prev : [...prev, keyword]));
-    setSelected((prev) => new Set(prev).add(keyword));
-  }
-
   /*
-   * 저장하면 홈으로 보낸다. 저장했다는 안내를 이 화면에 띄우고 머무르게 하면
-   * 결과를 보려고 사용자가 한 번 더 홈으로 이동해야 한다 — 그 왕복을 없애려고
-   * 만든 기능이라 여기서 끝내면 앞뒤가 안 맞는다. 홈에 뜬 "내 취향" 줄 자체가
-   * 저장됐다는 확인이다.
+   * 저장하면 홈으로 보낸다.
+   *
+   * ⚠️ **지금 홈에는 저장됐다는 표시가 없다**(2026-09-07). 원래는 홈에 뜬
+   * "내 취향" 줄 자체가 확인이었는데 그 줄을 지웠다 — 저장하고 홈으로 보내면
+   * 사용자는 아무 변화도 못 본다. 이 화면에 안내를 띄우고 머무르거나, 홈에
+   * 표시를 되살리거나 둘 중 하나가 필요하다.
    */
   async function handleSave() {
     if (isSaving) return;
@@ -206,155 +242,169 @@ export function PreferencesPage() {
 
   const remaining = MIN_SELECTED - selected.size;
   const canSave = remaining <= 0;
+  const atMax = selected.size >= MAX_SELECTED;
+  /* 동행이 이미 하나 있으면 다른 동행은 교체라 개수가 늘지 않는다 — 상한에 걸려
+     있어도 누를 수 있어야 한다(toggleCompanion 주석). */
+  const companionPicked = COMPANION_OPTIONS.some((option) => selected.has(option.label));
+
+  /*
+   * 카운터 옆에 붙는 한 줄. 아래 저장 버튼이 "몇 개 더"를 세는 것과 역할이 다르다 —
+   * 여기는 **규칙**(최소 3, 최대 5, 다 찼을 때 무엇을 해야 하는지)을 말한다.
+   */
+  const limitHint = isEn
+    ? !canSave
+      ? `Pick at least ${MIN_SELECTED} to save`
+      : atMax
+        ? `That's all ${MAX_SELECTED}. Remove one to swap.`
+        : `You can pick ${MAX_SELECTED - selected.size} more`
+    : !canSave
+      ? `저장하려면 ${MIN_SELECTED}개는 골라야 해요`
+      : atMax
+        ? "다 골랐어요. 바꾸려면 하나를 빼주세요"
+        : `${MAX_SELECTED - selected.size}개 더 고를 수 있어요`;
 
   return (
-    <main className="relative flex h-full flex-col overflow-y-auto">
+    <main className="flex h-full flex-col overflow-y-auto">
+      <AppHeader keepStrip />
       {/*
-       * 260px 띠가 위에서 옅게 시작해 30% 지점에서 가장 진하고 다시 사라진다.
-       * 정점을 가운데(50%)에 두면 파란 기가 제목 아래까지 내려온다 — Figma 28:3의
-       * 실제 픽셀을 재보면 정점이 위에서 70px, 즉 27% 지점이다.
+       * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
+       * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
        */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-gradient-to-b from-sky-light/0 via-sky-light via-30% to-sky-light/0"
-      />
-      <div className="relative z-10 flex flex-1 flex-col">
-        <AppHeader onBack={() => navigate(-1)} />
-        {/*
-         * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
-         * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
-         */}
-        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
-          <div>
-            <h1 className="text-2xl font-bold leading-snug text-ink">
-              {isEn ? (
-                <>
-                  What kind of moments
-                  <br />
-                  draw you in?
-                </>
-              ) : (
-                <>
-                  어떤 순간에
-                  <br />
-                  끌리시나요?
-                </>
-              )}
-            </h1>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
+        <div>
+          <h1 className="text-2xl font-bold leading-snug text-ink">
+            {isEn ? (
+              <>
+                What kind of moments
+                <br />
+                draw you in?
+              </>
+            ) : (
+              <>
+                어떤 순간에
+                <br />
+                끌리시나요?
+              </>
+            )}
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            {isEn
+              ? `Your picks shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
+              : `고르신 취향이 추천 결과에 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
+          </p>
+
+          {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
+          {/* 좁은 화면에서는 초기화가 다음 줄로 내려간다(ml-auto가 오른쪽에 붙인다).
+                안내 문구를 줄임표로 자르지 않기 위해서다 — 자르면 지금 무엇을 해야
+                하는지가 사라진다. */}
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            {/* 최소와 최대를 함께 낸다. `N / 5`만 내면 3개를 채워야 저장된다는
+                  사실이 이 자리에서 안 보인다. */}
+            <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
               {isEn
-                ? `You can see your picks again on the home screen. Applying them to recommendations is still in the works. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
-                : `고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
-            </p>
-
-            {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
-            <div className="mt-3 flex items-center justify-between">
-              <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-                {isEn ? `${selected.size} / ${MAX_SELECTED} selected` : `${selected.size} / ${MAX_SELECTED}개 선택됨`}
-              </span>
-              <button
-                type="button"
-                onClick={handleReset}
-                disabled={selected.size === 0}
-                className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
-              >
-                {isEn ? "Clear selection" : "선택 초기화"}
-              </button>
-            </div>
-          </div>
-
-          <ChipGroup
-            icon={Sparkles}
-            label={isEn ? "Mood" : "분위기"}
-            options={MOOD_OPTIONS}
-            selected={selected}
-            onToggle={toggle}
-            isEn={isEn}
-          />
-          <ChipGroup
-            icon={Compass}
-            label={isEn ? "Theme" : "테마"}
-            options={THEME_OPTIONS}
-            selected={selected}
-            onToggle={toggle}
-            isEn={isEn}
-          />
-          <ChipGroup
-            icon={Users}
-            label={isEn ? "Companions" : "동행"}
-            options={COMPANION_OPTIONS}
-            selected={selected}
-            onToggle={toggle}
-            isEn={isEn}
-          />
-
-          {customKeywords.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {customKeywords.map((keyword) => (
-                <button
-                  key={keyword}
-                  type="button"
-                  aria-pressed={selected.has(keyword)}
-                  onClick={() => toggle(keyword)}
-                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                    selected.has(keyword)
-                      ? "bg-brand text-white"
-                      : "bg-white text-ink shadow-resting"
-                  }`}
-                >
-                  {keyword}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setShowAddKeyword(true)}
-            className="flex items-center gap-1.5 self-start text-sm font-bold text-brand"
-          >
-            <Plus size={16} /> {isEn ? "Add your own keyword" : "키워드 직접 입력"}
-          </button>
-
-          {errorMessage && <ErrorBanner message={errorMessage} />}
-
-          {cleared && (
-            <p
-              role="status"
-              className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
+                ? `${selected.size} of ${MIN_SELECTED}–${MAX_SELECTED} selected`
+                : `${MIN_SELECTED}–${MAX_SELECTED}개 중 ${selected.size}개 선택됨`}
+            </span>
+            {/*
+             * 라이브 영역으로 두지 않는다. 아래 "지웠어요" 안내가 이미 role=status라
+             * 둘이 되고, 칩을 누를 때마다 매번 울려 시끄럽다. 상한에 걸렸다는 사실은
+             * 칩이 disabled가 되는 것으로 이미 전달된다.
+             */}
+            <span className="text-xs text-muted">{limitHint}</span>
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={selected.size === 0}
+              className="ml-auto text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
             >
-              {isEn
-                ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
-                : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
-            </p>
-          )}
+              {isEn ? "Clear selection" : "선택 초기화"}
+            </button>
+          </div>
         </div>
 
-        <div className="sticky bottom-0 z-20 mx-auto w-full max-w-2xl bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-7 pt-4">
-          <button
-            type="button"
-            disabled={!canSave || isSaving}
-            onClick={handleSave}
-            className="flex h-[52px] w-full items-center justify-center rounded-full bg-brand text-base font-bold text-white transition-colors disabled:bg-brand/40"
+        <ChipGroup
+          icon={Sparkles}
+          label={isEn ? "Mood" : "분위기"}
+          options={MOOD_OPTIONS}
+          selected={selected}
+          onToggle={toggle}
+          blockUnselected={atMax}
+          isEn={isEn}
+        />
+        <ChipGroup
+          icon={Compass}
+          label={isEn ? "Theme" : "테마"}
+          options={THEME_OPTIONS}
+          selected={selected}
+          onToggle={toggle}
+          blockUnselected={atMax}
+          isEn={isEn}
+        />
+        {/* 동행만 하나짜리다 — 라벨에도 그렇게 적는다. 규칙을 눌러 보고 알게
+              하지 않는다. */}
+        <ChipGroup
+          icon={Users}
+          label={isEn ? "Companions (pick one)" : "동행 (1개만)"}
+          options={COMPANION_OPTIONS}
+          selected={selected}
+          onToggle={toggleCompanion}
+          blockUnselected={atMax && !companionPicked}
+          isEn={isEn}
+        />
+
+        {customKeywords.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {customKeywords.map((keyword) => (
+              <button
+                key={keyword}
+                type="button"
+                aria-pressed={selected.has(keyword)}
+                disabled={!selected.has(keyword) && atMax}
+                onClick={() => toggle(keyword)}
+                className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
+                  selected.has(keyword) ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
+                }`}
+              >
+                {keyword}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {errorMessage && <ErrorBanner message={errorMessage} />}
+
+        {cleared && (
+          <p
+            role="status"
+            className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
           >
             {isEn
-              ? isSaving
-                ? "Saving…"
-                : canSave
-                  ? "Save"
-                  : `Pick ${remaining} more`
-              : isSaving
-                ? "저장하는 중이에요…"
-                : canSave
-                  ? "저장하기"
-                  : `${remaining}개 더 골라주세요`}
-          </button>
-        </div>
+              ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
+              : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
+          </p>
+        )}
       </div>
 
-      {showAddKeyword && (
-        <AddKeywordModal onAdd={handleAddKeyword} onClose={() => setShowAddKeyword(false)} />
-      )}
+      <div className="sticky bottom-0 z-20 mx-auto w-full max-w-2xl bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-7 pt-4">
+        <button
+          type="button"
+          disabled={!canSave || isSaving}
+          onClick={handleSave}
+          className="flex h-[52px] w-full items-center justify-center rounded-full bg-brand text-base font-bold text-white transition-colors disabled:bg-brand/40"
+        >
+          {isEn
+            ? isSaving
+              ? "Saving…"
+              : canSave
+                ? "Save"
+                : `Pick ${remaining} more`
+            : isSaving
+              ? "저장하는 중이에요…"
+              : canSave
+                ? "저장하기"
+                : `${remaining}개 더 골라주세요`}
+        </button>
+      </div>
     </main>
   );
 }

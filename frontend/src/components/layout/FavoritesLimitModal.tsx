@@ -10,7 +10,7 @@
  * 최대 개수를 문구에 박지 않고 받아 쓰는 것은, 한도를 정한 곳(LocationPage의
  * MAX_FAVORITES)과 말하는 곳이 갈라져 서로 다른 숫자를 말하는 일을 막기 위해서다.
  *
- * 모양은 AddKeywordModal과 같은 바텀시트다.
+ * 모양은 LocationPurposeModal과 같은 바텀시트다.
  */
 
 import { useId } from "react";

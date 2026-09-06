@@ -149,11 +149,18 @@
     justify-content: center;
     min-height: 100dvh;
     overflow-x: hidden;
+
+    /*
+     * 768px 미만에서 본문 칼럼의 최대 폭. **셸과 드로어가 이 값을 함께 쓴다** —
+     * 한쪽만 고치면 둘의 왼쪽 모서리가 어긋나 드로어가 여백으로 비친다
+     * (.tb-drawer 주석 참고).
+     */
+    --tb-shell-max: 640px;
   }
 
   .tb-shell {
     width: 100%;
-    max-width: 640px;
+    max-width: var(--tb-shell-max);
     /* min-height 가 아니라 height. 박스가 늘어나면 그 안의 position:fixed
        하단 버튼이 늘어난 바닥에 붙어 화면 밖으로 스크롤돼 사라진다. */
     height: 100dvh;
@@ -182,6 +189,25 @@
     }
   }
 
+  /*
+   * 모바일 푸시 드로어. **왼쪽을 창 끝이 아니라 본문 칼럼의 왼쪽에 맞춘다.**
+   *
+   * 드로어는 오버레이가 아니라 늘 왼쪽에 놓여 있고 본문이 밀려나며 드러난다
+   * (SideDrawer.tsx). 그런데 셸은 768px 미만에서 최대 640px 짜리 가운데 칼럼이라,
+   * 창이 그보다 넓어지면 양옆에 여백이 생긴다. 드로어가 `left: 0` 이면 그 여백
+   * 사이로 **닫혀 있는 드로어가 그대로 비친다** — 641~767px 구간에서 (창폭-640)/2
+   * 만큼, 767px 에서 63.5px 이 보였다(2026-09-06 실측).
+   *
+   * 그래서 셸과 같은 지점에서 시작시킨다. 열렸을 때 셸이 +300px 밀리는 동작은
+   * 그대로다. 768px 이상에서는 드로어 자체가 md:hidden 이라 이 값이 쓰이지 않는다.
+   *
+   * 닫혔을 때 감추는 방법(display:none)은 쓰지 않았다 — 닫는 0.28초 동안 셸이
+   * 되돌아오는 사이 뒤가 빈 배경으로 보인다.
+   */
+  .tb-drawer {
+    left: max(0px, calc(50% - var(--tb-shell-max) / 2));
+  }
+
   .tb-sidebar {
     display: none;
   }
@@ -192,7 +218,12 @@
       flex-direction: column;
       width: 272px;
       flex: none;
-      min-height: 100dvh;
+      /* .tb-shell 과 같은 이유로 min-height 가 아니라 height 다. 최소 높이만 주면
+         내용(대화 목록·저장한 일정)이 화면을 넘길 때 박스가 그대로 늘어나고,
+         안쪽 SideDrawerContent 의 `flex-1 min-h-0 overflow-y-auto` 가 나눠 가질
+         **확정된 전체 높이**가 없어 스크롤이 발동하지 않는다. 모바일 드로어는
+         `fixed inset-y-0` 이라 이 문제가 없었다(2026-09-04 실측). */
+      height: 100dvh;
       background: var(--color-bg);
       transition: width 0.2s ease;
     }
@@ -267,5 +298,116 @@
 @media (prefers-reduced-motion: no-preference) {
   .tb-page-enter {
     animation: tb-page-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+/*
+ * 진입 스플래시(components/SplashScreen.tsx).
+ *
+ * 셸 위의 모든 층(바텀시트 z-30대, 모달 z-50)보다 위다 — 앱이 뜨는 순간에 시트가
+ * 함께 복원되는 경로(state.backgroundLocation)가 있어서, 그때 시트가 스플래시를
+ * 뚫고 보이면 안 된다.
+ *
+ * 바탕을 흰색이 아니라 옅은 브랜드 톤에서 시작한다. 흰 화면에서 흰 화면으로
+ * 넘어가면 걷히는 동작 자체가 보이지 않아 "조금 보여주고 부드럽게" 라는 요구가
+ * 화면에 남지 않는다.
+ */
+.tb-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #e6edfd 0%, #f6f8fe 52%, #ffffff 100%);
+}
+
+.tb-splash__mark {
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-brand);
+}
+
+/*
+ * 페이드는 어떤 설정에서도 건다 — tb-page-enter와 같은 근거다(위 주석). 덮은
+ * 층이 즉시 사라지는 것은 "줄여야 할 움직임"이 아니라 그 자체로 거슬리는 전환이다.
+ */
+@keyframes tb-splash-leave {
+  to {
+    opacity: 0;
+  }
+}
+
+.tb-splash--leaving {
+  animation: tb-splash-leave 420ms ease-in forwards;
+}
+
+@keyframes tb-splash-mark-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 걷힐 때 살짝 커진다 — 위로 걷어내는 인상을 준다. 1.06을 넘기면 사라지는 게
+   아니라 화면으로 다가오는 것처럼 보인다. */
+@keyframes tb-splash-leave-motion {
+  to {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tb-splash__mark {
+    animation: tb-splash-mark-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .tb-splash--leaving {
+    animation: tb-splash-leave-motion 420ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+}
+
+/*
+ * 홈 히어로 유리 오브(pages/HomePage).
+ *
+ * **가만히 있는 그림 하나다**(2026-09-07 사용자 결정). 뒤에 깔던 브랜드색 번짐과
+ * 흔들리는 움직임을 뺐다 — 오브 자체가 유리라 뒤에 색을 더 깔면 둘이 겹쳐
+ * 탁해지고, 유리 구슬은 가만히 있을 때가 제일 유리로 보인다.
+ *
+ * 흰 바탕에 흰 구슬이지만 묻히지 않는다(순백과 다른 픽셀 74.3%, 평균 밝기
+ * 226.6/255, 2026-09-07 실측).
+ *
+ * **그림자를 두 겹으로 겹친다.** 짧고 진한 것 하나로는 바닥에 붙어 보이고,
+ * 길고 연한 것 하나로는 흐릿하게 번지기만 한다. 가까운 접지 그림자로 무게를
+ * 주고 그 밑에 멀리 퍼지는 브랜드색 그림자를 깔면 물체가 떠 있는 것처럼 읽힌다.
+ *
+ * 화면이 낮으면 줄인다. 안 줄이면 헤드라인과 예시 질문 사이 칸을 뚫고 나가
+ * 글자와 겹친다. **`max-height: 100%` 로는 안 된다** — 부모 높이가 flex 로
+ * 정해져서 백분율이 확정값으로 안 풀린다(칸이 96px 로 줄어도 이미지는 233px
+ * 그대로였다, 375×667 실측). 그래서 화면 높이를 직접 보고 확정값을 준다.
+ */
+.tb-orb__img {
+  display: block;
+  width: 76px;
+  height: auto;
+  filter: drop-shadow(0 5px 7px rgba(16, 24, 40, 0.12))
+    drop-shadow(0 22px 28px rgba(23, 52, 140, 0.3));
+}
+
+@media (max-height: 780px) {
+  .tb-orb__img {
+    width: 64px;
+  }
+}
+
+@media (max-height: 680px) {
+  .tb-orb__img {
+    width: 56px;
   }
 }

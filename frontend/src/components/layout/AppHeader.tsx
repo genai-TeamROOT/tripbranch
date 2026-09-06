@@ -1,16 +1,13 @@
 /*
- * 역할: 화면 상단의 프로스티드 헤더 — 두 가지 모드로 스스로 판단해 모양을 바꾼다.
- *   일반 모드: 모바일 전용 햄버거(드로어 열기) + 라벨이 있을 때만 위치 pill +
- *   onBack이 있을 때만 뒤로가기. 시트 모드: 우측 X 버튼만.
- * 입력: 표시할 위치 라벨, 뒤로가기/닫기 콜백(있는 화면만).
+ * 역할: 화면 상단의 프로스티드 헤더 — 모바일 전용 햄버거(드로어 열기)와, 라벨이
+ *   있을 때만 위치 pill을 그린다. 뒤로가기 화살표는 그리지 않는다(2026-09-07).
+ * 입력: 표시할 위치 라벨, 띠를 남길지 여부.
  * 호출 시점: 신원이 필요한 화면들이 상단에 렌더링할 때.
- * 근거: DESIGN_SYSTEM.md §6.1, §5(isOpenAsSheet로 시트 여부 판정).
+ * 근거: DESIGN_SYSTEM.md §6.1.
  */
 
-import { ArrowRight, ChevronLeft, MapPinned, Menu, Navigation, X } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
-import { isOpenAsSheet, sheetState } from "../../state/sheetNav";
+import { ArrowRight, MapPinned, Menu, Navigation } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { cn } from "../../utils/cn";
 import type { LocationChipModel } from "../../utils/locationChip";
 import { useAppShell } from "./AppShellContext";
@@ -22,71 +19,64 @@ interface AppHeaderProps {
    * 고르면 카드의 이동시간을 어디서 쟀는지가 화면에서 사라진다(D-067).
    */
   location?: LocationChipModel | null;
-  onBack?: () => void;
+  /**
+   * 위치 pill이 없어도 헤더 띠를 남긴다. 취향·위치·일정처럼 제목이 바로
+   * 시작하는 하위 화면이 쓴다 — 띠가 접히면 제목이 화면 맨 위에 붙는다.
+   */
+  keepStrip?: boolean;
 }
 
 const FROSTED_BUTTON_CLASS =
   "flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80";
 
-export function AppHeader({ location: locationChip = null, onBack }: AppHeaderProps) {
-  const { openDrawer } = useAppShell();
-  const location = useLocation();
+export function AppHeader({ location: locationChip = null, keepStrip = false }: AppHeaderProps) {
+  const { drawerOpen, openDrawer, closeDrawer } = useAppShell();
   const navigate = useNavigate();
-  const isDesktop = useIsDesktopSidebar();
 
-  // 바텀시트는 모바일 전용이라, 데스크톱에서는 시트로 열린 화면도 전체 페이지로
-  // 그려진다(AppShell 참고) — 헤더도 시트 모드(X만)가 아니라 일반 모드로 보인다.
-  if (isOpenAsSheet(location) && !isDesktop) {
-    return (
-      <div className="sticky top-0 z-20 flex justify-end px-4 pb-3 pt-5">
-        <button
-          type="button"
-          onClick={onBack ?? (() => navigate(-1))}
-          aria-label="닫기"
-          className={FROSTED_BUTTON_CLASS}
-        >
-          <X size={20} />
-        </button>
-      </div>
-    );
-  }
+  /*
+   * **뒤로가기 화살표는 어디서도 그리지 않는다**(2026-09-07). 데스크톱은 전부터
+   * 안 그렸고(사이드바가 이미 돌아갈 길이라 화살표는 같은 일을 두 번 함),
+   * 모바일도 같은 이유로 뺐다 — 돌아가는 길은 브라우저/제스처 뒤로가기와
+   * 햄버거 드로어(새 채팅 등)다.
+   */
 
   return (
     <div
       className={cn(
         "sticky top-0 z-20 bg-gradient-to-b from-black/5 to-transparent",
-        // 데스크톱은 햄버거가 md:hidden으로 빠지고, 위치 pill도 onBack도 없으면
-        // 이 자리가 통째로 빈 그라디언트 띠로 남는다. 보여줄 게 없을 때는
-        // 데스크톱에서 아예 접는다 — 모바일은 햄버거가 항상 있어야 하므로 그대로 둔다.
-        !locationChip && !onBack && "md:hidden",
+        // 위치 pill도 없고 띠를 붙잡는 화면도 아닐 때(홈·채팅에서 위치를 아직 못
+        // 정한 경우)만 접는다 — 거기서는 데스크톱에 그릴 것이 정말 없다. 모바일은
+        // 햄버거가 항상 있어야 하므로 어느 쪽이든 그대로 둔다.
+        !locationChip && !keepStrip && "md:hidden",
       )}
     >
       <div className="relative flex items-center justify-between px-4 pb-3 pt-6">
         <div className="flex items-center gap-2">
+          {/*
+           * 여닫이다 — 열려 있을 때 다시 누르면 닫힌다(2026-09-07). 예전에는
+           * openDrawer 만 불러서, 열어 둔 채로 누르면 아무 일도 안 났다.
+           *
+           * 셸이 이미 "밀려난 본문 아무 곳이나 누르면 닫기"를 갖고 있는데
+           * (AppShell 의 onClickCapture), 그 캡처가 이 버튼보다 **먼저** 돌기
+           * 때문에 둘이 서로를 무효화했다. data-drawer-toggle 표식을 보고 셸이
+           * 이 버튼만 건너뛴다 — 여닫이는 이 버튼 하나가 온전히 갖는다.
+           */}
           <button
             type="button"
-            onClick={openDrawer}
-            aria-label="메뉴 열기"
+            /* 셸의 탭-투-클로즈가 이 버튼은 건너뛰게 하는 표식이다(AppShell). */
+            data-drawer-toggle=""
+            onClick={() => (drawerOpen ? closeDrawer() : openDrawer())}
+            aria-label={drawerOpen ? "메뉴 닫기" : "메뉴 열기"}
+            aria-expanded={drawerOpen}
             className={cn(FROSTED_BUTTON_CLASS, "md:hidden")}
           >
             <Menu size={18} />
           </button>
 
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="뒤로가기"
-              className={FROSTED_BUTTON_CLASS}
-            >
-              <ChevronLeft size={20} />
-            </button>
-          )}
-
           {locationChip && (
             <button
               type="button"
-              onClick={() => navigate("/location", { state: sheetState(location) })}
+              onClick={() => navigate("/location")}
               aria-label={`위치 설정으로 이동 (${locationChip.description})`}
               /* min-w-0을 두어야 안쪽 이름이 줄어들 수 있다. 없으면 칩이 제 내용
                  폭을 고집해 좁은 화면에서 헤더 밖으로 밀려난다. */

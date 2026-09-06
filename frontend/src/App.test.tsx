@@ -12,7 +12,6 @@ import App from "./App";
 import { setLocationCenter, setLocationOrigin } from "./state/locationSettings";
 import { resetChatSessionsCache } from "./state/chatSessions";
 import { resetSavedSchedulesCache } from "./state/savedSchedules";
-import { resetPreferenceSync } from "./state/preferenceSync";
 
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
 // llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
@@ -221,7 +220,7 @@ test("user chat hides condition debug card and shows recommendations", async () 
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "비 오는 날 갈 곳",
   );
@@ -235,11 +234,11 @@ test("user chat hides condition debug card and shows recommendations", async () 
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
-  // 신원 표시는 사이드바에 상시 떠 있다(D-062) — 채팅 화면에서도 사이드바를 통해
-  // 이어진다. 데스크톱 사이드바(role=complementary)로 좁혀서 찾는다(모바일
-  // 드로어도 같은 SideDrawerContent를 렌더해 텍스트가 중복된다).
+  // 로그인 안 한 상태의 계정 자리는 사이드바에 상시 떠 있다(2026-09-06) — 채팅
+  // 화면에서도 사이드바를 통해 이어진다. 데스크톱 사이드바(role=complementary)로
+  // 좁혀서 찾는다(모바일 드로어도 같은 SideDrawerContent를 렌더해 중복된다).
   expect(
-    within(screen.getByRole("complementary")).getByText("게스트로 이용 중"),
+    within(screen.getByRole("complementary")).getByRole("button", { name: "로그인" }),
   ).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
@@ -266,7 +265,7 @@ test("user chat needs only one chat call", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "비 오는 날 갈 곳",
   );
@@ -324,7 +323,7 @@ test("sends the search center picked on the location screen with the chat reques
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "카페 추천해줘",
   );
@@ -411,7 +410,7 @@ test("moves the header pill before the recommendation cards arrive", async () =>
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
@@ -444,7 +443,7 @@ test("shows the location the utterance picked in the header pill", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
@@ -466,7 +465,7 @@ test("sends the location the utterance picked on the next turn", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "광화문역 근처 알려줘",
   );
@@ -494,7 +493,7 @@ test("keeps the picked location when the server reports no location at all", asy
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "경복궁 운영시간 알려줘",
   );
@@ -832,7 +831,7 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
 
   expect(await screen.findByText(/어디 근처에서 찾아드릴까요/)).toBeInTheDocument();
   // 발화를 대신 만들어 보내지 않고, 입력창 안내 문구만 바꾼다.
-  expect(screen.getByPlaceholderText("예: 경복궁 근처에서 찾아줘")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("경복궁 근처에서 찾아줘")).toBeInTheDocument();
 });
 
 test("unsupported region reply shows a short message with the district list as a footnote", async () => {
@@ -927,9 +926,15 @@ test("renders no follow-up buttons when the server sends no follow_ups event", a
   expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
 });
 
-// --- 바텀시트 내비게이션(package_D/DESIGN_SYSTEM.md §5) ---------------------
+// --- 위치·일정 내비게이션(package_D/DESIGN_SYSTEM.md §5) ---------------------
 
-test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨고, 닫으면 홈으로 돌아온다", async () => {
+/*
+ * **위치·일정은 취향 설정과 같은 전체 페이지다**(2026-09-07 사용자 결정).
+ * 예전에는 모바일에서 홈 위에 겹치는 바텀시트로 떴는데, 그 둘만 다른 취급을
+ * 받을 이유가 없어 전체 페이지로 통일했다 — 이 아래 세 테스트가 그 전환을
+ * 잠근다. 옛 시트 동작(§5.2 바텀시트)을 검증하던 자리다.
+ */
+test("사이드바에서 위치 설정을 열면 전체 페이지로 뜨고, 브라우저 뒤로가기로 홈에 돌아온다", async () => {
   await renderApp();
 
   // 데스크톱 사이드바(role=complementary)로 좁힌다 — 모바일 드로어도 같은
@@ -937,26 +942,26 @@ test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨�
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
-  // LocationPage에는 별도 제목이 없다(Figma "Location (Sheet)") — 항상 있는
-  // "현재 위치 사용" 버튼으로 시트가 열렸는지 확인한다.
+  // LocationPage에는 별도 제목이 없다 — 항상 있는 "현재 위치 사용" 버튼으로
+  // 화면이 열렸는지 확인한다.
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
-  // 시트 모드 헤더는 햄버거·위치 pill 대신 닫기(X) 버튼만 보인다(§6.1). 뒤에
-  // 깔리는 어두운 배경도 같은 이름("닫기")의 버튼이라 두 개가 잡힌다(§5.2).
-  const closeButtons = screen.getAllByRole("button", { name: "닫기" });
-  expect(closeButtons).toHaveLength(2);
-  // 새 페이지로 갈아치운 게 아니라 위에 뜬 시트라, 밑에 깔린 홈이 여전히 DOM에 있다.
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+  // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다(시트였다면 남아
+  // 있었을 것이다).
+  expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  // 시트가 아니라 닫기(X)는 없다. 뒤로가기 화살표도 없다(2026-09-07) — 헤더가
+  // 돌아가는 버튼을 아예 그리지 않으므로, 돌아가는 길은 브라우저 뒤로가기뿐이다.
+  expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 
-  await userEvent.click(closeButtons[1]);
+  window.history.back();
 
-  // 닫히는 애니메이션(AnimatePresence exit)이 끝나야 시트가 DOM에서 빠진다.
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "현재 위치 사용" })).not.toBeInTheDocument(),
   );
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
-test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 설정이 시트가 아니라 전체 페이지로 뜬다", async () => {
+test("사이드바 상시 패널이 보이는 폭(데스크톱)에서도 위치 설정에 뒤로가기 화살표가 없다", async () => {
   // useIsDesktopSidebar가 참을 반환하도록 matchMedia를 데스크톱 폭으로 흉내낸다.
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: true,
@@ -974,29 +979,30 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
-  // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 아니라 일반 헤더의
-  // 뒤로가기가 보이고, 시트 배경에 가려졌던 홈은 더 이상 DOM에 없다.
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  // 뒤로가기 화살표가 없다(2026-09-07) — 폭에 상관없이 헤더가 화살표를 그리지
+  // 않는다. 데스크톱 폭에서도 되살아나지 않는지 이 폭에서 따로 확인한다.
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 /*
- * 일정도 위치와 같은 시트 경로를 탄다(state/sheetNav.ts의 SHEET_PATH_PATTERNS).
- * SchedulePage 자체는 별도 파일에서 직접 렌더해 검증하고, 여기서는 "사이드바에서
- * 눌렀을 때 홈을 갈아치우지 않고 그 위에 뜨는가"만 본다 — 이 배선이 빠지면
- * 대화가 사라진다.
+ * 일정도 위치와 같은 전체 페이지다. SchedulePage 자체는 별도 파일에서 직접
+ * 렌더해 검증하고, 여기서는 "사이드바에서 눌렀을 때 실제로 그 화면으로
+ * 가는가"만 본다 — 이 배선이 빠지면 대화가 사라진다.
  */
-test("사이드바에서 일정을 열면 홈 위에 바텀시트로 뜬다", async () => {
+test("사이드바에서 일정을 열면 전체 페이지로 뜬다", async () => {
   await renderApp();
 
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "일정" }));
 
   expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
-  // 밑에 깔린 홈이 그대로 있어야 시트다(전체 페이지 전환이면 사라진다).
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: "닫기" })).toHaveLength(2);
+  // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다.
+  expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  // 뒤로가기 화살표는 그리지 않는다(2026-09-07) — 돌아가는 길은 브라우저
+  // 뒤로가기다.
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 // --- 응답 대기 중 취소(package_D/DESIGN_SYSTEM.md §7.2) ------------------------
@@ -1154,44 +1160,11 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
 });
 
 /*
- * 취향 설정은 별도 전체 화면이라, 뭘 골라뒀는지 확인하려면 거기까지 들어갔다
- * 와야 했다. 홈에서 한 번 더 보여줘 그 왕복을 없앤다.
+ * **홈의 취향 줄을 지웠다**(2026-09-07 사용자 결정). 저장해 둔 취향을 홈에서
+ * 한 번 더 보여주던 줄과, 그것이 흐르던 띠를 함께 뺐다 — 그 동작을 잠그던
+ * 테스트 두 개도 여기서 지운다.
+ *
+ * 지우면서 함께 사라진 것: 취향을 저장하면 홈으로 보내는데(PreferencesPage
+ * handleSave), 저장됐다는 확인이 이 줄이었다. 지금은 홈에 아무 표시도 남지
+ * 않는다.
  */
-test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () => {
-  /*
-   * 취향 동기화는 페이지 로드당 한 번만 도는 모듈 캐시다. 앞 테스트들이 이미
-   * 빈 결과로 채워두므로, 여기서 비우지 않으면 심어둔 값이 그 빈 결과로 덮인다.
-   * beforeEach에 넣지 않는 이유는 자기만의 fetch를 세우는 테스트들이 /preferences
-   * 응답까지 흉내 내지 않아, 동기화가 실제로 돌면 그쪽이 깨지기 때문이다.
-   */
-  resetPreferenceSync();
-  localStorage.setItem(
-    "tb_preferences",
-    JSON.stringify([
-      { label: "조용한 곳", source: "preference", codes: ["quiet"] },
-      { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
-      { label: "데이트 코스", source: "preference", codes: ["date"] },
-    ]),
-  );
-  await renderApp();
-
-  const section = screen.getByRole("heading", { name: "내 취향" }).closest("section");
-  expect(section).not.toBeNull();
-  expect(within(section as HTMLElement).getByText("조용한 곳")).toBeInTheDocument();
-  expect(within(section as HTMLElement).getByText("카페")).toBeInTheDocument();
-  expect(within(section as HTMLElement).getByText("데이트 코스")).toBeInTheDocument();
-
-  // 홈에서는 읽기만 한다 — 고치려면 취향 설정 화면으로 간다.
-  expect(within(section as HTMLElement).getByRole("link", { name: "바꾸기" })).toHaveAttribute(
-    "href",
-    "/preferences",
-  );
-});
-
-test("저장해 둔 취향이 없으면 홈에 그 줄을 그리지 않는다", async () => {
-  /* 앞 테스트가 심어둔 값이 모듈 캐시에 남는다 — 위와 같은 이유로 여기서도 비운다. */
-  resetPreferenceSync();
-  await renderApp();
-
-  expect(screen.queryByRole("heading", { name: "내 취향" })).not.toBeInTheDocument();
-});

@@ -353,6 +353,36 @@ function sidebar() {
 }
 
 /*
+ * **계정 팝업은 로그인한 사람에게만 있다**(§6, 2026-09-06). 게스트 자리에는
+ * "로그인" 버튼 하나뿐이라, 팝업을 만지는 테스트는 먼저 계정 세션으로 갈아 끼운다.
+ */
+const ACCOUNT_SESSION = {
+  ...GUEST_SESSION,
+  user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
+} as typeof GUEST_SESSION;
+
+async function renderAppAsAccount() {
+  setMockSession(ACCOUNT_SESSION);
+  await renderApp();
+}
+
+/*
+ * 계정 항목(로그아웃)은 사이드바 바닥의 계정 버튼을 눌러야 나온다(§6).
+ *
+ * 이름으로 찾지 않는다 — 그 버튼의 이름은 신원 표시 자체라(이름·이메일) 표시가
+ * 바뀔 때마다 테스트가 같이 흔들린다. 사이드바에서 메뉴를 여는 버튼은 이것 하나다.
+ */
+function accountButton() {
+  return within(sidebar()).getByRole("button", { expanded: false });
+}
+
+/* setup()으로 만든 인스턴스와 전역 userEvent를 둘 다 받는다 — 이 파일은 두 방식을
+   섞어 쓴다. 필요한 것은 click 하나뿐이라 그만 받는다. */
+async function openAccountMenu(user: { click: (element: Element) => Promise<void> }) {
+  await user.click(accountButton());
+}
+
+/*
  * 로그아웃은 이 기기에 남은 값을 전부 지워야 한다 — 같은 브라우저에서 다음 사람이
  * 앞사람의 취향·즐겨찾기를 이어받으면 안 된다. 화면에서 실제로 눌러 확인한다.
  */
@@ -366,72 +396,30 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
     "tb_location_settings",
     JSON.stringify({ origin: null, center: "안국역" }),
   );
-  await renderApp();
+  await renderAppAsAccount();
 
-  await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
-  /* 게스트는 한 번 더 확인한다 - 돌아올 수단이 없어서다(feature/guest-account-link). */
-  await within(sidebar()).findByText(/돌아올 수 없어요/);
-  await user.click(within(sidebar()).getByRole("button", { name: "로그아웃" }));
+  await openAccountMenu(user);
+  await user.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
 
   await waitFor(() => expect(localStorage.getItem("tb_preferences")).toBeNull());
   expect(localStorage.getItem("tb_favorites")).toBeNull();
   expect(sessionStorage.getItem("tb_location_settings")).toBeNull();
 });
 
-test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
-  await renderApp();
-
-  expect(within(sidebar()).getByText("회사 (역삼동)")).toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
-
 /*
- * 즐겨찾기는 검색해서 담는다. 여기서 이름만 받으면 좌표도 주소도 없어 위치로 쓸 수
- * 없으므로, "추가"는 검색이 있는 위치 설정 화면으로 보낸다.
+ * 즐겨찾기 테스트 4개를 지웠다(2026-09-04) — 목록이 사이드바에서 빠졌다. 옮기지
+ * 않은 이유는 **위치 설정 화면이 이미 같은 일을 더 많이 하고 그쪽 테스트가 있기**
+ * 때문이다(`pages/LocationPage.test.tsx`).
+ *
+ * 그중 "위치 설정 화면에서 지운 즐겨찾기가 사이드바에서도 바로 빠진다"는 두 화면이
+ * `useFavorites`로 저장소를 공유하는 것을 잠근 가드였다(jjinsword,
+ * `fix: 즐겨찾기를 두 화면이 함께 보게 한다`). 소비자가 위치 화면 하나만 남아
+ * 검증 대상이 없어졌다 — **훅의 동기화 자체는 남겨 뒀다.** 지우면 나중에 다른
+ * 화면이 즐겨찾기를 쓸 때 같은 버그가 다시 난다.
+ *
+ * "로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"는 남겼다 —
+ * localStorage만 보므로 사이드바 UI와 무관하다.
  */
-/*
- * 사이드바와 위치 설정 화면은 같은 즐겨찾기 목록을 본다. 각자 사본을 들고 있으면
- * 한쪽에서 지워도 다른 쪽은 새로고침해야 반영된다 - 같은 목록이 두 군데서 다르게
- * 보이는 셈이다.
- */
-test("위치 설정 화면에서 지운 즐겨찾기가 사이드바에서도 바로 빠진다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-  expect(within(sidebar()).getByText("회사 (역삼동)")).toBeInTheDocument();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
-  await screen.findByLabelText("장소 검색");
-
-  /* 위치 설정 화면의 목록에서 지운다. 사이드바에도 같은 이름의 버튼이 있으므로
-     사이드바 밖(나중에 그려진 쪽)을 고른다. */
-  const deleteButtons = screen.getAllByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" });
-  const inPage = deleteButtons.filter((button) => !sidebar().contains(button));
-  expect(inPage).toHaveLength(1);
-  await user.click(inPage[0]);
-
-  /* 새로고침 없이 사이드바에서도 빠진다. */
-  expect(within(sidebar()).queryByText("회사 (역삼동)")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
-
-test("즐겨찾기 추가를 누르면 위치 설정 화면으로 보낸다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
-
-  expect(await screen.findByLabelText("장소 검색")).toBeInTheDocument();
-});
-
-test("즐겨찾기를 삭제하면 목록에서 빠진다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" }));
-
-  expect(within(sidebar()).queryByText("회사 (역삼동)")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
 
 test("채팅 히스토리 이름을 바꾸면 새 이름이 남는다", async () => {
   const user = userEvent.setup();
@@ -468,11 +456,16 @@ test("사이드바를 접으면 레일만 남고 다시 펼칠 수 있다", asyn
 
   await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
 
-  // 접힘 레일에는 아이콘만 남는다 — 목록 제목이 사라진다.
-  expect(within(sidebar()).queryByText("즐겨찾기")).not.toBeInTheDocument();
+  /* 접힘 레일에는 아이콘만 남는다 — 목록 제목이 사라진다. 지표로 쓰던 "즐겨찾기"
+     제목이 사이드바에서 빠져(2026-09-04) "채팅 히스토리"로 바꿨다. */
+  expect(within(sidebar()).queryByText("채팅 히스토리")).not.toBeInTheDocument();
+  /* 레일 아이콘의 이름은 title·aria-label로만 남는다. 펼침 쪽과 같은 문구여야
+     한다 — 라벨이 두 곳에 따로 적혀 있어 한쪽만 바뀌기 쉽다(2026-09-04에 "홈"을
+     "새 채팅"으로 바꿨을 때 레일 쪽이 테스트에 안 걸렸다). */
+  expect(within(sidebar()).getByRole("button", { name: "새 채팅" })).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "사이드바 펼치기" }));
-  expect(within(sidebar()).getByText("즐겨찾기")).toBeInTheDocument();
+  expect(within(sidebar()).getByText("채팅 히스토리")).toBeInTheDocument();
 });
 
 test("취향 설정으로 이동하면 취향 선택 화면이 뜬다", async () => {
@@ -632,9 +625,7 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
   const before = server.listCalls;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "방금 시작한 대화",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -655,9 +646,7 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
   server.holdStream = true;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "앞 대화의 질문",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -711,6 +700,54 @@ test("지금 보고 있는 대화가 목록에서 표시된다", async () => {
   const current = rows.filter((row) => row.getAttribute("aria-current") === "true");
   expect(current).toHaveLength(1);
   expect(current[0]).toHaveTextContent("비 오는 날 아이와 함께 갈 곳");
+});
+
+/*
+ * 첫 줄의 라벨과 동작이 짝이어야 한다. 예전 라벨은 "홈"이었는데 누르면 세션을
+ * 지우고(`RESET`) 첫 화면으로 가므로 실제 동작은 "새 채팅"이다 — 2026-09-04에
+ * 라벨을 그쪽으로 맞췄다.
+ *
+ * **라벨이 아무 테스트에도 안 잠겨 있었다**(되돌려 확인했다). 문구만 잠그면
+ * 이름만 바뀌고 동작이 따라오지 않는 경우를 못 잡으니 둘을 같이 본다.
+ */
+test("새 채팅을 누르면 대화가 비워지고 첫 화면으로 간다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  /* 대화를 하나 열어 화면에 메시지를 남긴다. */
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
+  await screen.findByText("첫 답변");
+
+  await user.click(within(sidebar()).getByRole("button", { name: "새 채팅" }));
+
+  await waitFor(() => expect(screen.queryByText("첫 답변")).not.toBeInTheDocument());
+  expect(await screen.findByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+});
+
+/*
+ * 접힘 레일의 라벨은 title·aria-label로만 남아 **화면에 글자가 없다.** 그래서
+ * 영어 작업(PR #367)에서 통째로 빠져 한글 고정이었고, 테스트도 한국어로만 돌아
+ * 아무도 못 잡았다(2026-09-04에 발견).
+ *
+ * 문구는 펼침 사이드바와 같아야 한다 — 같은 버튼이 접힘/펼침에 따라 다른 이름을
+ * 가지면 스크린리더 사용자에게 두 버튼으로 들린다.
+ */
+test("영어로 바꾸면 접힘 레일의 이름도 영어가 된다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "English" }));
+  await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+
+  const rail = sidebar();
+  for (const name of ["New chat", "Preferences", "Location", "Schedule"]) {
+    expect(within(rail).getByRole("button", { name })).toBeInTheDocument();
+  }
+  /* 펼침 쪽 문구와 같은지도 본다. */
+  await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
+  expect(within(sidebar()).getByRole("button", { name: "New chat" })).toBeInTheDocument();
 });
 
 /* 홈처럼 세션이 없는 화면에서는 아무 줄도 켜지지 않아야 한다. */
@@ -781,9 +818,7 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
   server.holdStream = true;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "기다리던 질문",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -869,211 +904,160 @@ test("지난 대화를 이어가면 새 발화 위에 지금 시각이 뜬다", 
 });
 
 /*
- * 게스트가 계정으로 넘어가는 유일한 입구다(D-062 8절).
+ * 로그인 안 한 사람에게 이 버튼은 **계정으로 넘어가는 유일한 입구**다(2026-09-06).
  *
- * **이 입구가 없으면 승계 코드가 있어도 도달할 수 없다.** /signup 링크는 로그인
- * 관문에만 있는데 게스트는 세션이 있어서 그 화면에서 곧바로 되돌려보내진다
- * (LoginPage의 Navigate). 그래서 가입하려면 먼저 로그아웃해야 했고, 로그아웃하면
- * 그 uid로 돌아갈 길이 없어 이어받을 기록 자체가 사라졌다.
+ * 예전에는 계정 팝업 안의 "계정 만들기"가 그 자리였다. 진입이 게스트로 자동으로
+ * 열리게 바뀌면서 로그인 화면이 게스트를 통과시키게 됐고(LoginPage), 가입은 그
+ * 화면의 "회원가입" 링크로 닿는다 — 팝업 안에 같은 입구를 두 개 둘 이유가 없다.
+ *
+ * **이 버튼이 없으면 로그인·가입 어느 쪽에도 도달할 수 없다.** 앱 안에서 /login으로
+ * 가는 길이 여기뿐이다.
  */
-
-test("게스트에게는 계정 만들기 입구가 보이고 가입 화면으로 간다", async () => {
+test("로그인 안 한 상태면 사이드바에서 로그인 화면으로 갈 수 있다", async () => {
   await renderApp();
 
-  const enter = within(sidebar()).getByRole("button", { name: /계정 만들기/ });
-  await userEvent.click(enter);
+  await userEvent.click(within(sidebar()).getByRole("button", { name: "로그인" }));
 
-  /* 가입 화면이 열려야 승계가 시작된다. */
-  expect(await screen.findByRole("button", { name: "가입하고 시작하기" })).toBeInTheDocument();
+  expect(await screen.findByLabelText("이메일")).toBeInTheDocument();
+  /* 가입도 여기서 이어진다 — 그 화면이 게스트 세션을 그대로 승격시킨다. */
+  expect(screen.getByRole("link", { name: "회원가입" })).toBeInTheDocument();
 });
 
-test("이미 계정이 있으면 계정 만들기 입구를 보여주지 않는다", async () => {
-  setMockSession({
-    ...GUEST_SESSION,
-    user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
-  } as typeof GUEST_SESSION);
+test("로그인한 계정에는 로그인 버튼 대신 계정 표시가 온다", async () => {
+  await renderAppAsAccount();
 
-  await renderApp();
-
-  expect(within(sidebar()).queryByRole("button", { name: /계정 만들기/ })).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("trip@example.com")).toBeInTheDocument();
+  expect(within(sidebar()).queryByRole("button", { name: "로그인" })).not.toBeInTheDocument();
+  expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
 });
 
 /*
- * 게스트에게 로그아웃은 되돌릴 수 없다 — 다시 로그인할 수단이 없어 그 uid로
- * 돌아갈 길이 사라지고, 거기 달린 대화도 함께 닿을 수 없게 된다. 사이드바
- * 버튼에는 확인이 없었다(AuthStatusBadge에만 있었는데 그 배지는 개발자 화면 전용).
+ * **게스트 로그아웃 확인 테스트 3개를 지웠다**(2026-09-06). 게스트에게 로그아웃
+ * 자리가 아예 없어져서(그 자리는 "로그인" 버튼이다) 확인 단계에 닿을 길이 없다.
+ *
+ * 계정 사용자는 확인 없이 나간다 — 다시 로그인하면 그대로 돌아오므로, 되돌릴 수
+ * 있는 동작에까지 확인을 붙이면 확인이라는 신호가 값싸진다.
  */
+test("로그아웃하면 관문으로 튕기지 않고 로그인 안 한 상태로 앱에 남는다", async () => {
+  await renderAppAsAccount();
 
-test("게스트가 로그아웃을 누르면 바로 나가지 않고 무엇을 잃는지 알려준다", async () => {
-  await renderApp();
+  await openAccountMenu(userEvent);
+  await userEvent.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
 
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
-
-  expect(await within(sidebar()).findByRole("alert")).toHaveTextContent("돌아올 수 없어요");
-  /* 아직 나가지 않았다 — 관문으로 넘어갔으면 사이드바 자체가 사라진다. */
-  expect(within(sidebar()).getByRole("button", { name: "취소" })).toBeInTheDocument();
-});
-
-test("확인에서 취소하면 로그아웃하지 않는다", async () => {
-  await renderApp();
-
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
-  await userEvent.click(await within(sidebar()).findByRole("button", { name: "취소" }));
-
-  expect(within(sidebar()).queryByRole("alert")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByRole("button", { name: /로그아웃/ })).toBeInTheDocument();
-});
-
-/* 계정 사용자는 다시 로그인하면 그대로 돌아온다. 되돌릴 수 있는 동작에까지 확인을
-   붙이면 확인이라는 신호가 값싸진다. */
-test("계정 사용자는 확인 없이 로그아웃된다", async () => {
-  setMockSession({
-    ...GUEST_SESSION,
-    user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
-  } as typeof GUEST_SESSION);
-  await renderApp();
-
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
-
-  expect(await screen.findByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
-});
-
-/* 저장한 일정 목록. (SCHEDULE 카드 2) */
-
-test("저장한 일정이 없으면 그 사실을 알린다", async () => {
-  await renderApp();
-
-  expect(within(sidebar()).getByText("아직 저장한 일정이 없어요")).toBeInTheDocument();
-});
-
-test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", async () => {
-  server.schedules = [
-    {
-      id: "sched-1",
-      title: "종로 반나절",
-      session_id: "chat-1",
-      created_at: "2026-08-31T14:30:00+09:00",
-      updated_at: "2026-08-31T14:30:00+09:00",
-    },
-  ];
-
-  await renderApp();
-
-  /* 한 줄에 "열기"와 "메뉴" 두 버튼이 있다 — 정규식으로 찾으면 둘 다 걸린다. */
-  const entry = await within(sidebar()).findByRole("button", { name: "종로 반나절 일정 열기" });
-  await userEvent.click(entry);
-
-  /* 저장한 일정은 SchedulePage가 ?saved=로 받아 연다 — 대화와 다른 화면이다. */
-  await waitFor(() => expect(window.location.search).toContain("saved=sched-1"));
-});
-
-const SEED_SCHEDULES = [
-  {
-    id: "sched-1",
-    title: "종로 반나절",
-    session_id: "chat-1",
-    created_at: "2026-08-31T14:30:00+09:00",
-    updated_at: "2026-08-31T14:30:00+09:00",
-  },
-  {
-    id: "sched-2",
-    title: "성수 저녁 코스",
-    session_id: "chat-2",
-    created_at: "2026-09-01T18:00:00+09:00",
-    updated_at: "2026-09-01T18:00:00+09:00",
-  },
-];
-
-test("저장한 일정 이름을 바꾸면 새 이름이 남는다", async () => {
-  server.schedules = [...SEED_SCHEDULES];
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "종로 반나절 메뉴" }));
-  await user.click(screen.getByRole("menuitem", { name: "이름 바꾸기" }));
-  const input = screen.getByRole("textbox", { name: "일정 이름" });
-  await user.clear(input);
-  await user.type(input, "종로 반나절 (수정){Enter}");
-
-  await waitFor(() =>
-    expect(server.scheduleRenamed).toEqual([{ id: "sched-1", title: "종로 반나절 (수정)" }]),
-  );
-  /* 대화 쪽 저장소로 새지 않았다 — 두 목록이 상태를 공유하므로 대상이 섞이면
-     여기서 잡힌다. */
-  expect(server.renamed).toEqual([]);
-  expect(await within(sidebar()).findByText("종로 반나절 (수정)")).toBeInTheDocument();
-});
-
-test("저장한 일정을 삭제하면 목록에서 빠진다", async () => {
-  server.schedules = [...SEED_SCHEDULES];
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "성수 저녁 코스 메뉴" }));
-  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
-
-  await waitFor(() => expect(server.scheduleDeleted).toEqual(["sched-2"]));
-  expect(server.deleted).toEqual([]);
-  await waitFor(() =>
-    expect(within(sidebar()).queryByText("성수 저녁 코스")).not.toBeInTheDocument(),
-  );
-  // 다른 줄은 그대로 있다.
-  expect(within(sidebar()).getByText("종로 반나절")).toBeInTheDocument();
+  /* 로그인 화면으로 보내지 않는다 — 관문이 게스트 신원을 새로 발급해 같은 자리에서
+     앱이 계속 열려 있다(RequireUser). */
+  expect(await within(sidebar()).findByRole("button", { name: "로그인" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
 /*
- * 메뉴 상태를 두 목록이 나눠 쓰되 **어느 목록인지**를 함께 들고 있다
- * (`MenuTarget`). 그 구분자가 막는 것은 정확히 하나다 — 두 목록에 같은 id가
- * 있을 때 메뉴가 양쪽에 동시에 뜨는 것.
+ * 사이드바 바닥은 **이메일이 아니라 이름**을 낸다.
  *
- * **id가 겹치는 상황을 일부러 만든다.** 지금 대화 id("chat-1")와 일정
- * id("sched-1")는 체계가 달라 실제로 겹치지 않는데, 그렇기 때문에 평범한
- * 시드로는 구분자를 지워도 테스트가 전부 통과한다(실제로 확인했다). 겹치지
- * 않는다는 것에 기대는 코드를 두지 않으려고 넣은 가드이므로, 겹쳤을 때를
- * 재현해야 그 가드를 잠글 수 있다.
- *
- * 참고로 "한쪽을 열면 다른 쪽이 닫힌다"는 막아야 할 동작이 아니라 원하는
- * 동작이다 — 메뉴는 한 번에 하나만 떠야 한다. 그건 상태가 하나라는 것에서
- * 이미 따라오고, 구분자와는 무관하다.
+ * 가입 화면이 이름을 받는데도(`SignupPage`: "AI가 추천할 때 이 이름으로 불러드려요")
+ * 여기에는 늘 이메일이 떴다 — `identityLabel`의 후보 순서가 email 먼저라서다.
+ * 그 함수는 `AuthStatusBadge`도 쓰므로 순서를 뒤집는 대신 `identityDisplay`를
+ * 따로 만들었고, 이 테스트가 사이드바가 그쪽을 쓰는 것을 잠근다.
  */
-test("대화와 저장한 일정의 id가 겹쳐도 메뉴는 하나만 뜬다", async () => {
-  server.schedules = [
-    {
-      id: "chat-1",
-      title: "종로 반나절",
-      session_id: "chat-1",
-      created_at: "2026-08-31T14:30:00+09:00",
-      updated_at: "2026-08-31T14:30:00+09:00",
-    },
-  ];
+
+/*
+ * 로그인 안 한 사람에게는 신원 표시를 그리지 않는다. 보여줄 것이 "게스트 /
+ * 게스트로 이용 중"뿐이라 이름 자리를 차지하고도 아무것도 알려주지 못한다 —
+ * 그 자리에는 할 수 있는 동작이 오는 게 낫다.
+ */
+test("로그인 안 한 상태에는 신원 표시 대신 로그인 버튼만 있다", async () => {
+  await renderApp();
+
+  expect(within(sidebar()).getByRole("button", { name: "로그인" })).toBeInTheDocument();
+  expect(within(sidebar()).queryByText("게스트로 이용 중")).not.toBeInTheDocument();
+  /* 열 팝업 자체가 없다. */
+  expect(within(sidebar()).queryByRole("button", { expanded: false })).not.toBeInTheDocument();
+});
+
+/* 계정 사용자는 계정 표시 그대로다 — 이 화면은 바뀌지 않았다. */
+test("계정 이름과 이메일은 계정 버튼에 두 줄로 남는다", async () => {
+  setMockSession({
+    ...ACCOUNT_SESSION,
+    user: { ...ACCOUNT_SESSION.user, user_metadata: { name: "나종원" } },
+  } as typeof GUEST_SESSION);
+  await renderApp();
+
+  const account = accountButton();
+  expect(within(account).getByText("나종원")).toBeInTheDocument();
+  expect(within(account).getByText("trip@example.com")).toBeInTheDocument();
+});
+
+/* 로그아웃은 되돌릴 수 없다. 상시 눌리는 자리에 두지 않는다. */
+test("로그아웃은 계정 팝업을 열기 전에는 보이지 않는다", async () => {
+  await renderAppAsAccount();
+
+  expect(within(sidebar()).queryByRole("menuitem", { name: /로그아웃/ })).not.toBeInTheDocument();
+
+  await openAccountMenu(userEvent);
+
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+});
+
+test("팝업 바깥을 누르면 닫힌다", async () => {
+  await renderAppAsAccount();
+  await openAccountMenu(userEvent);
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: "계정 메뉴 닫기" }));
+
+  expect(within(sidebar()).queryByRole("menuitem", { name: /로그아웃/ })).not.toBeInTheDocument();
+});
+
+/*
+ * 저장한 일정 목록 테스트 6개는 `components/schedule/SavedScheduleList.test.tsx`로
+ * 옮겼다(2026-09-04) — 목록이 사이드바에서 일정 화면으로 옮겨갔다. 그중
+ * "대화와 저장한 일정의 id가 겹쳐도 메뉴는 하나만 뜬다"는 두 목록이 메뉴 상태를
+ * 한 벌로 나눠 쓸 때만 성립하던 가드라 옮기지 않고 지웠다.
+ */
+
+/*
+ * **접었을 때도 계정에 닿아야 한다**(2026-09-06).
+ *
+ * 레일은 SideDrawerContent 를 아예 그리지 않아서, 접어 두면 로그인도 로그아웃도
+ * 할 수 없었다 — 펴야만 되는 동작이 있으면 접기가 기능을 감추는 셈이다.
+ *
+ * 두 신원을 짝으로 잠근다. 한쪽만 보면 "계정일 때만 나오는" 구현으로도 통과한다.
+ */
+test("사이드바를 접어도 로그인 입구가 레일에 남는다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(
-    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }),
-  );
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
 
-  expect(screen.getAllByRole("menu")).toHaveLength(1);
+  await user.click(within(sidebar()).getByRole("button", { name: "로그인" }));
+  expect(await screen.findByLabelText("이메일")).toBeInTheDocument();
 });
 
-/* 대화 목록과 별도 저장소다. 세션이 30일 뒤 정리돼도 저장한 일정은 남으므로
-   한쪽이 비어도 다른 쪽은 그려져야 한다. */
-test("대화가 없어도 저장한 일정은 보인다", async () => {
-  server.sessions = [];
-  server.schedules = [
-    {
-      id: "sched-1",
-      title: "종로 반나절",
-      session_id: null,
-      created_at: "2026-08-31T14:30:00+09:00",
-      updated_at: "2026-08-31T14:30:00+09:00",
-    },
-  ];
+test("사이드바를 접어도 계정 프로필을 눌러 로그아웃할 수 있다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
 
-  render(<App />);
-  await screen.findByRole("button", { name: "추천 시작하기" });
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
 
-  expect(await within(sidebar()).findByText("종로 반나절")).toBeInTheDocument();
-  expect(within(sidebar()).getByText("아직 대화 기록이 없어요")).toBeInTheDocument();
+  /* 레일에는 글자가 없으므로 이름·부제가 버튼의 접근 가능한 이름이 된다 — 펼친
+     쪽 버튼도 그 둘을 품고 있어 같은 문구로 읽힌다. */
+  await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
+  await user.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
+
+  /* 로그아웃하면 관문으로 튕기지 않고 로그인 안 한 상태로 남는다 — 레일도
+     로그인 입구로 바뀐다. */
+  expect(await within(sidebar()).findByRole("button", { name: "로그인" })).toBeInTheDocument();
+});
+
+/* 레일 계정은 펼친 사이드바와 **같은 컴포넌트**다. 한 벌 더 만들면 로그아웃이 두
+   곳에 생기고, 한쪽만 고쳐지면 접었을 때와 폈을 때가 갈린다. 팝업 내용이 양쪽에서
+   같은지 확인해 그 사실을 잠근다. */
+test("레일 계정 팝업도 펼친 쪽과 같은 내용을 낸다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
+  await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
+
+  /* 신원 헤더 + 로그아웃. 그 밖의 줄은 만들지 않는다(갈 화면이 없다). */
+  expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
+  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(1);
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
 });

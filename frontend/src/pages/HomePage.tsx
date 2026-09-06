@@ -11,8 +11,8 @@
  * "개발자용으로 시작"도 같은 텍스트로 고를 수 있어야 해서다.
  */
 
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
@@ -20,13 +20,11 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest, wasCancelledByUser } from "../state/chatAbortController";
-import { loadPreferences } from "../state/preferenceStorage";
 import {
   loadLocationSettings,
   syncLocationSettingsFromConditions,
 } from "../state/locationSettings";
 import { useLocationSettings } from "../hooks/useLocationSettings";
-import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { buildLocationChipModel } from "../utils/locationChip";
@@ -34,40 +32,54 @@ import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const HOME_TEXT = {
   ko: {
-    headline: "갑자기 일정이 바뀌셨나요?",
-    subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
-    locationNotice:
-      "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    /*
+     * 문장 가운데 한 낱말을 부각한다(2026-09-07). 이 화면이 무엇에 대한
+     * 화면인지가 "일정"과 "상황" 두 낱말에 다 들어 있다 — 앞뒤를 따로 들고
+     * 있어야 그 자리에만 색·굵기를 줄 수 있다.
+     */
+    headline: { lead: "갑자기 ", accent: "일정", tail: "이 바뀌셨나요?" },
+    subtitle: {
+      lead: "지금 ",
+      accent: "상황",
+      tail: "을 말해주시면 바로 대체 장소를 찾아볼게요.",
+    },
+    /* 두 문장이라 좁은 화면에서는 문장마다 한 줄씩 간다 — 렌더 쪽 주석 참고. */
+    locationNotice: {
+      first: "추천 시작 시 브라우저가 위치 권한을 요청합니다.",
+      second: "허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    },
     prompts: [
       "비를 피할 실내 장소가 필요해",
       "남은 시간이 1시간 정도야",
       "근처 카페나 박물관을 찾고 싶어",
     ],
-    placeholder: "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    placeholder: "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
     requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
-    myPreferences: "내 취향",
-    changePreferences: "바꾸기",
   },
   en: {
-    headline: "Did your plans change suddenly?",
-    subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
-    locationNotice:
-      "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
+    headline: { lead: "Did your ", accent: "plans", tail: " change suddenly?" },
+    subtitle: {
+      lead: "Tell us your ",
+      accent: "situation",
+      tail: ", and we’ll find a place to visit in Seoul.",
+    },
+    locationNotice: {
+      first: "Your browser will ask for location permission before starting.",
+      second: "We use it as the search point for this chat session.",
+    },
     prompts: [
       "I need an indoor place to avoid the rain",
       "I have about one hour left",
       "Find a café or museum nearby",
     ],
-    placeholder: "For example: Find a museum or café near Gyeongbokgung where I can avoid the rain",
+    placeholder: "Find a museum or café near Gyeongbokgung where I can avoid the rain",
     start: "Start recommendations",
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
     requestError: "We couldn’t process your request. Please try again.",
-    myPreferences: "My preferences",
-    changePreferences: "Change",
   },
 } as const;
 
@@ -78,22 +90,11 @@ export function HomePage() {
   const text = HOME_TEXT[state.language];
 
   /*
-   * 저장해 둔 취향. 이 기기 값으로 먼저 그리고 계정 값으로 맞춘다 — 로딩 표시를
-   * 두지 않는 이유는 대부분 둘이 같아 깜빡임만 남기 때문이다. 다른 기기에서 바꾼
-   * 경우에만 줄이 바뀌고, 그때는 바뀌는 것이 맞다.
+   * **취향은 홈에서 더 이상 읽지 않는다**(2026-09-07). 저장해 둔 취향을 보여주던
+   * 줄을 지우면서 syncPreferences() 호출도 함께 뺐다 — 이제 이 기기와 계정의
+   * 취향을 맞추는 것은 취향 설정 화면을 열 때뿐이다.
    */
   const locationSettings = useLocationSettings();
-  const [preferences, setPreferences] = useState(loadPreferences);
-
-  useEffect(() => {
-    let active = true;
-    void syncPreferences().then((synced) => {
-      if (active) setPreferences(synced);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -296,7 +297,15 @@ export function HomePage() {
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader location={locationChip} />
 
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-4 pt-2">
+      {/*
+       * 세로 간격을 gap 하나로 고르게 주지 않는다. 헤드라인이 위를, 오브가 남는
+       * 가운데를 갖고, 나머지는 컴포저 쪽으로 내려붙는다 — 요소를 빼거나 순서를
+       * 바꾸지 않고 **남는 공간을 어디에 줄지**만 정한 것이다(2026-09-07).
+       */}
+      {/* min-h-0 이 있어야 아래 오브 칸이 남는 높이에 맞춰 줄어든다. flex 자식은
+          기본이 min-height:auto 라 내용보다 작아지지 않고, 그러면 짧은 화면에서
+          오브가 칸을 뚫고 나가 홈 전체가 스크롤된다(2026-09-07 실측). */}
+      <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
         <div className="flex items-center justify-end">
           {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
               비어 있으면 비활성. */}
@@ -304,68 +313,109 @@ export function HomePage() {
             type="button"
             disabled={isLoading || !userInput.trim()}
             onClick={() => void startChat(userInput, "/dev-chat")}
-            className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light disabled:opacity-50"
+            className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
           >
             {text.developer}
           </button>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <h1 className="text-[24px] font-bold leading-snug text-ink">{text.headline}</h1>
-          <p className="text-sm leading-relaxed text-muted">{text.subtitle}</p>
+        {/*
+         * 오브가 맨 위에 오고 글이 그 아래에 가운데로 붙는다(2026-09-07).
+         *
+         * 오브는 장식이라 aria-hidden 이다 — 누르는 기능도 움직임도 없다.
+         * 화면이 낮으면 이미지 자체가 작아진다(.tb-orb__img).
+         */}
+        {/* pt 로 히어로를 아래로 내린다(2026-09-07). 아래 flex-1 칸이 그만큼
+            줄어들어 아래쪽 묶음은 제자리에 남는다. */}
+        <div className="flex flex-col items-center pt-10 text-center">
+          <img
+            src="/glass-object.png"
+            alt=""
+            aria-hidden
+            width={76}
+            height={75}
+            decoding="async"
+            className="tb-orb__img"
+          />
+          {/*
+           * 한 줄이다(2026-09-07). 두 줄로 쪼개 놓으면 가운데 정렬에서 윗줄이
+           * 짧아 축이 흔들려 보인다.
+           *
+           * 좁은 화면에서 접히지 않게 글자를 줄인다 — 24px 이면 "갑자기 일정이
+           * 바뀌셨나요?" 가 241px 이라 360px 화면의 본문 폭(328px)에 들어간다.
+           *
+           * **nowrap 은 쓰지 않는다.** 영어 문구가 더 길어서(Did your plans change
+           * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
+           * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
+           *
+           * 부각하는 낱말은 "일정"과 "상황" 둘 다 브랜드색이다(2026-09-07 사용자
+           * 결정). 이 화면이 무엇에 대한 화면인지가 그 두 낱말에 다 들어 있다.
+           */}
+          <h1 className="mt-5 text-2xl font-bold leading-[1.32] tracking-[-0.035em] text-ink sm:text-[30px]">
+            {text.headline.lead}
+            <span className="text-brand">{text.headline.accent}</span>
+            {text.headline.tail}
+          </h1>
+          <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">
+            {text.subtitle.lead}
+            <span className="font-semibold text-brand">{text.subtitle.accent}</span>
+            {text.subtitle.tail}
+          </p>
+          <div className="mt-6 flex flex-wrap items-start justify-center gap-2">
+            {text.prompts.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                disabled={isLoading}
+                onClick={() => setUserInput(prompt)}
+                /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
+                   오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
+                className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/*
-         * 저장해 둔 취향을 여기서 한 번 더 보여준다 — 확인하려고 취향 설정
-         * 화면까지 들어갔다 오지 않아도 되게. 읽기 전용이고, 고치려면 "바꾸기"로
-         * 간다(홈에서 실수로 지우는 일을 만들지 않는다).
-         *
-         * 아직 아무것도 저장하지 않았으면 줄 자체를 그리지 않는다. 빈 자리를
-         * 남기면 홈 첫 화면이 그만큼 밀린다.
-         */}
-        {preferences.length > 0 && (
-          <section className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-bold text-label">{text.myPreferences}</h2>
-              <Link
-                to="/preferences"
-                className="text-xs font-bold text-brand transition-colors hover:text-brand-deep"
-              >
-                {text.changePreferences}
-              </Link>
-            </div>
-            <ul className="flex flex-wrap gap-2">
-              {preferences.map((preference) => (
-                <li
-                  key={preference.label}
-                  className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-brand-deep"
-                >
-                  {preference.label}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        <section className="rounded-2xl bg-sky-light p-3.5 text-sm leading-relaxed text-brand-deep">
-          {text.locationNotice}
-        </section>
+        {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
+        <div className="min-h-3 flex-1" />
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
 
-        <div className="flex flex-wrap items-start gap-3">
-          {text.prompts.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              disabled={isLoading}
-              onClick={() => setUserInput(prompt)}
-              className="rounded-full bg-white px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting transition-colors hover:bg-chip disabled:opacity-50"
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
+        {/*
+         * 위치 권한 고지. 채팅 바 바로 위다(2026-09-07) — 권한을 실제로 묻는 것은
+         * 여기서 보내는 순간이라, 누르기 직전에 읽히는 자리가 맞다.
+         *
+         * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
+         * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
+         *
+         * **text-muted(대비 4.76:1)보다 옅은 text-gray-400(2026-09-07)** — 실제
+         * 대비는 2.56:1로 WCAG AA(4.5:1)에 못 미친다. 11px 잔글씨라 원래도 본문
+         * 기준을 넘기지 못했었지만, 이 값은 명백히 더 내려간다. 필수로 읽어야
+         * 하는 안내가 아니라(안 읽어도 기능은 그대로 동작한다) 이 화면에서 가장
+         * 낮은 우선순위로 두기로 한 사용자 결정을 존중해 그대로 적용한다 —
+         * 다른 잔글씨(RecommendationDetailPreviewModal의 11px 캡션)에도 이미
+         * 쓰이는 값이라 새 색을 들이는 것도 아니다.
+         *
+         * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
+         * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
+         * 은 띄어쓰기에서만 끊는다.
+         *
+         * text-balance 는 뺐다 — 문장마다 block 이 되면 각 문장 안에서만 균형을
+         * 맞추므로 두 번째 문장이 두 줄로 쪼개질 여지만 생긴다.
+         */}
+        <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-gray-400">
+          {/*
+           * 문장마다 한 줄이다. 좁은 화면에서는 block, sm 이상에서는 inline —
+           * 넓으면 두 문장이 한 줄에 다 들어간다.
+           *
+           * 그냥 흘려보내면 두 번째 문장 첫머리("허용한")가 첫 줄 끝에 붙어
+           * 문장이 어디서 갈리는지 안 보였다(2026-09-07).
+           */}
+          <span className="block sm:inline">{text.locationNotice.first}</span>{" "}
+          <span className="block sm:inline">{text.locationNotice.second}</span>
+        </p>
       </div>
 
       <ChatComposer

@@ -7,9 +7,7 @@
  * TODO: 실제 세션 라우트가 생기면 /chat/:sessionId를 별도 보호 라우트로 추가한다.
  *
  * 셸 안 화면 표(홈·채팅·취향 설정·위치 설정·일정)는 AppShell이 감싸는
- * AppRoutes에 있다 — AppShell이 URL을 baseLocation(기반 화면)/sheetLocations
- * (위에 쌓인 바텀시트들)로 나눠 AppRoutes를 각각 다시 호출한다
- * (package_D/DESIGN_SYSTEM.md §5.3).
+ * AppRoutes에 있다.
  */
 
 import { lazy, Suspense } from "react";
@@ -20,6 +18,7 @@ import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
 import { PageTransition } from "./components/layout/PageTransition";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import { SplashScreen } from "./components/SplashScreen";
 
 /*
  * 개발자 화면과 인증 화면은 따로 받아온다.
@@ -142,6 +141,12 @@ function App() {
           </RouteErrorBoundary>
         </BrowserRouter>
       </TripProvider>
+      {/*
+       * 라우터 **밖·뒤**에 둔다. 밖인 이유는 특정 화면의 것이 아니라 앱이 뜨는
+       * 순간을 덮는 층이기 때문이고, 뒤인 이유는 DOM 순서만으로도 위에 오게
+       * 해서 z-index 하나에만 기대지 않기 위해서다.
+       */}
+      <SplashScreen />
     </AuthProvider>
   );
 }
