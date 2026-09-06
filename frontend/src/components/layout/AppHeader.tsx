@@ -42,6 +42,10 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
    *
    * onBack 자체를 없애지 않는 이유는 좁은 폭에서는 여전히 필요하기 때문이다.
    * 호출부(취향·위치·일정)는 셋 다 그대로 넘긴다.
+   *
+   * **버튼만 빼고 띠는 남긴다.** 띠까지 접었더니 제목이 화면 맨 위에 붙어 위쪽
+   * 여백이 사라졌다(2026-09-06 사용자 확인). 이 띠는 뒤로가기를 담는 자리이기도
+   * 하지만 본문이 시작하기 전의 여백이기도 하다.
    */
   const showBack = Boolean(onBack) && !isDesktop;
 
@@ -66,10 +70,12 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
     <div
       className={cn(
         "sticky top-0 z-20 bg-gradient-to-b from-black/5 to-transparent",
-        // 데스크톱은 햄버거가 md:hidden으로 빠지고 뒤로가기도 빠지므로, 위치 pill이
-        // 없으면 이 자리가 통째로 빈 그라디언트 띠로 남는다. 보여줄 게 없을 때는
-        // 데스크톱에서 아예 접는다 — 모바일은 햄버거가 항상 있어야 하므로 그대로 둔다.
-        !locationChip && !showBack && "md:hidden",
+        // 접는 판정은 **showBack이 아니라 onBack**으로 한다. 데스크톱에서 버튼은
+        // 빠지지만 띠는 위쪽 여백으로 남아야 해서다 — showBack으로 재면 그 여백까지
+        // 함께 접힌다. 위치 pill도 뒤로가기도 애초에 없는 화면(홈·채팅에서 위치를
+        // 아직 못 정한 경우)만 접는다: 거기서는 데스크톱에 그릴 것이 정말 없다.
+        // 모바일은 햄버거가 항상 있어야 하므로 어느 쪽이든 그대로 둔다.
+        !locationChip && !onBack && "md:hidden",
       )}
     >
       <div className="relative flex items-center justify-between px-4 pb-3 pt-6">

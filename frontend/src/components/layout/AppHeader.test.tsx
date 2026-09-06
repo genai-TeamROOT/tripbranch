@@ -180,3 +180,27 @@ test("누르면 넘겨받은 뒤로가기 동작을 부른다", async () => {
 
   expect(onBack).toHaveBeenCalledTimes(1);
 });
+
+/*
+ * 버튼과 띠는 별개다. 띠까지 접었더니 제목이 화면 맨 위에 붙어 위쪽 여백이
+ * 사라졌다 — 이 띠는 뒤로가기를 담는 자리이면서 본문 앞의 여백이기도 하다.
+ *
+ * 클래스로 단언하는 이유는 **접는 수단이 CSS(md:hidden)**여서다. jsdom에는
+ * 레이아웃이 없어 엘리먼트는 어느 쪽이든 그려지고, 달라지는 것은 클래스뿐이다.
+ * container의 첫 엘리먼트가 헤더의 바깥 div다(위 Provider들은 DOM을 만들지 않는다).
+ */
+test("사이드바가 보이는 폭에서 뒤로가기는 빠져도 헤더 띠는 남는다", () => {
+  setSidebarVisible(true);
+  const { container } = renderHeader(null, undefined, { onBack: vi.fn() });
+
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
+  expect(container.firstElementChild).not.toHaveClass("md:hidden");
+});
+
+/* 위치 pill도 뒤로가기도 애초에 없는 화면에서는 데스크톱에 그릴 것이 정말 없다. */
+test("보여줄 것이 아무것도 없으면 데스크톱에서 헤더를 접는다", () => {
+  setSidebarVisible(true);
+  const { container } = renderHeader(null);
+
+  expect(container.firstElementChild).toHaveClass("md:hidden");
+});
