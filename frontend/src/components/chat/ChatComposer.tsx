@@ -76,8 +76,34 @@ export function ChatComposer({
   useLayoutEffect(() => {
     const element = inputRef.current;
     if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${element.scrollHeight}px`;
+
+    const fit = () => {
+      element.style.height = "auto";
+      element.style.height = `${element.scrollHeight}px`;
+    };
+    fit();
+
+    /*
+     * **한 번만 재면 모자란다.** 처음 잰 뒤에 글이 다시 접히면 그 높이는 낡은
+     * 값이 되고, 넘친 만큼이 안쪽 스크롤로 남는다 — 빈 입력창인데 스크롤이
+     * 생기는 것이 그 모습이다.
+     *
+     * 다시 접히는 경우가 둘이다.
+     * - **웹폰트가 늦게 올 때.** 대체 글꼴로 잰 높이는 Pretendard 로 바뀌면
+     *   맞지 않는다. 자리표시가 긴 화면(홈)에서는 좁을수록 여러 줄이라 차이가
+     *   그만큼 커진다(320px 에서 4줄, 2026-09-07 실측).
+     * - **폭이 바뀔 때.** 회전하거나 창을 줄이면 줄 수가 달라지는데, 이 효과는
+     *   text 가 바뀔 때만 돌아서 예전 높이가 그대로 남아 있었다.
+     */
+    let alive = true;
+    void document.fonts?.ready.then(() => {
+      if (alive) fit();
+    });
+    window.addEventListener("resize", fit);
+    return () => {
+      alive = false;
+      window.removeEventListener("resize", fit);
+    };
   }, [text]);
 
   async function submit() {

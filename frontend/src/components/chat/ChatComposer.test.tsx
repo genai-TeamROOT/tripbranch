@@ -161,3 +161,28 @@ test("입력창은 무한정 자라지 않도록 최대 높이와 스크롤을 �
   expect(composer().className).toContain("max-h-40");
   expect(composer().className).toContain("overflow-y-auto");
 });
+
+/*
+ * **한 번만 재면 모자란다.** 처음 잰 뒤에 글이 다시 접히면(웹폰트가 늦게 오거나
+ * 폭이 바뀌면) 그 높이는 낡은 값이 되고, 넘친 만큼이 안쪽 스크롤로 남는다 —
+ * 빈 입력창에 스크롤이 생기는 것이 그 모습이다.
+ *
+ * 폭 변화만 잠근다. 웹폰트 쪽(document.fonts.ready)은 jsdom 에 폰트 로딩이
+ * 아예 없어 흉내가 진짜를 못 닮는다 — 없는 것을 흉내 내 통과시키느니 잠그지
+ * 않는다. 그쪽은 실제 브라우저에서 확인했다.
+ */
+test("폭이 바뀌면 높이를 다시 잰다", async () => {
+  const user = userEvent.setup();
+  render(<ChatComposer disabled={false} onSubmit={vi.fn()} />);
+
+  const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.type(box, "한 줄{Shift>}{Enter}{/Shift}두 줄{Shift>}{Enter}{/Shift}세 줄");
+  expect(box.style.height).toBe(`${ONE_LINE + LINE * 2}px`);
+
+  /* 좁아져서 줄이 늘어난 상황을 흉내 낸다 — 모의 scrollHeight 가 줄 수를 보므로
+     값 자체를 늘려 "다시 재면 달라지는" 상태를 만든다. */
+  box.value = "한 줄\n두 줄\n세 줄\n네 줄";
+  window.dispatchEvent(new Event("resize"));
+
+  expect(box.style.height).toBe(`${ONE_LINE + LINE * 3}px`);
+});
