@@ -3,8 +3,8 @@
  * 입력: location prop(utils/locationChip 모델), 셸 드로어 컨텍스트.
  * 출력: 헤더(햄버거)가 항상 있고 pill은 모델이 있을 때만 그려진다. 출발지와 검색
  *   기준이 다르면 둘 다 그려진다. pill을 누르면 위치 설정으로 이동한다.
- *   뒤로가기 화살표는 폭에 상관없이 그리지 않는다(2026-09-07) — onBack은
- *   헤더 접힘 판정에만 쓴다.
+ *   뒤로가기 화살표는 폭에 상관없이 그리지 않는다(2026-09-07). keepStrip은
+ *   헤더 띠를 접을지만 정한다.
  *
  * AppHeader는 useAppShell()로 드로어를 열기 때문에 Provider 밖에서 렌더하면
  * 던진다 — 모든 케이스를 AppShellProvider로 감싼다.
@@ -56,7 +56,7 @@ afterEach(() => {
 function renderHeader(
   settings: { origin: string | null; center: string | null } | null,
   shell?: Partial<ShellValue>,
-  extra?: { routes?: ReactNode; onBack?: () => void },
+  extra?: { routes?: ReactNode; keepStrip?: boolean },
 ) {
   const value: ShellValue | undefined = shell
     ? { drawerOpen: false, openDrawer: vi.fn(), closeDrawer: vi.fn(), ...shell }
@@ -65,7 +65,7 @@ function renderHeader(
   return render(
     <AppShellProvider value={value}>
       <MemoryRouter initialEntries={["/chat"]}>
-        <AppHeader location={chipFor(settings)} onBack={extra?.onBack} />
+        <AppHeader location={chipFor(settings)} keepStrip={extra?.keepStrip} />
         {extra?.routes}
       </MemoryRouter>
     </AppShellProvider>,
@@ -189,41 +189,40 @@ test("위치 pill을 누르면 위치 설정으로 이동한다", async () => {
 /*
  * **뒤로가기 화살표는 폭에 상관없이 그리지 않는다**(2026-09-07). 예전에는
  * 사이드바가 없는 좁은 폭에서만 그렸는데, 화살표가 브라우저/제스처 뒤로가기와
- * 같은 일을 두 번 해서 뺐다 — onBack은 이제 화살표가 아니라 헤더 접힘 판정과
- * 시트 모드(죽은 분기)의 닫기 콜백에만 쓰인다.
+ * 같은 일을 두 번 해서 뺐다.
  *
  * 두 폭을 짝으로 잠근다. 한쪽만 보면 좁은 폭에서 되살아나도 못 잡는다.
  */
-test("onBack이 있어도 뒤로가기 화살표는 그리지 않는다(좁은 폭)", () => {
+test("띠를 남기는 화면에서도 뒤로가기 화살표는 그리지 않는다(좁은 폭)", () => {
   setSidebarVisible(false);
-  renderHeader(null, undefined, { onBack: vi.fn() });
+  renderHeader(null, undefined, { keepStrip: true });
 
   expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
-test("onBack이 있어도 뒤로가기 화살표는 그리지 않는다(넓은 폭)", () => {
+test("띠를 남기는 화면에서도 뒤로가기 화살표는 그리지 않는다(넓은 폭)", () => {
   setSidebarVisible(true);
-  renderHeader(null, undefined, { onBack: vi.fn() });
+  renderHeader(null, undefined, { keepStrip: true });
 
   expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 /*
- * 버튼은 없어도 띠는 남는다. 접었더니 제목이 화면 맨 위에 붙어 위쪽 여백이
+ * 그릴 버튼이 없어도 띠는 남는다. 접었더니 제목이 화면 맨 위에 붙어 위쪽 여백이
  * 사라졌었다(2026-09-06 사용자 확인) — 이 띠는 본문이 시작하기 전의 여백이다.
  *
  * 클래스로 단언하는 이유는 **접는 수단이 CSS(md:hidden)**여서다. jsdom에는
  * 레이아웃이 없어 엘리먼트는 어느 쪽이든 그려지고, 달라지는 것은 클래스뿐이다.
  * container의 첫 엘리먼트가 헤더의 바깥 div다(위 Provider들은 DOM을 만들지 않는다).
  */
-test("onBack이 있으면 뒤로가기 버튼 없이도 헤더 띠는 남는다", () => {
+test("keepStrip이면 그릴 버튼이 없어도 헤더 띠는 남는다", () => {
   setSidebarVisible(true);
-  const { container } = renderHeader(null, undefined, { onBack: vi.fn() });
+  const { container } = renderHeader(null, undefined, { keepStrip: true });
 
   expect(container.firstElementChild).not.toHaveClass("md:hidden");
 });
 
-/* 위치 pill도 onBack도 애초에 없는 화면에서는 데스크톱에 그릴 것이 정말 없다. */
+/* 위치 pill도 keepStrip도 없는 화면에서는 데스크톱에 그릴 것이 정말 없다. */
 test("보여줄 것이 아무것도 없으면 데스크톱에서 헤더를 접는다", () => {
   setSidebarVisible(true);
   const { container } = renderHeader(null);

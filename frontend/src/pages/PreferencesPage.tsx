@@ -3,8 +3,8 @@
  *   저장하면 **계정에 남고**(PUT /api/preferences) 이 기기에도 함께 남는다
  *   (state/preferenceSync.ts). 홈 화면에는 보이지 않는다(2026-09-07) — 홈의
  *   취향 칩 줄을 지운 뒤로는 확인하려면 이 화면에 다시 들어와야 한다.
- * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
- *   SHEET_PATH_PATTERNS에 /preferences가 없다).
+ * 호출 시점: 사이드바 "취향 설정"에서 연다. 위치·일정과 함께 전체 페이지다 —
+ *   시트로 여는 화면은 이제 앱에 없다(2026-09-07, AppShell).
  *
  * **저장하면 추천 순위에 반영된다**(SCORING_VERSION 1.5.0 취향 RAG 질의
  * 보강). 부제는 이 사실만 말한다(2026-09-07) — 홈 화면에 안 보인다는 사실은
@@ -265,7 +265,7 @@ export function PreferencesPage() {
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
-      <AppHeader onBack={() => navigate(-1)} />
+      <AppHeader keepStrip />
       {/*
        * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
        * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).

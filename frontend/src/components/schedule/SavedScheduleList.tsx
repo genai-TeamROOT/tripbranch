@@ -101,9 +101,9 @@ export function SavedScheduleList() {
                 <button
                   type="button"
                   aria-label={isEn ? `Open schedule ${entry.label}` : `${entry.label} 일정 열기`}
-                  /* 사이드바에서는 `sheetState`로 시트를 띄웠지만 여기는 이미
-                       /schedule 안이다 — 같은 경로를 시트로 다시 쌓으면 뒤로가기가
-                       한 번 더 필요해진다. 쿼리만 바꿔 같은 화면에서 갈아 끼운다. */
+                  /* 여기는 이미 /schedule 안이다 — 같은 경로를 새로 push 하면
+                       뒤로가기가 한 번 더 필요해진다. 쿼리만 바꿔(replace) 같은
+                       화면에서 갈아 끼운다. */
                   onClick={() =>
                     navigate(`/schedule?saved=${encodeURIComponent(entry.id)}`, {
                       replace: true,

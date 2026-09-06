@@ -7,9 +7,7 @@
  * TODO: 실제 세션 라우트가 생기면 /chat/:sessionId를 별도 보호 라우트로 추가한다.
  *
  * 셸 안 화면 표(홈·채팅·취향 설정·위치 설정·일정)는 AppShell이 감싸는
- * AppRoutes에 있다 — AppShell이 URL을 baseLocation(기반 화면)/sheetLocations
- * (위에 쌓인 바텀시트들)로 나눠 AppRoutes를 각각 다시 호출한다
- * (package_D/DESIGN_SYSTEM.md §5.3).
+ * AppRoutes에 있다.
  */
 
 import { lazy, Suspense } from "react";

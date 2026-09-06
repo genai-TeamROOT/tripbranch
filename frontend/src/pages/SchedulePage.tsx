@@ -103,7 +103,7 @@ export function SchedulePage() {
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
-      <AppHeader onBack={() => navigate(-1)} />
+      <AppHeader keepStrip />
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10">
         {/*
           **불러오기 실패 블록은 세로 가운데로 두지 않는다.** 그 아래에 저장한 일정

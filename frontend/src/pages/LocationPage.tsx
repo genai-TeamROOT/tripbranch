@@ -32,7 +32,6 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
 import { FavoritesLimitModal } from "../components/layout/FavoritesLimitModal";
 import { useTripDispatch, useTripState } from "../state/TripContext";
@@ -53,7 +52,6 @@ import type { PlaceSearchCandidate } from "../types";
 const MAX_FAVORITES = 10;
 
 export function LocationPage() {
-  const navigate = useNavigate();
   const state = useTripState();
   const dispatch = useTripDispatch();
   const isEn = state.language === "en";
@@ -240,7 +238,7 @@ export function LocationPage() {
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
-      <AppHeader onBack={() => navigate(-1)} />
+      <AppHeader keepStrip />
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-3 px-4 pb-10">
         {/* 결과를 문서 흐름에 두면 아래 카드들이 통째로 밀려 내려간다. 검색창을
             기준으로 띄워서 화면이 그대로 있게 한다. */}

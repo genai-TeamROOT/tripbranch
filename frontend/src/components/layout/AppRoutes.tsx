@@ -1,23 +1,24 @@
 /*
  * 역할: 신원이 필요한 화면(홈·채팅·취향 설정·위치 설정·일정)의 라우트 표를 정의한다.
- * 입력: 매칭에 쓸 location — 실제 브라우저 위치일 수도, 시트로 열린 배경/전경
- *   위치일 수도 있다(AppShell이 baseLocation/sheetLocations로 나눠 넘긴다).
- * 출력: 해당 location에 맞는 페이지.
- * 호출 시점: AppShell이 기반 화면 한 번, 쌓인 시트마다 한 번씩 호출한다.
- * 근거: package_D/DESIGN_SYSTEM.md §5.3 — 같은 라우트 표를 location만 바꿔 재사용해
- *   바텀시트 스택을 만든다.
+ * 입력: 없음 — 지금 URL을 그대로 쓴다.
+ * 출력: 현재 위치에 맞는 페이지.
+ * 호출 시점: AppShell이 셸 본문 안에서 한 번 호출한다.
+ *
+ * 예전에는 매칭에 쓸 location을 밖에서 받았다 — 같은 라우트 표를 배경 화면과
+ * 그 위에 쌓인 시트에 각각 한 번씩 쓰기 위해서였다. 시트를 걷어낸 뒤로는
+ * 부르는 곳이 한 곳뿐이라 <Routes>가 현재 위치를 직접 읽게 뒀다(2026-09-07).
  */
 
-import { Navigate, Route, Routes, type Location } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { ChatPage } from "../../pages/ChatPage";
 import { HomePage } from "../../pages/HomePage";
 import { LocationPage } from "../../pages/LocationPage";
 import { PreferencesPage } from "../../pages/PreferencesPage";
 import { SchedulePage } from "../../pages/SchedulePage";
 
-export function AppRoutes({ location }: { location: Location }) {
+export function AppRoutes() {
   return (
-    <Routes location={location}>
+    <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/chat" element={<ChatPage />} />
       <Route path="/preferences" element={<PreferencesPage />} />
