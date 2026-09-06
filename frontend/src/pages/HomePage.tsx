@@ -11,8 +11,8 @@
  * "개발자용으로 시작"도 같은 텍스트로 고를 수 있어야 해서다.
  */
 
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
@@ -20,27 +20,15 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest, wasCancelledByUser } from "../state/chatAbortController";
-import { loadPreferences } from "../state/preferenceStorage";
 import {
   loadLocationSettings,
   syncLocationSettingsFromConditions,
 } from "../state/locationSettings";
 import { useLocationSettings } from "../hooks/useLocationSettings";
-import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { buildLocationChipModel } from "../utils/locationChip";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
-
-/*
- * 취향 띠 한 묶음에 최소 이만큼은 깔린다.
- *
- * 취향은 최대 5개뿐이라 한 번만 늘어놓으면 트랙을 못 채운다 — 그러면 마지막 칩
- * 뒤로 빈 구간이 지나가 흐름이 끊겨 보인다(290px 대 313px, 2026-09-07 실측).
- * 칩 하나가 대략 86px이라 6개면 500px대까지 채워, 데스크톱 셸(640px)에서도
- * 묶음이 트랙보다 넓다.
- */
-const MARQUEE_MIN_CHIPS = 6;
 
 const HOME_TEXT = {
   ko: {
@@ -61,8 +49,6 @@ const HOME_TEXT = {
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
     requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
-    myPreferences: "내 취향",
-    changePreferences: "바꾸기",
   },
   en: {
     headlineSoft: "Did your plans",
@@ -80,8 +66,6 @@ const HOME_TEXT = {
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
     requestError: "We couldn’t process your request. Please try again.",
-    myPreferences: "My preferences",
-    changePreferences: "Change",
   },
 } as const;
 
@@ -92,22 +76,11 @@ export function HomePage() {
   const text = HOME_TEXT[state.language];
 
   /*
-   * 저장해 둔 취향. 이 기기 값으로 먼저 그리고 계정 값으로 맞춘다 — 로딩 표시를
-   * 두지 않는 이유는 대부분 둘이 같아 깜빡임만 남기 때문이다. 다른 기기에서 바꾼
-   * 경우에만 줄이 바뀌고, 그때는 바뀌는 것이 맞다.
+   * **취향은 홈에서 더 이상 읽지 않는다**(2026-09-07). 저장해 둔 취향을 보여주던
+   * 줄을 지우면서 syncPreferences() 호출도 함께 뺐다 — 이제 이 기기와 계정의
+   * 취향을 맞추는 것은 취향 설정 화면을 열 때뿐이다.
    */
   const locationSettings = useLocationSettings();
-  const [preferences, setPreferences] = useState(loadPreferences);
-
-  useEffect(() => {
-    let active = true;
-    void syncPreferences().then((synced) => {
-      if (active) setPreferences(synced);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -301,15 +274,6 @@ export function HomePage() {
 
      예전 기본값이던 "종로구"는 뺐다. 지원 지역이 종로구뿐이던 시절의 값이라
      지금은 사실이 아니고, 아무것도 모를 때 실제로 쓰이는 것은 기기 좌표다. */
-  /* 목록이 짧을수록 여러 번 깔아 묶음 폭을 채운다 — MARQUEE_MIN_CHIPS 주석 참고. */
-  const marqueeGroup = preferences.length
-    ? Array.from(
-        { length: Math.max(2, Math.ceil(MARQUEE_MIN_CHIPS / preferences.length)) },
-        (_, repeat) =>
-          preferences.map(({ label }) => ({ label, repeat, key: `${label}-${repeat}` })),
-      ).flat()
-    : [];
-
   const locationChip = buildLocationChipModel(
     locationSettings,
     state.interpreted_conditions?.location_query ?? null,
@@ -373,17 +337,6 @@ export function HomePage() {
             <span className="font-bold text-ink">{text.headlineHard}</span>
           </h1>
           <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">{text.subtitle}</p>
-          {/*
-           * 위치 권한 고지. 예전에는 통짜 파란 패널이라 headline 다음으로 큰 색
-           * 덩어리였다 — 고지는 먼저 읽히는 글이 아니라 필요할 때 찾는 글이다.
-           * 잔글씨로 내린다.
-           *
-           * 왼쪽 세로선은 뺐다 — 가운데로 모인 글 밑에 왼쪽 선만 남으면 어느
-           * 쪽에도 안 맞아 부러진 것처럼 보인다.
-           */}
-          <p className="mt-3 text-[11px] leading-relaxed text-muted">
-            {text.locationNotice}
-          </p>
         </div>
 
         {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
@@ -398,8 +351,8 @@ export function HomePage() {
               type="button"
               disabled={isLoading}
               onClick={() => setUserInput(prompt)}
-              /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 누를 수
-                 있는 것에만 입힌다: 취향 칩은 읽기만 하므로 실선 한 겹이다. */
+              /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
+                 오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
               className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
             >
               {prompt}
@@ -408,51 +361,15 @@ export function HomePage() {
         </div>
 
         {/*
-         * 저장해 둔 취향을 여기서 한 번 더 보여준다 — 확인하려고 취향 설정
-         * 화면까지 들어갔다 오지 않아도 되게. 읽기 전용이고, 고치려면 "바꾸기"로
-         * 간다(홈에서 실수로 지우는 일을 만들지 않는다).
+         * 위치 권한 고지. 채팅 바 바로 위다(2026-09-07) — 권한을 실제로 묻는 것은
+         * 여기서 보내는 순간이라, 누르기 직전에 읽히는 자리가 맞다.
          *
-         * 아직 아무것도 저장하지 않았으면 줄 자체를 그리지 않는다. 빈 자리를
-         * 남기면 홈 첫 화면이 그만큼 밀린다.
-         *
-         * **띠로 흐른다**(2026-09-07). 제목과 "바꾸기"는 흐르는 자리 밖에 둔다 —
-         * 같이 흘러가면 취향을 바꾸러 갈 길이 화면에서 사라졌다 나타났다 한다.
+         * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
+         * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
          */}
-        {preferences.length > 0 && (
-          <section className="mt-3.5 flex items-center gap-2.5">
-            <h2 className="shrink-0 text-xs font-bold text-label">{text.myPreferences}</h2>
-            <div className="tb-marquee min-w-0 flex-1">
-              <ul className="tb-marquee__run flex w-max gap-1.5">
-                {/* 앞 묶음만 읽힌다. 뒷 묶음은 이음매를 메우는 그림이라
-                    aria-hidden 이고, 앞 묶음 안의 반복분도 마찬가지다. */}
-                {marqueeGroup.map(({ label, key, repeat }) => (
-                  <li
-                    key={`a-${key}`}
-                    aria-hidden={repeat > 0 || undefined}
-                    className="whitespace-nowrap rounded-full border border-border bg-white/55 px-3 py-1.5 text-xs font-medium text-ink"
-                  >
-                    {label}
-                  </li>
-                ))}
-                {marqueeGroup.map(({ label, key }) => (
-                  <li
-                    key={`b-${key}`}
-                    aria-hidden
-                    className="whitespace-nowrap rounded-full border border-border bg-white/55 px-3 py-1.5 text-xs font-medium text-ink"
-                  >
-                    {label}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <Link
-              to="/preferences"
-              className="shrink-0 text-xs font-bold text-brand transition-colors hover:text-brand-deep"
-            >
-              {text.changePreferences}
-            </Link>
-          </section>
-        )}
+        <p className="mt-3 text-center text-[11px] leading-relaxed text-muted">
+          {text.locationNotice}
+        </p>
       </div>
 
       <ChatComposer

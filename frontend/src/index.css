@@ -381,7 +381,11 @@
  * 탁해지고, 유리 구슬은 가만히 있을 때가 제일 유리로 보인다.
  *
  * 흰 바탕에 흰 구슬이지만 묻히지 않는다(순백과 다른 픽셀 74.3%, 평균 밝기
- * 226.6/255, 2026-09-07 실측). 그림자만으로 바닥에 얹힌다.
+ * 226.6/255, 2026-09-07 실측).
+ *
+ * **그림자를 두 겹으로 겹친다.** 짧고 진한 것 하나로는 바닥에 붙어 보이고,
+ * 길고 연한 것 하나로는 흐릿하게 번지기만 한다. 가까운 접지 그림자로 무게를
+ * 주고 그 밑에 멀리 퍼지는 브랜드색 그림자를 깔면 물체가 떠 있는 것처럼 읽힌다.
  *
  * 화면이 낮으면 줄인다. 안 줄이면 헤드라인과 예시 질문 사이 칸을 뚫고 나가
  * 글자와 겹친다. **`max-height: 100%` 로는 안 된다** — 부모 높이가 flex 로
@@ -392,7 +396,8 @@
   display: block;
   width: 76px;
   height: auto;
-  filter: drop-shadow(0 14px 20px rgba(16, 24, 40, 0.24));
+  filter: drop-shadow(0 5px 7px rgba(16, 24, 40, 0.12))
+    drop-shadow(0 22px 28px rgba(23, 52, 140, 0.3));
 }
 
 @media (max-height: 780px) {
@@ -404,46 +409,5 @@
 @media (max-height: 680px) {
   .tb-orb__img {
     width: 56px;
-  }
-}
-
-/*
- * 취향 칩 띠 — 왼쪽에서 들어와 오른쪽으로 흐르고 끝에서 옅어진다.
- *
- * 같은 묶음을 두 벌 깔고 -50% → 0 으로 밀어 반복한다. 뒷벌은 aria-hidden 이라
- * 읽어 주는 것은 한 벌뿐이다.
- *
- * **한 묶음이 트랙보다 넓어야 이음매가 안 보인다.** 취향은 최대 5개뿐이라 한 번만
- * 늘어놓으면 트랙(모바일 313px·데스크톱 500px 안팎)을 못 채우고, 그러면 마지막 칩
- * 뒤로 빈 구간이 지나간다(290px 대 313px, 2026-09-07 실측). 그래서 묶음 안에서
- * 목록을 몇 번 반복할지는 화면이 개수를 보고 정한다(HomePage 의 MARQUEE_MIN_CHIPS).
- *
- * **멈출 수 있어야 한다**(WCAG 2.2.2 — 저절로 움직이고 5초를 넘는 내용).
- * 가리키거나 안으로 초점이 들어오면 선다. 동작 줄이기를 켠 환경에서는 아예
- * 흐르지 않는다 — 그때는 앞의 몇 개가 그대로 보인다.
- */
-.tb-marquee {
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 46%, transparent 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 46%, transparent 100%);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .tb-marquee__run {
-    animation: tb-marquee-scroll 26s linear infinite;
-  }
-
-  .tb-marquee:hover .tb-marquee__run,
-  .tb-marquee:focus-within .tb-marquee__run {
-    animation-play-state: paused;
-  }
-}
-
-@keyframes tb-marquee-scroll {
-  from {
-    transform: translateX(-50%);
-  }
-  to {
-    transform: translateX(0);
   }
 }

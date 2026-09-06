@@ -12,7 +12,6 @@ import App from "./App";
 import { setLocationCenter, setLocationOrigin } from "./state/locationSettings";
 import { resetChatSessionsCache } from "./state/chatSessions";
 import { resetSavedSchedulesCache } from "./state/savedSchedules";
-import { resetPreferenceSync } from "./state/preferenceSync";
 
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
 // llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
@@ -1156,56 +1155,11 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
 });
 
 /*
- * 취향 설정은 별도 전체 화면이라, 뭘 골라뒀는지 확인하려면 거기까지 들어갔다
- * 와야 했다. 홈에서 한 번 더 보여줘 그 왕복을 없앤다.
+ * **홈의 취향 줄을 지웠다**(2026-09-07 사용자 결정). 저장해 둔 취향을 홈에서
+ * 한 번 더 보여주던 줄과, 그것이 흐르던 띠를 함께 뺐다 — 그 동작을 잠그던
+ * 테스트 두 개도 여기서 지운다.
+ *
+ * 지우면서 함께 사라진 것: 취향을 저장하면 홈으로 보내는데(PreferencesPage
+ * handleSave), 저장됐다는 확인이 이 줄이었다. 지금은 홈에 아무 표시도 남지
+ * 않는다.
  */
-test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () => {
-  /*
-   * 취향 동기화는 페이지 로드당 한 번만 도는 모듈 캐시다. 앞 테스트들이 이미
-   * 빈 결과로 채워두므로, 여기서 비우지 않으면 심어둔 값이 그 빈 결과로 덮인다.
-   * beforeEach에 넣지 않는 이유는 자기만의 fetch를 세우는 테스트들이 /preferences
-   * 응답까지 흉내 내지 않아, 동기화가 실제로 돌면 그쪽이 깨지기 때문이다.
-   */
-  resetPreferenceSync();
-  localStorage.setItem(
-    "tb_preferences",
-    JSON.stringify([
-      { label: "조용한 곳", source: "preference", codes: ["quiet"] },
-      { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
-      { label: "데이트 코스", source: "preference", codes: ["date"] },
-    ]),
-  );
-  await renderApp();
-
-  const section = screen.getByRole("heading", { name: "내 취향" }).closest("section");
-  expect(section).not.toBeNull();
-  const shown = within(section as HTMLElement);
-
-  /*
-   * 칩이 띠로 흐른다(2026-09-07). 이음매를 메우려고 같은 칩을 여러 벌 깔기 때문에
-   * getByText 로는 "여러 개 발견"이 난다.
-   *
-   * **몇 벌인지는 재지 않는다.** 그 수는 트랙 폭을 채우려고 개수에 따라 달라지는
-   * 값이라(HomePage 의 MARQUEE_MIN_CHIPS) 여기 박아 두면 폭을 조정할 때마다
-   * 깨진다. 대신 계약을 잰다 — **화면에 있고, 읽히는 것은 딱 한 번**.
-   */
-  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
-    const chips = shown.getAllByText(label);
-    expect(chips.length).toBeGreaterThan(0);
-    expect(chips.filter((chip) => !chip.hasAttribute("aria-hidden"))).toHaveLength(1);
-  }
-
-  // 홈에서는 읽기만 한다 — 고치려면 취향 설정 화면으로 간다.
-  expect(within(section as HTMLElement).getByRole("link", { name: "바꾸기" })).toHaveAttribute(
-    "href",
-    "/preferences",
-  );
-});
-
-test("저장해 둔 취향이 없으면 홈에 그 줄을 그리지 않는다", async () => {
-  /* 앞 테스트가 심어둔 값이 모듈 캐시에 남는다 — 위와 같은 이유로 여기서도 비운다. */
-  resetPreferenceSync();
-  await renderApp();
-
-  expect(screen.queryByRole("heading", { name: "내 취향" })).not.toBeInTheDocument();
-});
