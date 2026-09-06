@@ -50,7 +50,7 @@ const HOME_TEXT = {
       "남은 시간이 1시간 정도야",
       "근처 카페나 박물관을 찾고 싶어",
     ],
-    placeholder: "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    placeholder: "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
@@ -70,7 +70,7 @@ const HOME_TEXT = {
       "I have about one hour left",
       "Find a café or museum nearby",
     ],
-    placeholder: "For example: Find a museum or café near Gyeongbokgung where I can avoid the rain",
+    placeholder: "Find a museum or café near Gyeongbokgung where I can avoid the rain",
     start: "Start recommendations",
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
@@ -384,8 +384,13 @@ export function HomePage() {
          *
          * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
          * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
+         *
+         * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
+         * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
+         * 은 띄어쓰기에서만 끊는다. text-balance 는 두 줄 길이를 고르게 맞춘다 —
+         * 없으면 첫 줄 100%, 둘째 줄 74% 로 아래가 휑했다.
          */}
-        <p className="mt-3 text-center text-[11px] leading-relaxed text-muted">
+        <p className="mt-3 text-balance break-keep text-center text-[11px] leading-relaxed text-muted">
           {text.locationNotice}
         </p>
       </div>

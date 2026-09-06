@@ -220,7 +220,7 @@ test("user chat hides condition debug card and shows recommendations", async () 
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "비 오는 날 갈 곳",
   );
@@ -265,7 +265,7 @@ test("user chat needs only one chat call", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "비 오는 날 갈 곳",
   );
@@ -323,7 +323,7 @@ test("sends the search center picked on the location screen with the chat reques
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "카페 추천해줘",
   );
@@ -410,7 +410,7 @@ test("moves the header pill before the recommendation cards arrive", async () =>
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
@@ -443,7 +443,7 @@ test("shows the location the utterance picked in the header pill", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
@@ -465,7 +465,7 @@ test("sends the location the utterance picked on the next turn", async () => {
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "광화문역 근처 알려줘",
   );
@@ -493,7 +493,7 @@ test("keeps the picked location when the server reports no location at all", asy
 
   await userEvent.type(
     screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     ),
     "경복궁 운영시간 알려줘",
   );
@@ -831,7 +831,7 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
 
   expect(await screen.findByText(/어디 근처에서 찾아드릴까요/)).toBeInTheDocument();
   // 발화를 대신 만들어 보내지 않고, 입력창 안내 문구만 바꾼다.
-  expect(screen.getByPlaceholderText("예: 경복궁 근처에서 찾아줘")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("경복궁 근처에서 찾아줘")).toBeInTheDocument();
 });
 
 test("unsupported region reply shows a short message with the district list as a footnote", async () => {

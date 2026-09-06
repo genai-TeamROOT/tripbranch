@@ -625,9 +625,7 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
   const before = server.listCalls;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "방금 시작한 대화",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -648,9 +646,7 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
   server.holdStream = true;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "앞 대화의 질문",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -822,9 +818,7 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
   server.holdStream = true;
 
   await user.type(
-    screen.getByPlaceholderText(
-      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
     "기다리던 질문",
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
