@@ -121,8 +121,10 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
     </AuthProvider>,
   );
 
-  expect(screen.getByText("역삼 아트뮤지엄")).toBeInTheDocument();
-  expect(screen.getByText("대림창고")).toBeInTheDocument();
+  /* 장소 이름은 두 곳에 나온다 — 시간 띠의 범례와 정류장 카드. 범례는 aria-hidden
+     이라 소리로는 한 번만 읽히지만, 화면 질의에는 둘 다 걸린다. */
+  expect(screen.getAllByText("역삼 아트뮤지엄").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("대림창고").length).toBeGreaterThan(0);
   // 서버가 내려준 이동수단을 그대로 쓴다 — 예전에는 전 구간을 도보로 고정 표기했다(TP-216).
   expect(screen.getByText("대중교통 이동 12분")).toBeInTheDocument();
   // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null) — 구간 표기는 한 줄뿐이다.
@@ -188,8 +190,31 @@ test("저장한 일정을 열면 그때 편성이 그대로 보인다", async ()
 
   renderSaved(SAVED_DETAIL.id);
 
-  expect(await screen.findByText("경복궁")).toBeInTheDocument();
+  expect((await screen.findAllByText("경복궁")).length).toBeGreaterThan(0);
   expect(screen.getByText("경복궁 한 바퀴")).toBeInTheDocument();
+});
+
+/*
+ * 저장한 일정에는 시간 띠의 "지금"을 얹지 않는다.
+ *
+ * **시계를 고정해야 의미가 있는 테스트다.** 저장 일정은 14:30~16:00 인데, 그
+ * 바깥 시각에 돌면 "지금"은 어차피 안 뜬다 — 그러면 이 테스트는 배선이 끊겨도
+ * 통과한다(2026-09-06 되돌림 확인에서 실제로 그랬다). 일정 한가운데로 시계를
+ * 맞춰, 넘기기만 하면 뜨는 상태에서 안 뜨는 것을 본다.
+ */
+test("저장한 일정에는 지금 표시가 뜨지 않는다", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date(2026, 7, 31, 15, 15));
+
+  try {
+    renderSaved(SAVED_DETAIL.id);
+    await screen.findAllByText("경복궁");
+
+    expect(screen.queryByText("지금")).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 /*
