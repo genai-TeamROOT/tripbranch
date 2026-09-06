@@ -6,11 +6,16 @@
  * TODO: 정식 로그인이 들어오면 계정 연결(linkIdentity) 경로도 여기서 검증한다.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../App";
-import { GUEST_SESSION, setMockSession, setMockSignInError } from "../test/supabaseMock";
+import {
+  GUEST_SESSION,
+  hangMockGetSession,
+  setMockSession,
+  setMockSignInError,
+} from "../test/supabaseMock";
 import { resetSupabaseClient } from "./supabaseClient";
 
 /* 데스크톱 사이드바(항상 렌더)와 모바일 드로어가 같은 SideDrawerContent를 각자
@@ -112,4 +117,24 @@ test("Supabase 설정이 없으면 통과시키지 않고 설정 오류를 드�
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
 
   vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
+});
+
+/* TP-240. getSession()이 안 끝나면 status가 loading에 머물러 "불러오는 중이에요…"가
+   영영 남는다. 새로고침해도 같은 자리에서 또 멈춘다. */
+test("저장된 세션 확인이 응답하지 않아도 화면이 멈추지 않는다", async () => {
+  vi.useFakeTimers();
+  hangMockGetSession();
+
+  render(<App />);
+
+  expect(screen.getByText("불러오는 중이에요…")).toBeInTheDocument();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+
+  /* 세션이 없다고 확정하는 것이 아니라 관문을 열어준다 — 늦게 도착한 세션은
+     로그인 화면이 원래 목적지로 돌려보낸다. */
+  expect(screen.getByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
+  vi.useRealTimers();
 });
