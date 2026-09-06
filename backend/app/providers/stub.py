@@ -849,6 +849,13 @@ class FakeLLMProvider:
             question_type = QuestionType.FEE
         elif "주차" in user_input:
             question_type = QuestionType.PARKING
+        elif "화장실" in user_input and any(
+            # 갈 곳을 찾는 표현이 붙으면 주변 공중화장실 위치 질문이다. 그 장소
+            # 하나의 시설을 묻는 "경복궁 화장실 있어?"는 아래 FACILITY로 간다.
+            marker in user_input
+            for marker in ("근처", "주변", "가까운", "어디", "급한", "급해")
+        ):
+            question_type = QuestionType.PUBLIC_TOILET
         elif "화장실" in user_input or "휠체어" in user_input:
             question_type = QuestionType.FACILITY
         elif "전시" in user_input or "행사" in user_input:
@@ -872,7 +879,13 @@ class FakeLLMProvider:
 
         # 장소명도 없고 참조할 맥락(직전 대화 장소)도 없으면 실제 info/extract.md와
         # 같은 규칙으로 되묻는다("반드시 info 필드를 채우고" — place_name만 비운다).
-        if place_name is None and place_context is PlaceContext.FROM_CONVERSATION:
+        # 단 공중화장실은 기기 위치로 답할 수 있어 되묻지 않는다(question_type_rules.md
+        # v3.6.0: "지명이 없어도 이 유형이다").
+        if (
+            place_name is None
+            and place_context is PlaceContext.FROM_CONVERSATION
+            and question_type is not QuestionType.PUBLIC_TOILET
+        ):
             result = LLMOutput(
                 intent=Intent.INFO,
                 status=OutputStatus.NEEDS_CLARIFICATION,

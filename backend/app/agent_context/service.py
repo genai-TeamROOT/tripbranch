@@ -36,8 +36,17 @@ from app.agent_context.enrichment_service import (
     select_concentration_forecast,
     select_concentration_forecasts,
 )
-from app.agent_context.info_field_rules import clean_text, extract_info_fields
+from app.agent_context.info_field_rules import (
+    clean_barrier_free_text,
+    clean_text,
+    compose_nursing_room,
+    compose_seating,
+    compose_visual_guide,
+    extract_info_fields,
+    resolve_stroller_rental,
+)
 from app.agent_context.info_schemas import (
+    CommercialPaymentCategoryInfo,
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
     EventInfoResult,
@@ -47,11 +56,13 @@ from app.agent_context.info_schemas import (
     PlaceCard,
     PlaceInfoResult,
     PlacePhotoItem,
+    PopulationAgeShareInfo,
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    SeoulRealtimeSummaryInfo,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
@@ -93,7 +104,9 @@ from app.domain.models import (
     RealtimeBusStop,
     RealtimeCityEvent,
     RealtimeCommercialCategory,
+    RealtimeCommercialResult,
     RealtimeParkingLot,
+    RealtimePopulationResult,
     RealtimeSubwayArrival,
 )
 from app.errors import AppError
@@ -106,6 +119,7 @@ from app.place_search_policy import (
 )
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
 from app.providers.festival import FestivalEvent
+from app.public_toilet_hours import describe_open_hours
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
@@ -135,6 +149,11 @@ from app.tools.nearby_place_details import (
 from app.tools.place_detail import (
     GetPlaceDetailTool,
     PlaceDetailQuery,
+)
+from app.tools.public_toilet import (
+    GetPublicToiletTool,
+    NearbyToilet,
+    PublicToiletQuery,
 )
 from app.tools.realtime_citydata import GetRealtimeCityDataTool, RealtimeCityDataQuery
 from app.tools.realtime_commercial import (
@@ -184,8 +203,18 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_traffic",
 }
 _PUBLIC_PARKING_QUESTION_TYPE = "realtime_public_parking"
+_PUBLIC_TOILET_QUESTION_TYPE = "public_toilet"
+# 급해서 묻는 질문이라 걸어갈 수 있는 거리만 본다. 1km를 넘기면 "근처"가 아니고,
+# 실측(인사동 기준 1km 내 101곳)상 이 범위 안에서 답이 충분히 나온다.
+_PUBLIC_TOILET_RADIUS_KM = 1.0
+# 말풍선과 카드에 싣는 곳 수. 급한 사람에게 목록을 길게 주면 고르는 게 일이 된다.
+_PUBLIC_TOILET_RESULT_LIMIT = 2
+# 행사를 찾는 질의. 지명이 없을 때 되묻는 문장이 다른 유형과 달라야 해서 따로 묶는다
+# — "축제 추천해줘"는 장소를 물은 발화가 아니다(TP-237).
+_EVENT_QUESTION_TYPES = {"event", "realtime_event"}
 _CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
 _MUNICIPAL_PARKING_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21709/S/1/datasetView.do"
+_PUBLIC_TOILET_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-22586/S/1/datasetView.do"
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +250,9 @@ class ContextTools:
     # GetParkingInfo를 쓴다. 좌표 카탈로그는 한 번 지오코딩한 정적 값만 보관한다.
     municipal_parking: GetMunicipalParkingTool | None = None
     municipal_parking_catalog: MunicipalParkingCatalogRepository | None = None
+    # 근처 공중화장실 조회. 서울시 API가 구·좌표 필터를 지원하지 않아 적재된
+    # 저장소를 감싼 Tool이다 — 외부 API를 요청 때마다 부르지 않는다.
+    public_toilets: GetPublicToiletTool | None = None
     # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
     # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
     cards: RecommendationCardTool | None = None
@@ -549,12 +581,36 @@ class ContextService:
         """
 
         place_name = request.place_name
+        # "급한데 근처에 화장실 있어?"는 지명을 말하지 않는 게 자연스럽다. 기기
+        # 위치가 있으면 그걸 기준점으로 삼아 되묻지 않고 바로 답한다 — 급한
+        # 상황에 "어디 근처요?"를 되묻는 건 답을 안 준 것과 같다.
+        #
+        # **지명을 말했으면 그 지명이 이긴다.** 기기 위치가 있어도 여기서 가로채면
+        # 강남에서 "인사동 화장실 어디야?"를 물었을 때 강남 화장실을 인사동이라고
+        # 답하게 된다. 지명이 있는 경우는 아래 공통 위치 해석을 거친다.
+        if (
+            request.question_type == _PUBLIC_TOILET_QUESTION_TYPE
+            and place_name is None
+            and request.origin_coordinates is not None
+        ):
+            return await self._fetch_public_toilet_info(
+                request,
+                latitude=request.origin_coordinates.latitude,
+                longitude=request.origin_coordinates.longitude,
+                place_name=None,
+                resolved_place_name="현재 위치",
+                location_metadata=(),
+            )
         if place_name is None:
             return InfoContextResponse(
                 request_id=request.request_id,
                 status="needs_clarification",
                 clarification=Clarification(
-                    code="place_required",
+                    code=(
+                        "event_place_required"
+                        if request.question_type in _EVENT_QUESTION_TYPES
+                        else "place_required"
+                    ),
                     missing_fields=["place_name"],
                     candidates=[],
                 ),
@@ -568,6 +624,10 @@ class ContextService:
         is_realtime_citydata_purpose = (
             request.question_type == "realtime_commercial"
             or request.question_type == _PUBLIC_PARKING_QUESTION_TYPE
+            # 화장실 질문의 지명은 "인사동"·"강남역 근처"처럼 관광지가 아니라 동네
+            # 범위다. 저장소(관광지 코퍼스)를 먼저 보면 못 찾으므로 지오코딩으로
+            # 바로 가는 편이 맞다 — 필요한 건 좌표 하나뿐이다.
+            or request.question_type == _PUBLIC_TOILET_QUESTION_TYPE
             or request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES
             or parking_district is not None
         )
@@ -612,7 +672,15 @@ class ContextService:
                         error_details=(
                             location_result.error.details if location_result.error else {}
                         ),
-                        location_metadata=(location_result.provider_metadata,),
+                        # 한 겹 더 감싸면 안 된다. 받는 쪽 handler들은 평탄한
+                        # tuple[ProviderMetadata, ...]을 기대하고 그대로
+                        # _info_response_metadata()에 넘기는데, 그 함수는 인자 하나를
+                        # 그룹 하나로 보고 한 겹만 벗긴다 — 이중 튜플이면 항목이
+                        # ProviderMetadata가 아니라 튜플이라 AttributeError로 터진다.
+                        # 실제로 "인사동 주차장 자리 있어?"처럼 후보가 갈리는 지명이
+                        # 들어오면 realtime_public_parking·realtime_bus·
+                        # realtime_commercial이 모두 500이었다(2026-09-05 실측).
+                        location_metadata=location_result.provider_metadata,
                     )
                     if fallback_response is not None:
                         return fallback_response
@@ -715,6 +783,17 @@ class ContextService:
                 request,
                 place_name=place_name,
                 resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
+        if request.question_type == _PUBLIC_TOILET_QUESTION_TYPE:
+            # "인사동 근처 화장실"처럼 지명을 말한 경우. 기준점은 그 지명을
+            # 지오코딩한 좌표다(위쪽 GPS 경로와 달리 여기는 지명이 있다).
+            return await self._fetch_public_toilet_info(
+                request,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
                 location_metadata=location_result.provider_metadata,
             )
         if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:
@@ -894,6 +973,11 @@ class ContextService:
                 else [],
                 source_url=_CITYDATA_SOURCE_URL,
                 map_url=_seoul_realtime_map_url(area),
+                # 상권 값은 별도 호출이 아니라 방금 받은 같은 응답에서 꺼낸다.
+                realtime_summary=_to_seoul_realtime_summary(
+                    population,
+                    tool_result.citydata.commercial if tool_result.citydata is not None else None,
+                ),
                 stale_area_detected=stale_area_detected,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
@@ -1092,6 +1176,7 @@ class ContextService:
                     area_activity_level=commercial.area_activity_level,
                 ),
                 source_url=_CITYDATA_SOURCE_URL,
+                realtime_summary=_to_seoul_realtime_summary(population, commercial),
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -1197,6 +1282,76 @@ class ContextService:
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
 
+    async def _fetch_public_toilet_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        latitude: float,
+        longitude: float,
+        place_name: str | None,
+        resolved_place_name: str | None,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """기준 좌표에서 걸어갈 만한 공중화장실 두 곳을 돌려준다.
+
+        기준 좌표는 두 갈래로 들어온다 — 지명을 말했으면 그것을 지오코딩한 값,
+        "근처에 화장실 있어?"처럼 지명이 없으면 기기 GPS다. 어느 쪽이든 이 아래는
+        같다: 적재된 목록에서 반지름 안을 추려 "지금 열린 곳 → 가까운 곳" 순으로
+        두 곳만 싣는다.
+        """
+
+        if self._tools.public_toilets is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="public_toilet_unavailable",
+                    message="근처 공중화장실 조회 도구가 설정되지 않았습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        tool_result = await self._tools.public_toilets.execute(
+            PublicToiletQuery(
+                latitude=latitude,
+                longitude=longitude,
+                radius_km=_PUBLIC_TOILET_RADIUS_KM,
+                now=self._clock(),
+            )
+        )
+        if tool_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    tool_result.error,
+                    fallback_code="public_toilet_unavailable",
+                    fallback_message="근처 공중화장실 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        entries = tool_result.toilets[:_PUBLIC_TOILET_RESULT_LIMIT]
+        fields = {
+            entry.toilet.name: _format_public_toilet(entry) for entry in entries
+        }
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success" if fields else "no_data",
+            result=RealtimeCityInfoResult(
+                status="success" if fields else "no_data",
+                question_type="public_toilet",
+                requested_place_name=place_name,
+                resolved_place_name=resolved_place_name,
+                fields=fields,
+                detail_items=_to_public_toilet_detail_items(entries),
+                source_url=_PUBLIC_TOILET_SOURCE_URL,
+            ),
+            metadata=_info_response_metadata(location_metadata),
+        )
+
     async def _fetch_realtime_city_info(
         self,
         request: InfoContextRequest,
@@ -1220,6 +1375,15 @@ class ContextService:
             requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
+            if request.question_type == "realtime_event":
+                # 서울시 실시간이 지원하지 않는 지역이어도 TourAPI에는 그 구 행사가 있다.
+                # 아래 "행사만 두 출처를 잇는다" 주석과 같은 이유다.
+                return await self._fetch_event_info(
+                    request,
+                    place_name=place_name,
+                    resolved_location=resolved_location,
+                    location_metadata=location_metadata,
+                )
             return _realtime_city_info_no_data_response(
                 request,
                 place_name=place_name,
@@ -1379,6 +1543,22 @@ class ContextService:
         result_status: Literal["success", "no_data", "unavailable"] = (
             "success" if fields else "no_data"
         )
+        if not fields and question_type == "realtime_event":
+            # **행사만 두 출처를 잇는다.** 서울시 실시간(citydata `EVENT_STTS`)과 TourAPI
+            # (searchFestival2)가 거의 겹치지 않아서다 — 2026-09-04 실측에서 그날 진행 중인
+            # 행사가 서울시 95건·TourAPI 21건인데 양쪽에 다 있는 것은 3건뿐이었다. 담는
+            # 것도 다르다(서울시는 미술관 기획전·문화재단 프로그램, TourAPI는 왕궁수문장
+            # 교대의식·한강야경투어 같은 관광 콘텐츠). 그래서 서울시가 비었다고 "행사가
+            # 없다"고 답하면 TourAPI에 있는 것을 못 본 채로 끝난다.
+            #
+            # 주차·지하철 같은 다른 realtime 유형에는 이런 두 번째 출처가 없어 이 분기가
+            # 없다. 여기서도 TourAPI가 비면 그 결과(no_data)를 그대로 내보낸다.
+            return await self._fetch_event_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
         return InfoContextResponse(
             request_id=request.request_id,
             status="success" if fields else "no_data",
@@ -1392,6 +1572,7 @@ class ContextService:
                         "realtime_bus",
                         "realtime_event",
                         "realtime_traffic",
+                        "public_toilet",
                     ],
                     question_type,
                 ),
@@ -1589,6 +1770,19 @@ class ContextService:
                 request,
                 place_name=place_name,
                 resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type == _PUBLIC_TOILET_QUESTION_TYPE:
+            # "인사동"처럼 후보가 여럿으로 갈리는 지명이 화장실 질문에는 흔하다
+            # (동네 이름이라 관광지·역·상호와 겹친다). 대표 좌표로 답하는 편이
+            # 급한 사람에게 "어느 인사동이요?"를 되묻는 것보다 낫다 — 어느 후보든
+            # 반경 1km 안 화장실은 크게 다르지 않다.
+            return await self._fetch_public_toilet_info(
+                request,
+                latitude=latitude,
+                longitude=longitude,
+                place_name=place_name,
+                resolved_place_name=place_name,
                 location_metadata=location_metadata,
             )
         if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:
@@ -2205,6 +2399,72 @@ def _select_commercial_category(
     return None
 
 
+def _top_payment_categories(
+    categories: tuple[RealtimeCommercialCategory, ...],
+) -> list[CommercialPaymentCategoryInfo]:
+    """결제 금액이 큰 순서로 업종 최대 3건을 고른다.
+
+    서울시가 준 업종을 거르지 않는다 — 강남역은 금액 1위가 "의료 · 병원"인데
+    여행지 카드에 안 어울린다고 빼면, 우리가 만든 순위를 서울시 데이터인 것처럼
+    보여주게 된다. 금액은 구간으로만 오므로 상한 기준으로 정렬하고 상한이 없으면
+    하한으로 대신한다(둘 다 없는 업종은 순위에서 빠진다).
+    """
+
+    ranked = [
+        (category, category.payment_amount_max or category.payment_amount_min)
+        for category in categories
+    ]
+    ranked = [(category, amount) for category, amount in ranked if amount is not None]
+    ranked.sort(key=lambda pair: pair[1], reverse=True)
+    return [
+        CommercialPaymentCategoryInfo(
+            label=" · ".join(
+                value
+                for value in (category.large_category, category.middle_category)
+                if value is not None
+            )
+            or "기타",
+            activity_level=category.activity_level,
+            payment_count=category.payment_count,
+            payment_amount_min=category.payment_amount_min,
+            payment_amount_max=category.payment_amount_max,
+        )
+        for category, _ in ranked[:3]
+    ]
+
+
+def _to_seoul_realtime_summary(
+    population: RealtimePopulationResult | None,
+    commercial: RealtimeCommercialResult | None,
+) -> SeoulRealtimeSummaryInfo | None:
+    """같은 citydata 응답의 인구·상권 값을 공통 요약 한 덩이로 묶는다.
+
+    두 구획은 서로 독립이다 — 상권 미제공 지역(121곳 중 39곳, D-084)은 인구만,
+    인구 값이 비면 상권만 찬다. 둘 다 비면 아예 만들지 않아 소비 측이 빈 구획을
+    그리지 않게 한다.
+    """
+
+    summary = SeoulRealtimeSummaryInfo(
+        population_min=population.current_population_min if population is not None else None,
+        population_max=population.current_population_max if population is not None else None,
+        age_shares=[
+            PopulationAgeShareInfo(label=share.label, rate=share.rate)
+            for share in (population.age_shares if population is not None else ())
+        ],
+        commercial_level=commercial.area_activity_level if commercial is not None else None,
+        commercial_observed_at=commercial.observed_at if commercial is not None else None,
+        payment_count=commercial.payment_count if commercial is not None else None,
+        payment_amount_min=commercial.payment_amount_min if commercial is not None else None,
+        payment_amount_max=commercial.payment_amount_max if commercial is not None else None,
+        top_payment_categories=_top_payment_categories(
+            commercial.categories if commercial is not None else ()
+        ),
+    )
+    has_population = summary.population_max is not None or bool(summary.age_shares)
+    has_commercial = summary.commercial_level is not None or bool(summary.top_payment_categories)
+    return summary if has_population or has_commercial else None
+
+
 def _to_commercial_detail_items(
     categories: tuple[RealtimeCommercialCategory, ...],
     *,
@@ -2281,6 +2541,85 @@ def _to_parking_detail_items(
             )
         )
     return items
+
+
+def _public_toilet_distance_label(distance_km: float) -> str:
+    """걸어가는 거리라 1km 미만은 미터로 말하는 게 감이 온다."""
+
+    if distance_km < 1:
+        return f"도보 {round(distance_km * 1000 / 10) * 10}m"
+    return f"도보 {distance_km:.1f}km"
+
+
+def _public_toilet_open_label(entry: NearbyToilet) -> str:
+    """지금 들어갈 수 있는지 한마디로. 모르면 모른다고 한다.
+
+    개방시간을 시각으로 못 읽은 곳(실측 11%, 대부분 ``정시(영업시작~종료)``)을
+    "지금 열림"으로 뭉개면 급한 사용자를 닫힌 문 앞으로 보내게 된다.
+    """
+
+    if entry.open_now is True:
+        return "지금 이용 가능"
+    if entry.open_now is False:
+        return "지금은 닫혀 있음"
+    return "개방시간 확인 필요"
+
+
+def _format_public_toilet(entry: NearbyToilet) -> str:
+    """말풍선 아래 요약 한 줄. 거리·개방여부·개방시간 순으로 급한 순서대로 놓는다."""
+
+    parts = [
+        _public_toilet_distance_label(entry.distance_km),
+        _public_toilet_open_label(entry),
+        describe_open_hours(entry.hours),
+    ]
+    return " · ".join(parts)
+
+
+def _to_public_toilet_detail_items(
+    entries: tuple[NearbyToilet, ...],
+) -> list[RealtimeInfoDetailItem]:
+    """화장실 카드는 항목마다 좌표를 싣는다 — 각 항목이 곧 길찾기 목적지다."""
+
+    items: list[RealtimeInfoDetailItem] = []
+    for entry in entries:
+        toilet = entry.toilet
+        details = {
+            key: value
+            for key, value in {
+                "거리": _public_toilet_distance_label(entry.distance_km),
+                "개방 여부": _public_toilet_open_label(entry),
+                "개방시간": describe_open_hours(entry.hours),
+                "주소": toilet.address_new or toilet.address_old,
+                "유형": _clean_pipe_text(toilet.open_type),
+                "화장실": _clean_pipe_text(toilet.restroom_status),
+                "장애인화장실": _clean_pipe_text(toilet.accessible_status),
+                "편의시설": _clean_pipe_text(toilet.amenities),
+                "위치": _clean_pipe_text(toilet.location_type),
+                "관리": toilet.manager,
+                "전화": toilet.tel,
+            }.items()
+            if value is not None
+        }
+        items.append(
+            RealtimeInfoDetailItem(
+                title=toilet.name,
+                subtitle=_format_public_toilet(entry),
+                details=details,
+                latitude=toilet.latitude,
+                longitude=toilet.longitude,
+            )
+        )
+    return items
+
+
+def _clean_pipe_text(value: str | None) -> str | None:
+    """원본이 ``남자|여자|``처럼 파이프로 구분해 주므로 쉼표 목록으로 바꾼다."""
+
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split("|") if part.strip()]
+    return ", ".join(parts) or None
 
 
 def _to_subway_detail_items(
@@ -2657,6 +2996,7 @@ def _info_no_data_response(
     elif (
         question_type in _REALTIME_CITYDATA_QUESTION_TYPES
         or question_type == _PUBLIC_PARKING_QUESTION_TYPE
+        or question_type == _PUBLIC_TOILET_QUESTION_TYPE
     ):
         result = RealtimeCityInfoResult(
             status="no_data",
@@ -2830,6 +3170,9 @@ def _to_place_card(
     thumbnail_url은 그대로 둔다 — 사진 목록이 비는 장소가 절반이 넘고, 그쪽은
     대표 이미지 한 장이 유일한 그림이다.
     """
+    # 유모차는 두 원문 중 하나만 쓴다. 어느 쪽을 쓸지는 답변 경로와 같은 함수가
+    # 정한다 — 같은 장소가 말풍선과 카드에서 다르게 읽히면 안 된다.
+    stroller_rental, baby_carriage = resolve_stroller_rental(details)
     return PlaceCard(
         place_id=details.content_id or place_id,
         place_name=clean_text(details.title),
@@ -2844,11 +3187,22 @@ def _to_place_card(
         parking=clean_text(details.parking),
         parking_fee=clean_text(details.parking_fee),
         fee=clean_text(details.fee),
-        baby_carriage=clean_text(details.baby_carriage),
+        baby_carriage=baby_carriage,
         pet=clean_text(details.pet),
         credit_card=clean_text(details.credit_card),
         restroom=clean_text(details.restroom),
         homepage=clean_text(details.homepage),
+        # 무장애 아홉 항목. 접근로·주출입구(단차 서술)와 대중교통 접근은 카드에
+        # 싣지 않는다 — 답변 경로의 wheelchair_access는 그대로 둔다.
+        accessible_restroom=clean_barrier_free_text(details.accessible_restroom_raw),
+        accessible_parking=clean_barrier_free_text(details.accessible_parking_raw),
+        elevator=clean_barrier_free_text(details.elevator_raw),
+        visual_guide=compose_visual_guide(details),
+        wheelchair_rental=clean_barrier_free_text(details.wheelchair_rental_raw),
+        nursing_room=compose_nursing_room(details),
+        seating=compose_seating(details),
+        stroller_rental=stroller_rental,
+        guide_dog=clean_barrier_free_text(details.guide_dog_raw),
     )
 
 

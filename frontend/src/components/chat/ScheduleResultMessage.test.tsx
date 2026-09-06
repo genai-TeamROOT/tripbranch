@@ -14,13 +14,22 @@ import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { resetSavedSchedulesCache, subscribeSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
 
-const saved: { calls: unknown[]; fails: boolean } = { calls: [], fails: false };
+const saved: { calls: unknown[]; fails: boolean; deleted: string[] } = {
+  calls: [],
+  fails: false,
+  deleted: [],
+};
 
 vi.mock("../../api/trip", () => ({
   saveSchedule: async (input: unknown) => {
     if (saved.fails) throw new Error("저장 실패");
     saved.calls.push(input);
     return { id: "sched-1" };
+  },
+  deleteSavedSchedule: async (id: string) => {
+    if (saved.fails) throw new Error("해제 실패");
+    saved.deleted.push(id);
+    return { id, deleted: true };
   },
   fetchSavedSchedules: async () => ({ items: [] }),
 }));
@@ -60,6 +69,7 @@ const SCHEDULE = {
 
 afterEach(() => {
   saved.calls = [];
+  saved.deleted = [];
   saved.fails = false;
   resetSavedSchedulesCache();
 });
@@ -68,14 +78,19 @@ function renderMessage() {
   return render(
     <ScheduleResultMessage
       schedule={SCHEDULE}
-      isLoading={false}
-      onRequestMore={() => {}}
-      onRelaxRadius={() => {}}
       runId="run_1"
       sessionId="sess_1"
     />,
   );
 }
+
+test("저장할 이름을 제목으로 미리 보여준다", () => {
+  /* 눌러야 비로소 이름이 생기면 무엇으로 저장되는지 모른 채 누르게 된다.
+     사이드바 목록에 들어갈 이름과 같은 값을 미리 보여준다. */
+  renderMessage();
+
+  expect(screen.getByRole("heading", { name: "경복궁 외 1곳" })).toBeInTheDocument();
+});
 
 test("저장하면 제목을 화면이 만들어 함께 보낸다", async () => {
   renderMessage();
@@ -92,26 +107,35 @@ test("저장하면 제목을 화면이 만들어 함께 보낸다", async () => 
   });
 });
 
-test("저장하고 나면 버튼이 잠긴다", async () => {
+test("저장하고 나면 해제 버튼으로 바뀐다", async () => {
   renderMessage();
 
   await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
 
-  const done = await screen.findByRole("button", { name: "저장했어요" });
-  expect(done).toBeDisabled();
+  /* 같은 자리에서 오가는 토글이라 잠그지 않는다 — 잠그면 되돌릴 길이 없다. */
+  const toggle = await screen.findByRole("button", { name: "저장 해제" });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
 });
 
-/* 서버가 멱등이라 두 번 눌러도 목록은 한 줄이지만, 버튼이 계속 눌리면 사용자는
-   "저장이 안 됐나" 싶어 계속 누른다. */
-test("두 번 눌러도 요청은 한 번만 나간다", async () => {
+test("저장했다고 잠깐 알린다", async () => {
   renderMessage();
-  const button = screen.getByRole("button", { name: "이 일정 저장" });
 
-  await userEvent.click(button);
-  await screen.findByRole("button", { name: "저장했어요" });
-  await userEvent.click(screen.getByRole("button", { name: "저장했어요" }));
+  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
 
-  expect(saved.calls).toHaveLength(1);
+  /* 아이콘 색만으로는 저장됐는지 알아채기 어려워 말로도 알린다. */
+  expect(await screen.findByRole("status")).toHaveTextContent("저장했어요");
+});
+
+test("다시 누르면 저장을 해제한다", async () => {
+  renderMessage();
+
+  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+  await userEvent.click(await screen.findByRole("button", { name: "저장 해제" }));
+
+  await waitFor(() => expect(saved.deleted).toEqual(["sched-1"]));
+  /* 해제하면 다시 저장할 수 있는 상태로 돌아온다. */
+  expect(await screen.findByRole("button", { name: "이 일정 저장" })).toBeEnabled();
 });
 
 test("저장에 실패하면 저장된 것처럼 보이지 않는다", async () => {

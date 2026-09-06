@@ -381,7 +381,8 @@ async def test_recommend_stream_shows_template_and_cards_before_llm_tip() -> Non
     )
 
     names = [event for event, _ in events]
-    assert names[:4] == ["progress", "progress", "progress", "progress"]
+    # 조건 병합 직후의 location_resolved가 두 번째 progress 뒤에 끼어든다.
+    assert names[:4] == ["progress", "progress", "location_resolved", "progress"]
     assert names.index("result") < names.index("message_start") < names.index("message_delta")
     result_payload = next(payload for event, payload in events if event == "result")
     assert result_payload["message"] == "이런 곳들을 찾아봤어요:"
@@ -396,6 +397,87 @@ async def test_recommend_stream_shows_template_and_cards_before_llm_tip() -> Non
         "".join(payload["text"] for event, payload in events if event == "message_delta")
         == response.message
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_the_resolved_location_before_fetching_context() -> None:
+    """위치는 조건 병합에서 확정된다 — 도구 조회를 기다릴 이유가 없다.
+
+    **순서가 이 이벤트의 전부다.** done까지 미루면 도구 조회(fetching_context)와
+    채점(scoring), 답변 스트리밍이 모두 끝난 뒤라 — 그 사이가 턴에서 제일 긴
+    구간이다 — 사용자는 "광화문역 근처"라고 말해 놓고 결과가 다 나올 때까지
+    화면 우상단에서 이전 위치를 보게 된다.
+    """
+
+    store = InMemoryStateStore()
+    providers = _providers()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        stream_event_sink=sink,
+        stream_recommendation_summary=True,
+        **providers,
+    )
+
+    names = [event for event, _ in events]
+    stages = [payload["stage"] for event, payload in events if event == "progress"]
+    resolved = next(payload for event, payload in events if event == "location_resolved")
+
+    assert names.index("location_resolved") < names.index("result")
+    assert stages.index("merging_conditions") < stages.index("fetching_context")
+    # progress는 이벤트 목록에서 stage와 함께 세야 위치를 집을 수 있다.
+    fetching_at = next(
+        index
+        for index, (event, payload) in enumerate(events)
+        if event == "progress" and payload["stage"] == "fetching_context"
+    )
+    assert names.index("location_resolved") < fetching_at
+
+    # 이 턴이 실제로 쓴 값과 같아야 한다 — 다른 값을 보내면 화면이 서버와 다른
+    # 위치를 말하게 된다.
+    assert resolved["search_center"] == response.state.user_conditions.search_center
+    assert resolved["current_location"] == response.state.user_conditions.current_location
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_the_location_picked_on_the_settings_screen() -> None:
+    """발화가 위치를 말하지 않으면 위치 설정 화면에서 고른 값이 그대로 실린다.
+
+    _apply_selected_locations()가 조건 병합보다 앞에서 채우므로, 이 이벤트는 그
+    결과를 본다. 화면은 이 값으로 자기 저장소를 서버 기준에 맞춘다.
+    """
+
+    store = InMemoryStateStore()
+    providers = _providers()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="조용한 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="안국역",
+        ),
+        store=store,
+        stream_event_sink=sink,
+        stream_recommendation_summary=True,
+        **providers,
+    )
+
+    resolved = next(payload for event, payload in events if event == "location_resolved")
+    assert resolved["search_center"] == "안국역"
 
 
 @pytest.mark.asyncio
@@ -4377,6 +4459,17 @@ def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
 
 # C가 내려주는 operating_schedule 직렬화 형태. 24시간 열려 있어 Scoring이 폐점으로
 # 걸러내지 않는 값으로 둔다 — 여기서 보려는 건 운영시간 유무에 따른 분류다.
+#
+# **마감을 "23:59"가 아니라 하루의 끝으로 둔다.** Scoring의 폐점 판정은
+# `open_time <= now < close_time`이라(scoring.py `_remaining_minutes`), "23:59"로
+# 두면 23:59:00부터 자정까지 이 픽스처가 폐점으로 판정된다. 그 1분에 CI가 걸리면
+# "영업 중"으로 깔아둔 후보가 전부 걸러져 이 파일 24건이 한꺼번에 깨진다 —
+# 2026-09-05 14:59 UTC(23:59 KST) 실행에서 실제로 그렇게 됐다.
+#
+# time.max(23:59:59.999999)는 이 저장소가 이미 "하루의 끝"으로 쓰는 값이다
+# (recommendation_pipeline.py의 "%H:%M" 표기 주석 참고).
+_END_OF_DAY = "23:59:59.999999"
+
 _OPEN_ALL_DAY_SCHEDULE = {
     "availability": "scheduled",
     "rules": [
@@ -4384,11 +4477,11 @@ _OPEN_ALL_DAY_SCHEDULE = {
             "months": None,
             "weekdays": None,
             "time_ranges": [
-                {"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}
+                {"open_time": "00:00", "close_time": _END_OF_DAY, "crosses_midnight": False}
             ],
         }
     ],
-    "time_ranges": [{"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}],
+    "time_ranges": [{"open_time": "00:00", "close_time": _END_OF_DAY, "crosses_midnight": False}],
     "closure_rules": [],
     "parse_status": "parsed",
     "assumption_reason": None,
@@ -4432,6 +4525,36 @@ class _PartialPlacesToolProvider:
             ),
             metadata=ResponseMetadata(),
         )
+
+
+def test_open_all_day_fixture_stays_open_through_the_last_minute() -> None:
+    """이 픽스처는 하루의 어느 순간에도 영업 중이어야 한다.
+
+    **그러지 않으면 이 파일이 하루에 1분씩 깨진다.** 폐점 판정은
+    `open_time <= now < close_time`이라(scoring.py `_remaining_minutes`), 마감을
+    "23:59"로 두면 23:59:00부터 자정까지 "영업 중"으로 깔아둔 후보가 전부
+    걸러진다. 후보가 없으니 되묻기로 끝나거나 경로 조회가 0건이 되어, 운영시간과
+    무관한 테스트까지 24건이 한꺼번에 무너진다 — 2026-09-05 14:59 UTC(23:59 KST)
+    CI 실행에서 실제로 그렇게 됐다.
+
+    시각을 고정하는 대신 픽스처 자체를 검사한다. 이 파일의 테스트들은 실제 시각으로
+    돌기 때문에, 고정해 봐야 여기 한 곳만 안전해지고 나머지 24건은 그대로다.
+    """
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    from app.domain.models import OperatingHours
+    from app.domain.scoring import _remaining_minutes
+
+    kst = ZoneInfo("Asia/Seoul")
+    hours = OperatingHours(
+        open_time=time.fromisoformat(_OPEN_ALL_DAY_SCHEDULE["time_ranges"][0]["open_time"]),
+        close_time=time.fromisoformat(_OPEN_ALL_DAY_SCHEDULE["time_ranges"][0]["close_time"]),
+    )
+
+    for hour, minute, second in ((0, 0, 0), (12, 0, 0), (23, 58, 30), (23, 59, 0), (23, 59, 59)):
+        now = datetime(2026, 9, 5, hour, minute, second, tzinfo=kst)
+        assert _remaining_minutes(now, hours) is not None, f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
 _CLOSED_ALL_WEEK_SCHEDULE = {
@@ -7626,3 +7749,109 @@ async def test_refilled_candidates_are_recorded_with_coordinates(
 
     session = get_session_context(response.state.session_id, store=store)
     assert refilled_ids <= set(_snapshot_coordinates(session))
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_records_quality_metrics() -> None:
+    """SCHEDULE 턴 한 번에 지표 trace 행이 하나 남는다. (TP-242)
+
+    **기존 단계에 얹지 않는다** — 단계별 지연시간을 보는 화면이 도메인 지표에
+    오염된다. 그래서 step 이름이 따로 있고, 이 테스트가 그 분리를 잠근다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+
+    traces = store.get_traces(response.state.session_id)
+    quality = [trace for trace in traces if trace.step == "schedule_quality"]
+    assert len(quality) == 1
+
+    metrics = quality[0].metrics
+    assert metrics is not None
+    assert metrics["item_count"] == len(response.schedule.items)
+    assert metrics["item_capacity"] == response.schedule.item_capacity
+    assert metrics["total_duration_min"] == response.schedule.total_duration_min
+    assert metrics["walkable_within_min"] == 5
+
+    # 다른 단계는 지표를 싣지 않는다.
+    assert all(trace.metrics is None for trace in traces if trace.step != "schedule_quality")
+
+
+@pytest.mark.asyncio
+async def test_schedule_quality_metrics_carry_no_user_text() -> None:
+    """지표에 장소 이름이 들어가지 않는다. (TP-242)
+
+    **trace_records를 대화 삭제 때 안 지우는 근거가 "사용자 텍스트가 없다"는
+    것이다.** 이름을 실으면 그 근거가 무너지고 보관 규칙까지 다시 봐야 한다.
+    단위 테스트는 고정 입력으로 확인하지만, 이 테스트는 실제 편성 결과의
+    이름들이 새어나가지 않는지 본다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    quality = [
+        trace
+        for trace in store.get_traces(response.state.session_id)
+        if trace.step == "schedule_quality"
+    ]
+    rendered = repr(quality[0].metrics)
+
+    for item in response.schedule.items:
+        assert item.place_name not in rendered
+        assert item.place_id not in rendered
+    assert "경복궁" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_survives_metrics_record_failure() -> None:
+    """지표 기록이 실패해도 사용자 응답은 정상으로 나간다. (TP-242)
+
+    기존 trace 기록이 예외를 흡수하는 것과 같은 규칙이다. 지표는 관측이고,
+    관측이 기능을 막으면 안 된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    original = store.append_traces
+
+    def _fail_on_quality(records):
+        if any(record.step == "schedule_quality" for record in records):
+            raise RuntimeError("지표 저장 실패(테스트)")
+        original(records)
+
+    store.append_traces = _fail_on_quality  # type: ignore[method-assign]
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert "코스를 짜봤어요" in response.message

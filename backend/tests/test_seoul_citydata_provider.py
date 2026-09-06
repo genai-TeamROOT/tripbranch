@@ -9,6 +9,7 @@ from app.providers.seoul_citydata import (
     RealRealtimeCommercialProvider,
     map_realtime_commercial_response,
     map_realtime_parking_response,
+    map_realtime_population_response,
     map_realtime_traffic_response,
 )
 
@@ -70,6 +71,88 @@ def test_map_realtime_commercial_response_extracts_cafe_category() -> None:
     assert result.observed_at == "2026-08-20 14:00"
     assert result.categories[0].middle_category == "커피·음료"
     assert result.categories[0].activity_level == "바쁜 시간대"
+
+
+def test_map_realtime_commercial_response_keeps_payment_amounts() -> None:
+    """결제 건수·금액은 2026-09-05 강남역 실측에서 확인한 필드다."""
+
+    payload = {
+        "AREA_NM": "강남역",
+        "AREA_CD": "POI014",
+        "LIVE_CMRCL_STTS": {
+            "AREA_CMRCL_LVL": "보통",
+            "CMRCL_TIME": "20260905 1640",
+            "AREA_SH_PAYMENT_CNT": "329",
+            "AREA_SH_PAYMENT_AMT_MIN": "7900000",
+            "AREA_SH_PAYMENT_AMT_MAX": "8000000",
+            "CMRCL_RSB": [
+                {
+                    "RSB_LRG_CTGR": "의료",
+                    "RSB_MID_CTGR": "병원",
+                    "RSB_PAYMENT_LVL": "한산한",
+                    "RSB_SH_PAYMENT_CNT": 11,
+                    "RSB_SH_PAYMENT_AMT_MIN": 1300000,
+                    "RSB_SH_PAYMENT_AMT_MAX": 1400000,
+                }
+            ],
+        },
+    }
+
+    result = map_realtime_commercial_response(payload, requested_area="강남역")
+
+    assert result.payment_count == 329
+    assert result.payment_amount_min == 7_900_000
+    assert result.payment_amount_max == 8_000_000
+    assert result.categories[0].payment_count == 11
+    assert result.categories[0].payment_amount_max == 1_400_000
+
+
+def test_map_realtime_population_response_keeps_headcount_and_age_shares() -> None:
+    """현재 인구 구간과 연령대 비율도 같은 응답에 들어 있다(2026-09-05 강남역)."""
+
+    payload = {
+        "CITYDATA": {
+            "LIVE_PPLTN_STTS": [
+                {
+                    "AREA_NM": "강남역",
+                    "AREA_CONGEST_LVL": "붐빔",
+                    "AREA_PPLTN_MIN": "78000",
+                    "AREA_PPLTN_MAX": "80000",
+                    "PPLTN_RATE_0": "0.8",
+                    "PPLTN_RATE_10": "6.3",
+                    "PPLTN_RATE_20": "29.0",
+                    "PPLTN_RATE_70": "3.4",
+                    "PPLTN_TIME": "2026-09-05 16:25",
+                    "FCST_YN": "Y",
+                    "FCST_PPLTN": [],
+                }
+            ]
+        }
+    }
+
+    result = map_realtime_population_response(payload, requested_area="강남역")
+
+    assert result.current_population_min == 78_000
+    assert result.current_population_max == 80_000
+    # 응답에 없는 구간은 건너뛰고, 있는 것만 어린 연령대부터 순서대로 담는다.
+    assert [(share.label, share.rate) for share in result.age_shares] == [
+        ("10세 미만", 0.8),
+        ("10대", 6.3),
+        ("20대", 29.0),
+        ("70대 이상", 3.4),
+    ]
+
+
+def test_map_realtime_population_response_without_headcount_fields() -> None:
+    """예전 응답 형태처럼 인구 수가 없어도 혼잡도 단계는 그대로 나온다."""
+
+    payload = {"CITYDATA": {"LIVE_PPLTN_STTS": [{"AREA_CONGEST_LVL": "여유", "FCST_YN": "N"}]}}
+
+    result = map_realtime_population_response(payload, requested_area="경복궁")
+
+    assert result.current_congestion_level == "여유"
+    assert result.current_population_min is None
+    assert result.age_shares == ()
 
 
 def test_map_realtime_commercial_response_supports_live_flat_payload() -> None:

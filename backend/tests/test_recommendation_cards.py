@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -183,6 +184,47 @@ async def test_missing_images_leave_thumbnail_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fallback_thumbnail_carries_the_other_url() -> None:
+    """두 주소를 다 넘긴다 — 작은 썸네일만 죽은 장소가 있다.
+
+    아현시장(2751432)은 firstimage2가 404인데 firstimage는 200이다(2026-09-05 실측).
+    주소가 null이 아니라 살아 있는 척 죽어 있어서, thumbnail_url의 `or` 폴백으로는
+    걸러지지 않는다. 프론트가 실패한 카드에서만 두 번째를 부른다.
+    """
+    rows = {"a": _row("a")}
+    tool = RecommendationCardTool(FakeRepository(rows))
+
+    result = await tool.get_cards(["a"])
+
+    assert result.cards[0].thumbnail_url == "https://example.test/thumb.jpg"
+    assert result.cards[0].fallback_thumbnail_url == "https://example.test/first.jpg"
+
+
+@pytest.mark.asyncio
+async def test_fallback_thumbnail_is_none_when_it_would_repeat_primary() -> None:
+    """이미 primary로 나간 주소는 대안이 아니다.
+
+    두 컬럼이 같은 파일을 가리키는 장소가 있고(실측), thumbnail_url이 비어 first_image_url이
+    primary가 된 경우도 마찬가지다. 그대로 두면 프론트가 같은 404를 두 번 부른다.
+    """
+    same = {"a": _row("a", thumbnail_url="https://example.test/first.jpg")}
+    tool = RecommendationCardTool(FakeRepository(same))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].fallback_thumbnail_url is None
+
+    promoted = {"a": _row("a", thumbnail_url=None)}
+    tool = RecommendationCardTool(FakeRepository(promoted))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].thumbnail_url == "https://example.test/first.jpg"
+    assert result.cards[0].fallback_thumbnail_url is None
+
+    none_at_all = {"a": _row("a", thumbnail_url=None, first_image_url=None)}
+    tool = RecommendationCardTool(FakeRepository(none_at_all))
+    result = await tool.get_cards(["a"])
+    assert result.cards[0].fallback_thumbnail_url is None
+
+
+@pytest.mark.asyncio
 async def test_parking_is_normalized_onto_the_card() -> None:
     rows = {"a": _row("a", parking_info_raw="불가능")}
     tool = RecommendationCardTool(FakeRepository(rows))
@@ -217,6 +259,47 @@ async def test_repository_failure_is_reported_as_unavailable() -> None:
     assert result.missing_content_ids == ("a", "b")
     assert result.error is not None
     assert result.error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_repository_failure_is_logged_not_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """실패를 로그로 남기는지 못박는다.
+
+    부르는 쪽(A의 _with_thumbnails)은 이 결과를 상태로만 받고 추천을 그대로
+    내보낸다. 그래서 화면에는 그 턴의 썸네일이 통째로 빠진 채 자리표시 칩만
+    남는데, 여기서 남기지 않으면 "이 장소들에 원래 사진이 없다"와 구분할 수
+    없다 — 같은 장소가 어떤 요청에는 사진이 나오고 어떤 요청에는 안 나오는
+    이유를 서버 로그로 가리려면 이 줄이 있어야 한다.
+    """
+    repository = FakeRepository({}, error=SupabaseRepositoryError("boom"))
+    tool = RecommendationCardTool(repository)
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.recommendation_cards"):
+        await tool.get_cards(["a", "b"])
+
+    assert "추천 카드 조회 실패" in caplog.text
+    # 몇 건이 사진을 잃었는지가 있어야 전멸인지 일부인지 로그만으로 판단할 수 있다.
+    assert "요청=2건" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_missing_ids_are_logged_apart_from_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """행이 없는 것은 조회 실패와 다른 사건이라 따로 남긴다."""
+    repository = FakeRepository({"a": _row("a")})
+    tool = RecommendationCardTool(repository)
+
+    with caplog.at_level(logging.INFO, logger="app.tools.recommendation_cards"):
+        await tool.get_cards(["a", "b"])
+
+    assert "추천 카드 일부 없음" in caplog.text
+    assert "없음=1건" in caplog.text
+    # 채울 대상을 고르려면 어느 id인지가 필요하다.
+    assert "id=b" in caplog.text
+    assert "추천 카드 조회 실패" not in caplog.text
 
 
 @pytest.mark.asyncio

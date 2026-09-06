@@ -23,7 +23,6 @@ from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
 from app.schedule.budget import classify_budget
-from app.schedule.schemas import target_item_range
 from app.schemas import (
     CompareCriteria,
     ComparisonItem,
@@ -172,6 +171,11 @@ _CLARIFICATION_TEMPLATES: dict[str, str] = {
         "말씀하신 장소가 여러 곳으로 해석돼요. 어느 곳을 말씀하시는지 조금 더 알려주시겠어요?"
     ),
     "place_required": "어떤 장소에 대해 알고 싶으신가요?",
+    # 행사 질의는 장소를 물은 발화가 아니라 되묻는 말이 달라야 한다(TP-237).
+    # 뒷문장은 유형을 가리지 않는다는 고지다 — 축제를 물어도 공연·전시가 함께 나온다.
+    "event_place_required": (
+        "어느 지역의 행사를 찾아드릴까요? 축제·공연·전시를 모두 모아서 알려드려요."
+    ),
     "place_ambiguous": "여러 장소 중 어느 곳을 말씀하시는 건가요?",
 }
 _CLARIFICATION_FALLBACK_MESSAGE = "조건을 조금 더 자세히 알려주시겠어요?"
@@ -459,6 +463,8 @@ def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
     place = result.resolved_place_name or result.requested_place_name or "해당 지역"
     if result.question_type == "realtime_traffic":
         return _compose_realtime_traffic_message(place, result)
+    if result.question_type == "public_toilet":
+        return _compose_public_toilet_message(place, result)
     labels = {
         "realtime_parking": "실시간 주차장 정보",
         "realtime_public_parking": "공영주차장 실시간 현황",
@@ -494,6 +500,27 @@ def compose_paired_parking_message(message: str, *, question_type: object) -> st
     if follow_up is None:
         return message
     return f"{message} {follow_up}"
+
+
+def _compose_public_toilet_message(place: str, result: RealtimeCityInfoResult) -> str:
+    """화장실은 카드를 보라고 미루지 않고 말풍선에서 바로 두 곳을 읽어준다.
+
+    급해서 묻는 질문이라 "아래 카드에서 확인해보세요"는 한 단계를 더 요구하는
+    셈이다. 이름과 거리를 문장에 담아 눈으로 바로 집을 수 있게 한다. 대신 길찾기는
+    카드를 눌러야 하므로 그 안내만 마지막에 붙인다.
+    """
+
+    if result.status == "no_data" or not result.fields:
+        return (
+            f"{place} 주변 1km 안에서는 이용할 수 있는 공중화장실을 찾지 못했어요."
+            " 조금 이동한 뒤 다시 물어봐주시면 다시 찾아볼게요."
+        )
+
+    # fields는 {화장실 이름: "도보 50m · 지금 이용 가능 · 24시간"} 형태다.
+    lines = [f"· {name} — {summary}" for name, summary in result.fields.items()]
+    intro = f"{place} 주변에서 가까운 공중화장실을 찾았어요."
+    outro = "카드를 누르면 네이버지도 도보 길찾기로 바로 이어져요."
+    return "\n".join([intro, *lines, outro])
 
 
 def _compose_realtime_traffic_message(place: str, result: RealtimeCityInfoResult) -> str:
@@ -925,7 +952,7 @@ def _topic_particle(word: str) -> str:
 
 
 def _with_saved_place_notes(
-    message: str, schedule: ScheduleResult, time_available_min: int | None
+    message: str, schedule: ScheduleResult
 ) -> str:
     """보관함과 편성 결과가 어긋난 부분을 사용자 말로 덧붙인다. (SCHEDULE-12, TP-223)
 
@@ -980,11 +1007,16 @@ def _with_saved_place_notes(
         )
     if schedule.over_capacity_place_names:
         joined = ", ".join(schedule.over_capacity_place_names)
-        # 상한은 활동 가능 시간에 따라 달라진다(1~2 / 2~4 / 3~5곳). 숫자를 문자열에
-        # 박으면 "2시간 코스"에서 틀린 수를 말하게 되므로 같은 함수를 다시 부른다.
-        _, max_items = target_item_range(time_available_min)
+        # 상한은 요청마다 다르다 — 활동 가능 시간뿐 아니라 후보의 분류(체류 최소값)와
+        # 서로의 거리까지 보고 계산되기 때문이다(TP-239). 후보를 모르는 이쪽에서는
+        # 다시 계산할 수 없어 편성이 실어 보낸 값을 읽는다. 값이 없으면(옛 스냅샷,
+        # 부분 재편성) 수를 말하지 않는다 — 틀린 수를 말하는 것보다 낫다.
+        if schedule.item_capacity is not None:
+            limit_phrase = f"한 번에 {schedule.item_capacity}곳까지만 넣을 수 있어서 "
+        else:
+            limit_phrase = "한 번에 넣을 수 있는 곳 수를 넘어서 "
         parts.append(
-            f"한 번에 {max_items}곳까지만 넣을 수 있어서 "
+            f"{limit_phrase}"
             f"담아두신 {joined}{_topic_particle(joined)} 이번엔 빠졌어요. "
             "보관함에서 다른 곳을 빼면 다음엔 넣어드릴게요."
         )
@@ -1080,9 +1112,7 @@ def compose_schedule_message(
     """
 
     if not schedule.items:
-        return _with_saved_place_notes(
-            schedule.route_summary, schedule, time_available_min
-        )
+        return _with_saved_place_notes(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
@@ -1098,7 +1128,6 @@ def compose_schedule_message(
             time_available_min,
         ),
         schedule,
-        time_available_min,
     )
 
 

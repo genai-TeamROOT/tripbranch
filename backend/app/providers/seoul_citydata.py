@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from app.domain.models import (
+    PopulationAgeShare,
     PopulationForecastSlot,
     RealtimeBusStop,
     RealtimeCityDataResult,
@@ -90,6 +91,9 @@ def map_realtime_commercial_response(
             large_category=_text(item.get("RSB_LRG_CTGR")),
             middle_category=_text(item.get("RSB_MID_CTGR")),
             activity_level=_text(item.get("RSB_PAYMENT_LVL")),
+            payment_count=_int(item.get("RSB_SH_PAYMENT_CNT")),
+            payment_amount_min=_int(item.get("RSB_SH_PAYMENT_AMT_MIN")),
+            payment_amount_max=_int(item.get("RSB_SH_PAYMENT_AMT_MAX")),
         )
         for item in category_rows
     )
@@ -100,6 +104,9 @@ def map_realtime_commercial_response(
         observed_at=_text(status.get("CMRCL_TIME")),
         categories=categories,
         provider="seoul_citydata_commercial",
+        payment_count=_int(status.get("AREA_SH_PAYMENT_CNT")),
+        payment_amount_min=_int(status.get("AREA_SH_PAYMENT_AMT_MIN")),
+        payment_amount_max=_int(status.get("AREA_SH_PAYMENT_AMT_MAX")),
     )
 
 
@@ -133,7 +140,36 @@ def map_realtime_population_response(
         forecast_available=_text(status.get("FCST_YN")) == "Y",
         forecasts=forecasts,
         provider="seoul_citydata_population",
+        current_population_min=_int(status.get("AREA_PPLTN_MIN")),
+        current_population_max=_int(status.get("AREA_PPLTN_MAX")),
+        age_shares=_population_age_shares(status),
     )
+
+
+# PPLTN_RATE_* 접미사 → 사람이 읽는 연령대 이름. 서울시가 0/10/.../70 여덟 구간으로
+# 고정해 내려주며(매뉴얼 V8.5), 0은 "0대"가 아니라 10세 미만이고 70은 70대 이상이다.
+_POPULATION_AGE_LABELS: tuple[tuple[str, str], ...] = (
+    ("0", "10세 미만"),
+    ("10", "10대"),
+    ("20", "20대"),
+    ("30", "30대"),
+    ("40", "40대"),
+    ("50", "50대"),
+    ("60", "60대"),
+    ("70", "70대 이상"),
+)
+
+
+def _population_age_shares(status: Mapping[str, object]) -> tuple[PopulationAgeShare, ...]:
+    """``PPLTN_RATE_0``~``_70``을 응답 순서(어린 연령대부터) 그대로 정규화한다."""
+
+    shares = []
+    for suffix, label in _POPULATION_AGE_LABELS:
+        rate = _float(status.get(f"PPLTN_RATE_{suffix}"))
+        if rate is None:
+            continue
+        shares.append(PopulationAgeShare(label=label, rate=rate))
+    return tuple(shares)
 
 
 def _citydata_row(payload: Mapping[str, object]) -> Mapping[str, object]:
@@ -293,9 +329,15 @@ class FakeRealtimeCommercialProvider:
                     large_category="음식·음료",
                     middle_category="커피·음료",
                     activity_level="바쁜 시간대",
+                    payment_count=38,
+                    payment_amount_min=1_600_000,
+                    payment_amount_max=1_700_000,
                 ),
             ),
             provider="fake_seoul_citydata",
+            payment_count=59,
+            payment_amount_min=2_000_000,
+            payment_amount_max=2_150_000,
         )
         return provider_result(result, source=ProviderSource.FAKE_SEOUL_CITYDATA)
 
@@ -321,6 +363,18 @@ class FakeRealtimeCityDataProvider:
                 PopulationForecastSlot("2026-08-20 17:00", "붐빔", 5000, 5500),
             ),
             provider="fake_seoul_citydata",
+            current_population_min=2500,
+            current_population_max=3000,
+            age_shares=(
+                PopulationAgeShare("10세 미만", 1.2),
+                PopulationAgeShare("10대", 5.4),
+                PopulationAgeShare("20대", 32.2),
+                PopulationAgeShare("30대", 24.8),
+                PopulationAgeShare("40대", 16.1),
+                PopulationAgeShare("50대", 11.5),
+                PopulationAgeShare("60대", 5.6),
+                PopulationAgeShare("70대 이상", 3.2),
+            ),
         )
         return provider_result(
             RealtimeCityDataResult(

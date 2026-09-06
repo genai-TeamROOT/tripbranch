@@ -26,19 +26,24 @@ export function ClarificationMessage({
   return (
     <div className="mr-auto flex max-w-xl flex-col gap-3 rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100">
       <p className="whitespace-pre-line leading-6">{text}</p>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            disabled={isLoading}
-            onClick={() => onSelectOption(option.id, option.label)}
-            className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {/* 턴이 지나면 선택지를 비운 채로 온다(TripContext의 withoutPastTurnControls).
+          지난 턴의 되묻기를 지금 누르면 그때 기준의 답이 지금 맥락으로 나가서다.
+          문구는 그 턴의 답변이라 기록으로 남기고 누를 수 있는 것만 없앤다. */}
+      {options.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              disabled={isLoading}
+              onClick={() => onSelectOption(option.id, option.label)}
+              className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -12,7 +12,6 @@ from app.schedule.schemas import (
     ScheduleLLMItem,
     ScheduleLLMPlan,
     SchedulePlanningRequest,
-    target_item_range,
 )
 from app.schemas import (
     AgentResponse,
@@ -180,7 +179,7 @@ class TestScheduleLLMPlanItemsCountConstraint:
 
     SCHEDULE-07 때는 항상 min_length=3을 걸었지만, 활동 가능 시간이 짧은
     요청("2시간 코스 짜줘")에서는 3개 고정 하한이 비현실적이라는 게 확인돼
-    "이번 요청에 맞는" 목표 개수(1~5 사이)는 target_item_range()가 계산해
+    "이번 요청에 맞는" 목표 개수(1~5 사이)는 budget.derive_item_range()가 계산해
     프롬프트로만 지시하고, 이 모델은 "0개도 6개 이상도 아니다"라는 구조적
     최소한만 검증한다."""
 
@@ -207,7 +206,7 @@ class TestScheduleLLMPlanItemsCountConstraint:
 
     def test_2개도_이제는_통과한다(self):
         """SCHEDULE-07 때는 검증 실패였지만, SCHEDULE-10부터는 구조적으로
-        허용된다 — 2개가 적절한지는 target_item_range()/프롬프트가 판단할
+        허용된다 — 2개가 적절한지는 budget.derive_item_range()/프롬프트가 판단할
         몫이지 이 스키마가 판단할 몫이 아니다."""
         plan = ScheduleLLMPlan(
             items=[_llm_item(f"place-{i}", i) for i in range(1, 3)],
@@ -225,23 +224,3 @@ class TestScheduleLLMPlanItemsCountConstraint:
                 items=[_llm_item(f"place-{i}", i) for i in range(1, 7)],
                 route_summary="테스트 동선",
             )
-
-
-class TestTargetItemRange:
-    """SCHEDULE-10: 활동 가능 시간(time_available, 분)에 맞는 목표 개수 범위."""
-
-    def test_시간_제한이_없으면_기존_정책(self):
-        assert target_item_range(None) == (3, 5)
-
-    def test_두시간_미만이면_한두개(self):
-        assert target_item_range(60) == (1, 2)
-        assert target_item_range(119) == (1, 2)
-
-    def test_두시간_이상_세시간반_미만이면_두세네개(self):
-        assert target_item_range(120) == (2, 4)
-        assert target_item_range(180) == (2, 4)
-        assert target_item_range(209) == (2, 4)
-
-    def test_세시간반_이상이면_기존_정책(self):
-        assert target_item_range(210) == (3, 5)
-        assert target_item_range(300) == (3, 5)

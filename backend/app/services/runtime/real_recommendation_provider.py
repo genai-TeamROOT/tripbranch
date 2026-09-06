@@ -296,13 +296,23 @@ class RealRecommendationProvider:
             logger.exception("추천 썸네일 조회 실패 — 이미지 없이 추천한다")
             return response
 
-        thumbnails = {card.content_id: card.thumbnail_url for card in result.cards}
+        # 폴백 주소도 함께 옮긴다. 작은 썸네일(firstimage2)만 관광공사 서버에서 사라진
+        # 장소가 있어(아현시장 등 2% 안팎) 프론트가 실패했을 때 원본으로 갈아탄다.
+        thumbnails = {
+            card.content_id: (card.thumbnail_url, card.fallback_thumbnail_url)
+            for card in result.cards
+        }
 
         def attach(item: RecommendationItem) -> RecommendationItem:
-            image_url = thumbnails.get(item.place_id)
+            found = thumbnails.get(item.place_id)
+            if found is None:
+                return item
+            image_url, fallback = found
             if image_url is None:
                 return item
-            return item.model_copy(update={"image_url": image_url})
+            return item.model_copy(
+                update={"image_url": image_url, "image_url_fallback": fallback}
+            )
 
         return response.model_copy(
             update={

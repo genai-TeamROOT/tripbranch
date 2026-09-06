@@ -169,6 +169,16 @@ class RecommendationItem(BaseModel):
     # (TECH-02: D가 C의 Tool을 직접 부르지 않는다). 채우지 못한 장소는 None이고,
     # 프론트는 그 경우 자리표시 칩을 그린다.
     image_url: str | None = None
+    # image_url이 404일 때 프론트가 대신 그릴 주소(places.first_image_url).
+    #
+    # 주소가 살아 있는지는 여기서 확인하지 않는다 — 추천 한 번에 카드가 5장이라 매
+    # 요청마다 외부 확인이 5~10건 붙고 응답이 그만큼 늦어진다. 두 주소를 다 내려보내고
+    # 실패한 카드에서만 프론트가 두 번째를 부른다(PlaceThumbnail).
+    #
+    # 필요한 이유는 image_url이 가리키는 작은 썸네일(firstimage2)만 관광공사 서버에서
+    # 사라지는 장소가 있어서다 — 아현시장이 그렇다. 그 장소도 원본(firstimage)은 살아
+    # 있고, 상세 카드는 원본을 먼저 고르기 때문에 사진이 나온다. 추천 카드만 비어 보인다.
+    image_url_fallback: str | None = None
 
 
 class TravelOriginToggle(BaseModel):
@@ -272,7 +282,7 @@ class ScheduleResult(BaseModel):
     route_summary: str
     basis_note: str
     # 보관함에 담겨 있었지만 이번 일정에 넣지 못한 장소 이름 (SCHEDULE-12).
-    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(target_item_range())을
+    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(budget.derive_item_range())을
     # 넘었거나, LLM이 재시도 후에도 포함 지시를 지키지 못한 경우에 채워진다.
     # 사용자에게 조용히 빠뜨리지 않고 말풍선으로 알리기 위한 값이라, 화면 문구를
     # 조립하는 쪽(response_composer)이 읽는다. 빈 리스트가 정상이다.
@@ -302,7 +312,7 @@ class ScheduleResult(BaseModel):
     # 확정적이기 때문**이다. 이쪽은 시간대를 바꾸면 실제로 들어간다. 저쪽은
     # 바꿔도 같다. over_capacity_place_names를 따로 둔 것과 같은 기준이다.
     closed_saved_place_names: list[str] = Field(default_factory=list)
-    # 담겨 있었지만 **항목 수 상한**(target_item_range()의 max)을 넘겨 이번 편성 대상에서
+    # 담겨 있었지만 **항목 수 상한**(budget.derive_item_range()의 max)을 넘겨 이번 편성 대상에서
     # 잘린 장소 이름 (TP-223). 담은 순서로 뒤에서부터 잘린다.
     #
     # omitted_saved_place_names와 갈라 둔 이유는 사유가 다르고 사용자가 할 수 있는 일이
@@ -321,6 +331,16 @@ class ScheduleResult(BaseModel):
     # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
     # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
     added_place_names: list[str] = Field(default_factory=list)
+    # 이번 요청에서 일정에 넣을 수 있었던 항목 수 상한 (TP-239).
+    #
+    # **화면이 이 값을 다시 계산할 수 없어서 실어 보낸다.** 예전에는 버킷 상수라
+    # 활동 가능 시간만 있으면 어디서든 같은 답이 나왔다(1~2 / 2~4 / 3~5곳). 지금은
+    # 체류 최소값과 이번 후보들의 실제 거리로 계산하므로, 후보를 모르는
+    # response_composer는 "한 번에 n곳까지만" 문구의 n을 만들 수 없다.
+    #
+    # 부분 재편성에서는 None이다 — 그때 개수는 유지 항목과 교체 대상이 정하므로
+    # 상한이 관여하지 않는다. 이 필드가 없던 시절의 스냅샷도 None이다.
+    item_capacity: int | None = Field(default=None, ge=1)
     # 요청한 활동 가능 시간을 지켰는지에 대한 판정 (TP-238).
     #
     # **판정을 한 곳에서만 내리기 위한 필드다.** 예전에는 response_composer가
@@ -531,6 +551,10 @@ class QuestionType(StrEnum):
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
     REALTIME_TRAFFIC = "realtime_traffic"
+    # "근처에 화장실 있어?"처럼 주변 공중화장실 위치를 찾는 질문. 그 장소 안에
+    # 화장실이 있는지 묻는 건 FACILITY다 — 답하는 데이터가 다르다(전자는 서울시
+    # 공중화장실 목록, 후자는 그 관광지의 편의시설 안내).
+    PUBLIC_TOILET = "public_toilet"
 
 
 class PlaceContext(StrEnum):
@@ -1252,6 +1276,24 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 무장애 여행 정보(D-077). C의 ``PlaceCard``에서 그대로 옮겨온 값이고, 프론트는
+    # 편의시설 표와 분리된 "무장애 정보" 구획으로 그린다.
+    #
+    # 값이 없으면 None이다. 소비 측은 None인 항목의 줄 자체를 그리지 않는다 —
+    # 이 원문은 있으면 적고 없으면 비우는 식이라 빈 값을 "없음"으로 읽으면 있는
+    # 시설을 없다고 말하게 된다.
+    #
+    # ``stroller_rental``이 차면 위 ``baby_carriage``가 비고, 비면 반대다. 두 값이
+    # 같은 사실을 말하는데 서로 어긋나 C가 하나만 골라 보낸다.
+    accessible_restroom: str | None = None
+    accessible_parking: str | None = None
+    elevator: str | None = None
+    visual_guide: str | None = None
+    wheelchair_rental: str | None = None
+    nursing_room: str | None = None
+    seating: str | None = None
+    stroller_rental: str | None = None
+    guide_dog: str | None = None
     # 후기에서 추출한 취향 태그·대표 근거. 상세 모달 요청에서만 채운다.
     preference_insights: list[PlacePreferenceInsight] = Field(default_factory=list)
     population_current_level: str | None = None
@@ -1269,6 +1311,47 @@ class InfoPlaceCard(BaseModel):
     realtime_source_url: str | None = None
     realtime_map_url: str | None = None
     realtime_detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
+    # 서울시 실시간 인구·상권 공통 요약. 실시간 인구 혼잡도(concentration)와 실시간
+    # 상권(realtime_commercial) 카드에만 싣는다 — 두 유형만 서울시 citydata를 이미
+    # 호출하므로 추가 호출 없이 채울 수 있다.
+    seoul_realtime_summary: SeoulRealtimeSummary | None = None
+
+
+class SeoulRealtimePaymentCategory(BaseModel):
+    """최근 10분 결제 금액 상위 업종 한 건. 금액 단위는 원이고 구간으로만 온다."""
+
+    label: str
+    activity_level: str | None = None
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
+
+
+class SeoulRealtimeSummary(BaseModel):
+    """서울시 실시간 도시데이터에서 뽑은 인구·상권 요약 블록.
+
+    인구 구획과 상권 구획은 서로 독립이다 — 서울시가 상권을 121곳 중 82곳에만
+    제공하므로(D-084) 경복궁처럼 상권 값이 전부 비는 지역이 있다. 프론트는 값이
+    없는 구획을 통째로 감춘다.
+
+    현재 혼잡도 단계·기준 시각은 카드의 ``population_current_level`` /
+    ``population_observed_at``에 이미 있어 여기서 중복해 두지 않는다.
+    """
+
+    population_min: int | None = None
+    population_max: int | None = None
+    # 예측 중 가장 붐비는 시간대("오후 5시")와 그때의 단계. 과거 추이는 서울시
+    # API가 제공하지 않아 "오늘의 인기 시간대"가 아니라 앞으로의 예측이다.
+    peak_forecast_hour_label: str | None = None
+    peak_forecast_level: str | None = None
+    top_age_label: str | None = None
+    top_age_rate: float | None = None
+    commercial_level: str | None = None
+    commercial_observed_at: str | None = None
+    payment_count: int | None = None
+    payment_amount_min: int | None = None
+    payment_amount_max: int | None = None
+    top_payment_categories: list[SeoulRealtimePaymentCategory] = Field(default_factory=list)
 
 
 class PopulationForecastBar(BaseModel):
@@ -1306,6 +1389,11 @@ class RealtimeInfoDetailItem(BaseModel):
     details: dict[str, str] = Field(default_factory=dict)
     thumbnail_url: str | None = None
     external_url: str | None = None
+    # 항목별 길찾기용 좌표. 공중화장실처럼 목록의 각 항목이 목적지가 되는
+    # 카드에서 채운다. 주소만 있는 항목(일부 민영주차장)은 없는 채로 둔다 —
+    # 프론트가 주소 검색으로 폴백한다.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

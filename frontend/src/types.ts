@@ -68,12 +68,33 @@ export interface RecommendationItem {
    * 못 찾은 장소는 null/undefined로 오고, 카드는 그때 자리표시 칩을 그린다.
    */
   image_url?: string | null;
+  /**
+   * image_url이 404일 때 대신 그릴 주소(places.first_image_url). 대안이 없으면
+   * null이다 — 같은 주소를 두 번 부르지 않도록 서버가 걸러 보낸다.
+   *
+   * 작은 썸네일(firstimage2)만 관광공사 서버에서 사라진 장소가 있다. 서버는 살아
+   * 있는지 확인하지 않는다(추천 한 번에 확인 요청이 5~10건 붙는다) — 실패한
+   * 카드에서만 PlaceThumbnail이 두 번째를 부른다.
+   */
+  image_url_fallback?: string | null;
 }
 
 export interface PreferenceTagSummary {
   code: string;
   label: string;
   mention_count: number;
+}
+
+/*
+ * 취향 태그 표가 실제로 읽는 것만 추린 형태. RecommendationItem을 통째로 다시
+ * 싣지 않으려고 따로 둔다 — 표는 별도 메시지라 대화 저장소에 한 벌 더 들어가는데,
+ * 점수·근거 문장까지 복사하면 저장 크기가 배로 커진다. RecommendationItem이 이
+ * 모양을 만족하므로 그대로 넘겨도 된다.
+ */
+export interface PreferenceTagSummaryEntry {
+  place_id: string;
+  name: string;
+  preference_tags?: PreferenceTagSummary[];
 }
 
 export interface TasteEvidenceQuote {
@@ -280,6 +301,24 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+  /*
+   * 무장애 여행 정보(D-077). 값이 있는 항목만 그리고, 아홉 개가 모두 비면 구획
+   * 자체를 숨긴다 — 이 데이터는 있으면 적고 없으면 비우는 식이라 빈 값을 "없음"으로
+   * 그리면 안 된다. 무장애 원문이 있는 장소는 전체의 15%이고, 아홉 중 하나라도
+   * 나오는 곳은 11%다.
+   *
+   * stroller_rental이 차면 baby_carriage가 비고, 비면 baby_carriage가 남는다.
+   * 두 값이 같은 사실을 말하는데 62%에서 어긋나 C가 하나만 골라 보낸다.
+   */
+  accessible_restroom?: string | null;
+  accessible_parking?: string | null;
+  elevator?: string | null;
+  visual_guide?: string | null;
+  wheelchair_rental?: string | null;
+  nursing_room?: string | null;
+  seating?: string | null;
+  stroller_rental?: string | null;
+  guide_dog?: string | null;
   preference_insights?: PlacePreferenceInsight[];
   population_current_level?: string | null;
   population_current_message?: string | null;
@@ -293,6 +332,43 @@ export interface InfoPlaceCard {
   realtime_source_url?: string | null;
   realtime_map_url?: string | null;
   realtime_detail_items?: RealtimeInfoDetailItem[];
+  /**
+   * 서울시 실시간 인구·상권 요약. 실시간 혼잡도(concentration)와 실시간 상권
+   * (realtime_commercial) 카드에만 실린다 — 두 유형만 서울시 citydata를 이미
+   * 호출하므로 추가 호출 없이 채울 수 있다.
+   */
+  seoul_realtime_summary?: SeoulRealtimeSummary | null;
+}
+
+export interface SeoulRealtimePaymentCategory {
+  label: string;
+  activity_level?: string | null;
+  payment_count?: number | null;
+  /** 최근 10분 결제 금액 구간(원). 서울시가 단일 값을 주지 않는다. */
+  payment_amount_min?: number | null;
+  payment_amount_max?: number | null;
+}
+
+export interface SeoulRealtimeSummary {
+  /** 현재 인구 지표 구간(명). 현재 단계·기준 시각은 population_* 필드에 있다. */
+  population_min?: number | null;
+  population_max?: number | null;
+  /**
+   * 앞으로 가장 붐빌 시간대. 서울시 앱의 "오늘의 인기 시간대"와 달리 과거를 포함한
+   * 하루 통계가 아니라 예측이다 — 원본이 미래 12시간만 준다. 지금이 이미 예측
+   * 피크만큼 붐비면 백엔드가 비워 보낸다.
+   */
+  peak_forecast_hour_label?: string | null;
+  peak_forecast_level?: string | null;
+  top_age_label?: string | null;
+  top_age_rate?: number | null;
+  /** 상권 구획은 서울시가 121곳 중 82곳에만 제공한다 — 없으면 통째로 감춘다. */
+  commercial_level?: string | null;
+  commercial_observed_at?: string | null;
+  payment_count?: number | null;
+  payment_amount_min?: number | null;
+  payment_amount_max?: number | null;
+  top_payment_categories?: SeoulRealtimePaymentCategory[];
 }
 
 export interface PopulationForecastBar {
@@ -323,6 +399,10 @@ export interface RealtimeInfoDetailItem {
   details: Record<string, string>;
   thumbnail_url: string | null;
   external_url: string | null;
+  /** 항목별 길찾기 목적지 좌표. 공중화장실처럼 목록의 각 항목이 곧 목적지인
+   *  카드에서만 채워진다. 없으면 details["주소"]로 지도 검색을 폴백한다. */
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -427,6 +507,31 @@ export type ChatMessage =
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
     }
+  /*
+   * 추천 결과에 딸린 동작 버튼(다른 장소 보기·반경 확대·기준 전환)만 담는다.
+   * 카드와 갈라 둔 이유는 **수명이 다르기 때문이다** — 카드는 기록으로 남지만
+   * 버튼은 다음 발화가 나가는 순간 걷어낸다(follow_up_suggestions와 같은 규칙).
+   * 지난 턴의 버튼을 그대로 두면 그때 기준의 요청이 지금 맥락으로 나간다.
+   */
+  | {
+      id: string;
+      type: "recommendation_actions";
+      /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
+      travel_origin_toggle?: TravelOriginToggle | null;
+      /* 그 턴이 빈손이었는가. 버튼 구성이 갈린다 — 빈손이면 "반경 넓혀 다시 찾기",
+         아니면 "다른 장소 보기"다. 카드가 다른 메시지로 떨어져 나가서 여기서
+         후보 목록을 다시 셀 수 없으므로 판정 결과를 실어 보낸다. */
+      has_no_results: boolean;
+    }
+  /*
+   * 추천 카드와 같은 턴에 붙는 장소별 취향 태그 표. 버튼과 달리 기록이므로
+   * 걷어내지 않는다. 표가 실제로 읽는 세 필드만 담아 저장 크기를 키우지 않는다.
+   */
+  | {
+      id: string;
+      type: "preference_tag_summary";
+      items: PreferenceTagSummaryEntry[];
+    }
   | {
       /*
        * 지난 대화를 펼쳤을 때만 나온다. recommendation_result와 구조가 비슷해
@@ -450,6 +555,20 @@ export type ChatMessage =
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
+    }
+  /*
+   * 일정 결과에 딸린 재편성 버튼(다른 코스 보기·검색 범위 넓히기)만 담는다.
+   * recommendation_actions와 같은 이유로 갈라 둔다 — 새 발화가 나가면 걷어낸다.
+   *
+   * "이 일정 저장"은 여기 없다. 그건 새 요청이 아니라 그 턴의 일정을 run_id로
+   * 저장하는 것이라, 지난 일정을 나중에 저장하는 것도 정상적인 사용이다.
+   * 그래서 저장 버튼은 schedule_result 쪽에 남는다.
+   */
+  | {
+      id: string;
+      type: "schedule_actions";
+      /* 일정을 못 짠 턴인가. 못 짰으면 "검색 범위 넓혀서 다시 찾기"만 낸다. */
+      has_no_schedule: boolean;
     }
   | {
       id: string;
@@ -1038,6 +1157,23 @@ export interface AgentStreamResultEvent {
   message?: string;
 }
 
+/*
+ * 이번 턴이 실제로 쓸 출발지·검색 기준. 조건 병합 직후에 오므로 도구 조회·채점·
+ * 답변 스트리밍보다 앞선다 — 상단 위치 칩이 결과를 기다리지 않고 바뀐다.
+ *
+ * 두 값은 각각 null일 수 있다. 그때는 "이 위치를 지우라"가 아니라 "서버도 위치를
+ * 모른다"는 뜻이라, 화면은 지금 값을 그대로 둔다
+ * (state/locationSettings.ts의 syncLocationSettingsFromConditions).
+ *
+ * 단발 POST /api/chat 폴백에는 이 이벤트가 없다 — 그 경로는 done의 state로 같은
+ * 값을 받는다.
+ */
+export interface AgentStreamLocationResolvedEvent {
+  elapsed_ms: number;
+  current_location: string | null;
+  search_center: string | null;
+}
+
 export interface AgentStreamMessageDeltaEvent {
   elapsed_ms: number;
   text: string;
@@ -1061,6 +1197,7 @@ export interface AgentStreamErrorEvent extends ApiErrorBody {
 export type AgentStreamEvent =
   | { type: "progress"; data: AgentProgressEvent }
   | { type: "result"; data: AgentStreamResultEvent }
+  | { type: "location_resolved"; data: AgentStreamLocationResolvedEvent }
   | { type: "message_start"; data: AgentStreamMessageStartEvent }
   | { type: "message_delta"; data: AgentStreamMessageDeltaEvent }
   | { type: "done"; data: AgentStreamDoneEvent }

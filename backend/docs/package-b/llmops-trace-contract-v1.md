@@ -64,11 +64,29 @@ latency / token / error_type       필드 자체가 없음
 | `latency_ms` | int \| null | 소요 시간 | 호출자 |
 | `token_usage` | int \| null | 토큰 사용량 (LLM 단계만 해당) | 호출자 |
 | `error_type` | string \| null | 실패 시 오류 분류 | 호출자 |
+| `metrics` | object \| null | 그 단계의 도메인 지표 (TP-242) | 호출자 |
 | `recorded_at` | datetime | 기록 시각 | B가 채움 |
 
 B는 이 값들의 의미를 모른다. `step`이 `"llm_interpret"`이든 `"scoring"`이든 그냥
 문자열로 받아서 저장할 뿐이고, 어떤 버전이 "더 나은" 버전인지는 판단하지 않는다 —
 B-01의 경계 원칙(1절)을 그대로 따른다.
+
+`metrics`도 같은 원칙을 따른다(TP-242). 키와 값을 검증하지 않는다 — **무엇을 셀지는
+그 기능을 아는 쪽이 정한다.** B가 지표 목록을 들고 있으면 지표를 하나 늘릴 때마다 B를
+고쳐야 하고, 그러면 세는 것을 미루게 된다. 컬럼을 하나씩 늘리지 않고 `jsonb` 하나로
+둔 것도 같은 이유다.
+
+**두 가지는 지킨다.**
+
+- **사용자 텍스트를 담지 않는다.** 장소 이름·발화는 이 저장소의 것이 아니다.
+  `trace_records`가 대화 삭제 때 지워지지 않는 근거가 "사용자 텍스트가 없다"는
+  것이므로(수명 규칙, 6절), 이름을 실으면 그 근거가 무너지고 보관 규칙까지 다시
+  봐야 한다. 이름을 세야 하면 개수만 남긴다.
+- **비율을 담지 않는다.** 분자와 분모를 각각 남기고 나누는 것은 집계 쪽에 맡긴다.
+  비율을 기록해 두면 나중에 분모를 바꿀 수 없다.
+
+지표를 싣지 않는 단계는 `null`로 남는다. 빈 객체로 채우면 "지표가 없는 단계"와
+"지표가 비어 있는 턴"을 구분할 수 없다.
 
 ---
 
@@ -91,7 +109,8 @@ run_id 발급 (조건 병합 이전, 기존과 동일)
 
 ```
 record_trace(session_id, run_id, step, *, prompt_version=None, scoring_version=None,
-             variant_id=None, latency_ms=None, token_usage=None, error_type=None)
+             variant_id=None, latency_ms=None, token_usage=None, error_type=None,
+             metrics=None)
   → trace_id 발급 + 저장, TraceRecordResponse 반환
 ```
 

@@ -2,7 +2,7 @@ intent: RECOMMEND
 owner: D
 slots:
   recommend.extract:
-    version: "2.7.0"
+    version: "2.8.0"
     template: extract.md
     bundle:
       - recommend/location_rules.md

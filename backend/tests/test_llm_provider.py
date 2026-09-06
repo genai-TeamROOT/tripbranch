@@ -1247,56 +1247,81 @@ async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
 
 
 class TestBuildSchedulePlanningInstructionDynamicCount:
-    """SCHEDULE-10: 활동 가능 시간(time_available_min)에 따라 프롬프트의 목표
-    개수 지시가 달라진다 — 짧은 시간에도 3~5개를 고정 지시하던 문제 해소."""
+    """받은 목표 개수 범위를 프롬프트가 그대로 옮긴다.
+
+    범위 계산은 이 함수의 일이 아니다(TP-239) — budget.derive_item_range()가
+    후보 분류와 거리까지 보고 구하고, 이 함수는 후보를 모르므로 받아 쓴다.
+    """
 
     def test_시간_제한이_없으면_기존_3에서_5개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=None)
+        instruction = build_schedule_planning_instruction(
+            time_available_min=None, item_range=(3, 5)
+        )
         assert "3~5개" in instruction
         assert "3개 이상 5개 이하" in instruction
         assert "3~4시간 내외로 구성" in instruction
 
-    def test_두시간_미만이면_한두개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=90)
-        assert "1~2개" in instruction
-        assert "1개 이상 2개 이하" in instruction
+    def test_받은_범위를_그대로_쓴다(self):
+        instruction = build_schedule_planning_instruction(
+            time_available_min=90, item_range=(1, 1)
+        )
+        assert "1개" in instruction
+        assert "1개 이상 1개 이하" in instruction
         assert "3~5개" not in instruction
-        assert "활동 가능 시간이 90분" in instruction
+        assert "활동 가능 시간은 90분" in instruction
 
-    def test_두시간_이상_세시간반_미만이면_두네개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=180)
-        assert "2~4개" in instruction
-        assert "2개 이상 4개 이하" in instruction
+    def test_같은_시간이어도_범위가_다르면_문구가_다르다(self):
+        """**상한이 활동 가능 시간만으로 정해지지 않는다는 증거다.**
 
-    def test_세시간반_이상이면_다시_3에서_5개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=240)
-        assert "3~5개" in instruction
-        assert "활동 가능 시간이 240분" in instruction
+        후보가 박물관뿐이면 3시간에 2곳, 관광지면 3곳이다. 예전에는 시간만 보고
+        버킷으로 정해서 같은 시간이면 항상 같은 문구가 나갔다.
+        """
+
+        museums = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 2)
+        )
+        attractions = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 3)
+        )
+
+        assert "2개 이상 2개 이하" in museums
+        assert "2개 이상 3개 이하" in attractions
 
     def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=90)
+        instruction = build_schedule_planning_instruction(
+            time_available_min=90, item_range=(1, 1)
+        )
         assert "비현실적으로 짧게" in instruction
 
 
-class TestBuildSchedulePlanningInstructionFillsLongDuration:
-    """dev-chat 실사용 테스트에서 "6시간 코스 짜줘"라고 요청했는데 실제로는
-    2.5시간 분량만 채워 반환된 버그 발견 후 추가. target_item_range()의
-    목표 개수 범위(예: 3~5개) 안에 있는데도 LLM이 훨씬 적은 개수·짧은
-    체류시간만 채우고 일찍 끝내는 과소-채움 문제라, 시간이 넉넉할 때는 상한
-    개수에 가깝게 채우라는 지시를 duration_rule에 추가했다."""
+class TestBuildSchedulePlanningInstructionDoesNotPushToFill:
+    """**"상한까지 채우라"는 지시를 뺐다** (TP-239).
 
-    def test_긴_시간에는_채우라는_지시와_최대_개수가_들어간다(self) -> None:
-        instruction = build_schedule_planning_instruction(360)
+    2026-08-18에 과소-채움을 막으려고 넣은 문구다. 그때는 상한이 버킷 상수라
+    예산과 무관했고 "범위 안인데 덜 채운다"가 아까운 상황이었다. 지금은 상한이
+    예산에서 나오고 총 소요 시간은 budget.fit_durations_to_budget()이 체류시간을
+    조절해 맞춘다 — 여기서 넉넉히 잡으라고 시키면 그 조절과 정면으로 싸운다.
+    """
 
-        assert "최대한 가깝게" in instruction
-        assert "너무 일찍 끝내지" in instruction
-        assert "5개에 가깝게 채우고" in instruction
+    def test_개수를_늘려_시간을_채우라고_시키지_않는다(self) -> None:
+        instruction = build_schedule_planning_instruction(360, item_range=(2, 5))
 
-    def test_짧은_시간에도_상한_지시는_그대로_유지된다(self) -> None:
-        instruction = build_schedule_planning_instruction(90)
+        assert "가깝게 채우고" not in instruction
+        assert "너무 일찍 끝내지" not in instruction
+        assert "넉넉히 잡아" not in instruction
 
-        assert "무리하게 채우려 하지 말고" in instruction
-        assert "개수를 줄이세요" in instruction
+    def test_개수를_늘리지_말라고_명시한다(self) -> None:
+        instruction = build_schedule_planning_instruction(360, item_range=(2, 5))
+
+        assert "개수를 늘리지 마세요" in instruction
+        assert "체류시간을 늘려 잡지 마세요" in instruction
+
+    def test_상한이_이미_예산에서_계산된_값임을_알려준다(self) -> None:
+        """LLM이 범위를 의심하고 임의로 벗어나지 않게 근거를 준다."""
+
+        instruction = build_schedule_planning_instruction(180, item_range=(2, 3))
+
+        assert "실제로 들어가는 수로 이미 계산한 값" in instruction
 
 
 class TestSchedulePlanningContextIncludesOperatingHours:
@@ -1305,7 +1330,7 @@ class TestSchedulePlanningContextIncludesOperatingHours:
     프롬프트에도 운영시간을 함께 전달해 LLM이 애초에 피하도록 유도한다."""
 
     def test_instruction에_운영시간_고려_규칙이_있다(self) -> None:
-        instruction = build_schedule_planning_instruction()
+        instruction = build_schedule_planning_instruction(item_range=(3, 5))
         assert "운영시간" in instruction
         assert "마감했을 곳" in instruction
 
@@ -1313,7 +1338,7 @@ class TestSchedulePlanningContextIncludesOperatingHours:
         """TP-215 — 도착시각·이동시간·총 소요시간은 응답을 받은 뒤 엔진이 채운다.
         warnings도 마찬가지라 아예 응답 스키마에서 빠졌다."""
 
-        instruction = build_schedule_planning_instruction()
+        instruction = build_schedule_planning_instruction(item_range=(3, 5))
         assert "시각은 계산하지 마세요" in instruction
         assert "estimated_arrival" not in instruction
         assert "travel_to_next_min" not in instruction

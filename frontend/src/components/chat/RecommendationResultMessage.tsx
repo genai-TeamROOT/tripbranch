@@ -1,7 +1,11 @@
 /*
  * 역할: 추천 API 응답을 채팅 메시지 안에서 장소 카드 목록으로 렌더링한다.
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
- * 출력: 추천 결과 메시지, PlaceCard 목록, 다른 장소 보기/반경 확대 버튼.
+ * 출력: 추천 결과 메시지와 PlaceCard 목록.
+ *
+ * **동작 버튼과 취향 표는 여기 없다.** 각각 RecommendationActionsMessage와
+ * PreferenceTagSummaryTable이 별도 메시지로 그린다 — 버튼은 다음 발화가 나가면
+ * 걷어내야 하는데 카드와 한 메시지에 있으면 같이 지워지기 때문이다.
  * 호출 시점: ChatPage가 recommendation_result 메시지를 렌더링할 때 호출된다.
  * 담기/빼기는 useSavedPlaces()로 직접 읽고 쓴다 — 카드가 메시지 목록 깊숙이
  * 있어 prop으로 내리면 중간 컴포넌트 셋을 전부 거쳐야 한다.
@@ -13,28 +17,18 @@
  */
 
 import { useState } from "react";
-import type { Language, RecommendationItem, TravelOriginToggle } from "../../types";
+import type { Language, RecommendationItem } from "../../types";
 import { useSavedPlaces } from "../../hooks/useSavedPlaces";
 import { PlaceCard } from "../PlaceCard";
 import { PlaceCardRow } from "./PlaceCardRow";
-import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
-
-const RADIUS_RELAXATION_STEP_KM = 0.5;
 
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
-  /** 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
-  travelOriginToggle?: TravelOriginToggle | null;
   elapsedMs: number;
   serverElapsedMs: number;
   showElapsedTime?: boolean;
-  isLoading: boolean;
-  onRequestMore: () => void;
-  onRelaxRadius: () => void;
-  /** travelOriginToggle이 있을 때만 호출 가능. 버튼 클릭 시 그 값 그대로 넘어온다. */
-  onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   language?: Language;
 }
 
@@ -48,14 +42,9 @@ function formatDuration(milliseconds: number | undefined) {
 export function RecommendationResultMessage({
   recommendations,
   unverifiedRecommendations,
-  travelOriginToggle,
   elapsedMs,
   serverElapsedMs,
   showElapsedTime = false,
-  isLoading,
-  onRequestMore,
-  onRelaxRadius,
-  onToggleTravelOrigin,
   language = "ko",
 }: RecommendationResultMessageProps) {
   const text =
@@ -63,28 +52,16 @@ export function RecommendationResultMessage({
       ? {
           summary: "Here are some places that match your preferences.",
           noResults: "We couldn’t find a place that matches those conditions.",
-          widen: `Search a wider area (+${RADIUS_RELAXATION_STEP_KM} km)`,
-          basedOn: (name: string) => `View results based on ${name}`,
-          currentLocation: "View results based on my current location",
           recommendations: "Recommended places",
           closed: "Places that are currently closed",
           hoursUnknown: "Places with unavailable opening hours",
-          loading: "Loading...",
-          more: "Show more places",
-          hint: "Add another condition in the message box below.",
         }
       : {
           summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
           noResults: "조건에 맞는 장소를 찾지 못했어요.",
-          widen: `검색 반경 넓혀서 다시 찾기 (+${RADIUS_RELAXATION_STEP_KM}km)`,
-          basedOn: (name: string) => `${name} 기준으로 다시 보기`,
-          currentLocation: "현재 위치 기준으로 다시 보기",
           recommendations: "추천 장소",
           closed: "현재 운영시간이 아닌 장소",
           hoursUnknown: "운영시간을 확인할 수 없는 장소",
-          loading: "불러오는 중...",
-          more: "다른 장소 보기",
-          hint: "다른 조건이 있으면 아래 입력창에 이어서 적어주세요.",
         };
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
@@ -117,30 +94,10 @@ export function RecommendationResultMessage({
       </div>
 
       {hasNoResults ? (
+        /* 버튼은 여기 없다 — RecommendationActionsMessage가 뒤이어 그린다.
+           안내 문구는 그때 받은 답이라 기록으로 남긴다. */
         <div className="flex flex-col gap-3 text-sm">
           <p className="text-ink">{text.noResults}</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={onRelaxRadius}
-              className="w-fit rounded-full bg-rust px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rust/90 active:scale-[0.98] disabled:opacity-50"
-            >
-              {text.widen}
-            </button>
-            {travelOriginToggle && onToggleTravelOrigin && (
-              <button
-                type="button"
-                disabled={isLoading}
-                onClick={() => onToggleTravelOrigin(travelOriginToggle)}
-                className="w-fit rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-              >
-                {travelOriginToggle.alternative_origin === "search_center"
-                  ? text.basedOn(travelOriginToggle.alternative_origin_name)
-                  : text.currentLocation}
-              </button>
-            )}
-          </div>
         </div>
       ) : (
         <>
@@ -189,35 +146,6 @@ export function RecommendationResultMessage({
               ))}
             </PlaceCardRow>
           )}
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={onRequestMore}
-              className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-            >
-              {isLoading ? text.loading : text.more}
-            </button>
-            {travelOriginToggle && onToggleTravelOrigin && (
-              <button
-                type="button"
-                disabled={isLoading}
-                onClick={() => onToggleTravelOrigin(travelOriginToggle)}
-                className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-              >
-                {travelOriginToggle.alternative_origin === "search_center"
-                  ? text.basedOn(travelOriginToggle.alternative_origin_name)
-                  : text.currentLocation}
-              </button>
-            )}
-            <span className="text-xs text-muted">{text.hint}</span>
-          </div>
-
-          <PreferenceTagSummaryTable
-            items={[...recommendations, ...closedRecommendations, ...unknownHoursRecommendations]}
-            language={language}
-          />
         </>
       )}
 

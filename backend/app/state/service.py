@@ -387,6 +387,9 @@ class RecordTraceRequest(BaseModel):
 
     prompt_version/scoring_version/variant_id/error_type은 호출자가 해석한
     값을 그대로 받으며, B는 검증하지 않는다.
+
+    metrics는 그 단계의 도메인 지표다(TP-242). 같은 원칙으로 키·값을 검증하지
+    않는다. 넘기지 않으면 None이라 기존 호출부는 그대로 돈다.
     """
 
     session_id: str
@@ -398,6 +401,7 @@ class RecordTraceRequest(BaseModel):
     latency_ms: int | None = None
     token_usage: int | None = None
     error_type: str | None = None
+    metrics: dict[str, Any] | None = None
 
 
 class RecordTraceResponse(BaseModel):
@@ -1234,6 +1238,7 @@ def record_trace(
         latency_ms=request.latency_ms,
         token_usage=request.token_usage,
         error_type=request.error_type,
+        metrics=request.metrics,
     )
     return RecordTraceResponse(trace_id=trace.trace_id)
 

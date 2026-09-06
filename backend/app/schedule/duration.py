@@ -38,9 +38,11 @@ class VisitDurationPolicy:
         return max(self.minimum_min, min(minutes, self.maximum_min))
 
 
-# 분류별 (최소, 권장, 최대). 근거는 프롬프트가 이미 안내하던 체류시간 예시와
-# target_item_range()가 개수 범위를 계산할 때 쓴 기준(장소당 60~90분)이다 —
-# 두 곳이 서로 다른 가정을 쓰면 "개수는 맞는데 시간이 안 맞는" 일정이 나온다.
+# 분류별 (최소, 권장, 최대). 근거는 프롬프트가 이미 안내하던 체류시간 예시다.
+# **이 최소값이 개수 상한을 정하는 입력이다** — budget.derive_item_range()가
+# 이 값을 읽어 몇 곳이 예산에 들어가는지 계산한다(TP-239). 예전에는 개수 쪽이
+# 자기 가정(장소당 60~90분)을 따로 갖고 있어서 "개수는 맞는데 시간이 안 맞는"
+# 일정이 나왔다. 이제 한 곳에서만 읽으므로 이 값을 바꾸면 상한도 함께 움직인다.
 _POLICY_BY_CATEGORY: dict[str, VisitDurationPolicy] = {
     PlaceType.ATTRACTION.value: VisitDurationPolicy(60, 90, 120),
     PlaceType.CULTURAL_FACILITY.value: VisitDurationPolicy(90, 120, 180),

@@ -71,7 +71,6 @@ _GRID_SIZE = 4
 # TourAPI contentTypeId. providers/mappers.py::_CONTENT_TYPE_TO_CATEGORY와 같은 값이다.
 _ATTRACTION = "12"
 _CULTURAL_FACILITY = "14"
-_FESTIVAL = "15"
 _LEISURE = "28"
 _SHOPPING = "38"
 _RESTAURANT = "39"
@@ -81,15 +80,20 @@ _RESTAURANT = "39"
 # 관광 목적이므로 관광지·문화시설을 가장 두껍게 둔다. 음식점은 데이터가 두꺼워
 # (강남 260·마포 105·종로 191) 6곳이어도 질이 떨어지지 않는다. 쇼핑은 원본의
 # 60%를 넘게 차지하지만(강남구 713/1,100) 실체가 여행 추천에 쓸 것이 아니라 6으로
-# 누른다. 레포츠·축제공연은 구마다 한 자릿수라 얇게 둔다 — 균등하게 5씩 주면
-# 강남구 레포츠 6곳 중 5곳을 긁어 세븐럭카지노·청소년센터까지 올라온다.
+# 누른다. 레포츠는 구마다 한 자릿수라 얇게 둔다 — 균등하게 5씩 주면 강남구 레포츠
+# 6곳 중 5곳을 긁어 세븐럭카지노·청소년센터까지 올라온다.
+#
+# **축제공연행사(15)는 몫이 없다.** 후보 자체가 오지 않기 때문이다 —
+# `providers/mappers.py::_UNSUPPORTED_CONTENT_TYPE_IDS`가 끝난 행사를 거를 수 없다는
+# 이유로 이 유형을 뺐다(D-120). 그 몫 2를 관광지·문화시설에 1씩 얹어 7·7에서 8·8로
+# 올렸다. 둘은 이미 가장 두껍게 두기로 한 분류이고 모집단도 충분해(강남 39·69,
+# 금천 10·7) 몫을 늘려도 소진율 상한에 먼저 걸린다.
 _CATEGORY_QUOTA: dict[str, int] = {
-    _ATTRACTION: 7,
-    _CULTURAL_FACILITY: 7,
+    _ATTRACTION: 8,
+    _CULTURAL_FACILITY: 8,
     _RESTAURANT: 6,
     _SHOPPING: 6,
     _LEISURE: 2,
-    _FESTIVAL: 2,
 }
 
 # 몫을 채우는 순서. 앞의 분류부터 담으므로 모집단이 얇아 서로 밀릴 때 앞이 살아남는다.
@@ -99,7 +103,6 @@ _FILL_ORDER: tuple[str, ...] = (
     _RESTAURANT,
     _SHOPPING,
     _LEISURE,
-    _FESTIVAL,
 )
 
 # 한 분류에서 그 구가 가진 것의 이 비율을 넘게 쓰지 않는다.

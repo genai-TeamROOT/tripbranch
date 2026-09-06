@@ -152,6 +152,7 @@ export function streamChat(
       if (
         event === "progress" ||
         event === "result" ||
+        event === "location_resolved" ||
         event === "message_start" ||
         event === "message_delta" ||
         event === "done" ||

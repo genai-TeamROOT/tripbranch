@@ -172,6 +172,11 @@ class Clarification(StrictModel):
         "location_required",
         "location_ambiguous",
         "place_required",
+        # 행사 질의에서 지명이 없을 때. `place_required`와 갈라 두는 이유는 되묻는
+        # 문장이 달라야 하기 때문이다 — "축제 추천해줘"에 "어떤 장소에 대해 알고
+        # 싶으신가요?"라고 물으면 사용자가 묻지 않은 것을 되묻는 셈이 된다. 무엇이
+        # 비었는지는 C가 알고 문장은 A가 정하는 지금 분담을 유지한다(TP-237).
+        "event_place_required",
         "place_ambiguous",
     ]
     missing_fields: list[str] = Field(default_factory=list)

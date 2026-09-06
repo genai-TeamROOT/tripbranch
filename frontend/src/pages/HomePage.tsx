@@ -21,11 +21,15 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest, wasCancelledByUser } from "../state/chatAbortController";
 import { loadPreferences } from "../state/preferenceStorage";
-import { loadLocationSettings } from "../state/locationSettings";
+import {
+  loadLocationSettings,
+  syncLocationSettingsFromConditions,
+} from "../state/locationSettings";
 import { useLocationSettings } from "../hooks/useLocationSettings";
 import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
+import { buildLocationChipModel } from "../utils/locationChip";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const HOME_TEXT = {
@@ -164,6 +168,12 @@ export function HomePage() {
             dispatch({ type: "SET_AGENT_PROGRESS", payload: event.data });
             return;
           }
+          /* 조건 병합 직후에 온다 — 도구 조회·채점·답변 스트리밍보다 앞이라,
+             발화로 위치를 바꾸면 결과를 기다리지 않고 상단 칩이 먼저 바뀐다. */
+          if (event.type === "location_resolved") {
+            syncLocationSettingsFromConditions(event.data);
+            return;
+          }
           if (event.type === "result") {
             receivedStreamResult = true;
             dispatch({
@@ -195,6 +205,11 @@ export function HomePage() {
           if (event.type === "error") throw new ApiError(event.data);
 
           const response = event.data.response;
+          /* 위 location_resolved의 백스톱이다. SSE를 못 쓰는 환경은 단발 API로
+             낮춰 done만 받으므로(streamChat의 catch), 그 경로에는 위 이벤트가
+             아예 없다. 값이 같으면 헬퍼가 아무것도 쓰지 않아 두 번 불러도
+             무해하다. 두 dispatch 분기 앞에 두어 스트리밍이든 아니든 지나간다. */
+          syncLocationSettingsFromConditions(response.state.user_conditions);
           const elapsedMsClient = performance.now() - startedAt;
           if (receivedStreamResult || receivedStreamMessage) {
             dispatch({
@@ -263,24 +278,23 @@ export function HomePage() {
    * 아직 해석된 지명이 없으면(첫 진입) 실제 서비스 지원 지역인 "종로구"를
    * 기본값으로 쓴다 — 헤더에 위치 버튼이 항상 보여야 한다.
    */
-  /* 위치 설정 화면의 칩과 같은 사다리를 본다 — 두 화면이 같은 사실을 말해야 한다.
-     검색 기준을 비워두면 출발지가, 그것도 없으면 기기 좌표가 검색 중심이 된다
-     (agent_context/service.py).
+  /* 위치 설정 화면과 같은 것을 보여준다 — 두 화면이 같은 사실을 말해야 한다.
+     출발지와 검색 기준이 다르면 둘 다 보인다. 하나만 고르면 카드의 이동시간을
+     어디서 쟀는지가 화면에서 사라진다(D-067, utils/locationChip 주석).
 
      설정이 아무것도 없을 때만 직전 턴이 해석한 위치로 떨어진다 — 대화가 이미
      있으면 서버가 그 위치를 들고 있어서 다음 발화도 거기서 찾는다.
 
      예전 기본값이던 "종로구"는 뺐다. 지원 지역이 종로구뿐이던 시절의 값이라
      지금은 사실이 아니고, 아무것도 모를 때 실제로 쓰이는 것은 기기 좌표다. */
-  const locationLabel =
-    locationSettings.center ??
-    locationSettings.origin ??
-    state.interpreted_conditions?.location_query ??
-    "현재 위치";
+  const locationChip = buildLocationChipModel(
+    locationSettings,
+    state.interpreted_conditions?.location_query ?? null,
+  );
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
-      <AppHeader locationLabel={locationLabel} />
+      <AppHeader location={locationChip} />
 
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-4 pt-2">
         <div className="flex items-center justify-end">

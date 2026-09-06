@@ -17,6 +17,7 @@ from app.domain.models import (
     PlaceMoodMatch,
     PlaceMoodProfile,
     PlacePhoto,
+    PublicToilet,
     StoredMunicipalParkingLot,
     StoredPlaceDetail,
     StoredPlaceLocation,
@@ -41,6 +42,16 @@ class MunicipalParkingCatalogRepository(Protocol):
     ) -> dict[str, StoredMunicipalParkingLot]: ...
 
     async def upsert_lots(self, lots: Sequence[StoredMunicipalParkingLot]) -> None: ...
+
+
+class PublicToiletRepository(Protocol):
+    """적재된 공중화장실 위치를 좌표로 찾는 읽기/동기화 계약."""
+
+    async def find_near(
+        self, latitude: float, longitude: float, *, radius_km: float, limit: int
+    ) -> tuple[PublicToilet, ...]: ...
+
+    async def upsert_toilets(self, toilets: Sequence[PublicToilet]) -> None: ...
 
 
 class ConcentrationMappingRepository(Protocol):

@@ -18,11 +18,13 @@
  */
 
 import {
+  ArrowRight,
   Check,
   Crosshair,
   Info,
   MapPin,
   MapPinCheck,
+  MapPinned,
   Navigation,
   Search,
   Star,
@@ -365,14 +367,21 @@ export function LocationPage() {
                 : "현재 위치 사용"}
           </span>
         </button>
-        {/* 지금 정해져 있는 두 값. 서로 다른 질문의 답이라 한 줄에 뭉치지 않고
-            나란히 둔다 — 무엇이 출발이고 무엇이 검색인지 문구로 드러낸다. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="flex items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+        {/* 지금 정해져 있는 두 값. 서로 다른 질문의 답이라 칩을 따로 두되, 사이에
+            화살표를 넣어 "여기서 출발해 저기 주변을 찾는다"는 관계를 보인다.
+
+            줄바꿈하지 않는다 — 칩이 아래로 내려가면 화살표만 줄 끝에 남는다. 대신
+            칩은 제 내용만큼만 차지하고, 한 줄에 정말 안 들어갈 때만 이름을 자른다.
+            반씩 나눠 가지면 "현재 위치에서 출발"처럼 짧은 쪽이 남는 자리를 붙들고
+            있어서, 긴 이름 쪽이 자리가 있는데도 먼저 잘린다. */}
+        <div className="flex items-center gap-2">
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
             <Navigation size={13} className="shrink-0 text-brand" aria-hidden />
-            {isEn
-              ? `From ${locationSettings.origin ?? "current location"}`
-              : `${locationSettings.origin ?? "현재 위치"}에서 출발`}
+            <span className="truncate">
+              {isEn
+                ? `From ${locationSettings.origin ?? "current location"}`
+                : `${locationSettings.origin ?? "현재 위치"}에서 출발`}
+            </span>
             {locationSettings.origin && (
               <button
                 type="button"
@@ -384,14 +393,19 @@ export function LocationPage() {
               </button>
             )}
           </span>
-          <span className="flex items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
-            <MapPin size={13} className="shrink-0 text-brand" aria-hidden />
+          <ArrowRight size={14} aria-hidden className="shrink-0 text-muted" />
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+            {/* 핀이 아니라 바닥 원이 깔린 핀이다 — 이 칩은 "그 지점"이 아니라
+                "그 자리 주변"을 뒤진다는 뜻이라서다. */}
+            <MapPinned size={13} className="shrink-0 text-brand" aria-hidden />
             {/* 비어 있다고 기준이 없는 게 아니다 — 그때는 출발지가, 출발지도 없으면
                 기기 좌표가 검색 기준이 된다(agent_context/service.py). 그래서 실제로
                 어디를 뒤지는지를 그대로 쓴다. */}
-            {isEn
-              ? `Around ${locationSettings.center ?? locationSettings.origin ?? "current location"}`
-              : `${locationSettings.center ?? locationSettings.origin ?? "현재 위치"} 주변`}
+            <span className="truncate">
+              {isEn
+                ? `Search around ${locationSettings.center ?? locationSettings.origin ?? "current location"}`
+                : `${locationSettings.center ?? locationSettings.origin ?? "현재 위치"} 주변에서 검색`}
+            </span>
             {locationSettings.center && (
               <button
                 type="button"

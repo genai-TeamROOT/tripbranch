@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -30,6 +31,8 @@ from app.providers.tour_category_registry import (
 from app.repositories.protocols import PlaceDetailsReadRepository
 from app.tools.contracts import ToolError, ToolStatus
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class RecommendationCard:
@@ -42,6 +45,7 @@ class RecommendationCard:
     # thumbnail_url(firstimage2)이 없으면 first_image_url(firstimage)로 대체한다.
     # 둘 다 없는 장소가 실측 844건 중 169건(20%)이라 None을 정상 값으로 다룬다.
     thumbnail_url: str | None
+    # 이 주소가 죽었을 때 쓸 대안은 fallback_thumbnail_url에 있다(아래).
     # TourAPI 신분류 중분류명(예: 한식, 역사유적지, 전시시설).
     category_label: str | None
     parking_status: ParkingAvailability
@@ -51,6 +55,19 @@ class RecommendationCard:
     # 있던 값(StoredPlaceDetail)을 그대로 옮기는 것뿐이라 추가 DB 호출은 없다.
     latitude: float | None = None
     longitude: float | None = None
+    # thumbnail_url이 죽었을 때 대신 그릴 주소(firstimage). None이면 대안이 없다.
+    #
+    # **두 컬럼은 한쪽만 채워지지 않는다** — places 8,067건 중 thumbnail_url만 null인
+    # 행이 0건이고, 둘 다 있거나(7,223) 둘 다 없다(844). 그래서 thumbnail_url의 `or`
+    # 폴백은 null만 보는 한 발동한 적이 없다. 정작 실패는 다른 데서 온다: 주소는 남아
+    # 있는데 관광공사 서버에서 파일이 사라진다. 아현시장(2751432)은 firstimage2가
+    # 404인데 firstimage는 200이다(2026-09-05 실측, 무작위 60곳 중 1곳도 같은 상태라
+    # 2% 안팎으로 보인다).
+    #
+    # 여기서 미리 확인해 고르지 않는 이유는 비용이다. 추천 한 번에 카드가 5장이니 매
+    # 요청마다 외부 확인이 5~10건 붙고 그만큼 응답이 늦어진다 — 2%를 잡자고 100%를
+    # 느리게 만드는 거래다. 두 주소를 다 넘기고 실패한 카드에서만 프론트가 갈아탄다.
+    fallback_thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +104,17 @@ class RecommendationCardTool:
         try:
             rows = await self._repository.get_active_place_details(ordered_ids)
         except AppError as exc:
+            # 부르는 쪽은 이 실패를 상태로만 받고 추천은 그대로 내보낸다. 화면에는
+            # 그 턴의 썸네일이 통째로 빠진 채 자리표시 칩만 남는데, 여기서 남기지
+            # 않으면 "이 장소들에 사진이 없다"와 구분할 수 없다 — 같은 장소가
+            # 어떤 요청에는 사진이 나오고 어떤 요청에는 안 나오는 이유가 이것이다.
+            logger.warning(
+                "추천 카드 조회 실패 — 이 턴의 썸네일이 전부 빠진다 "
+                "(요청=%d건, code=%s, retryable=%s)",
+                len(ordered_ids),
+                exc.code,
+                exc.retryable,
+            )
             return RecommendationCardResult(
                 status=ToolStatus.UNAVAILABLE,
                 cards=(),
@@ -107,6 +135,16 @@ class RecommendationCardTool:
         missing = tuple(
             content_id for content_id in ordered_ids if content_id not in rows
         )
+        if missing:
+            # 위 실패와 다른 사건이다. 조회는 됐는데 그 행이 없는 것이라
+            # 비활성이거나 아직 동기화되지 않은 장소다. 어느 id인지 남겨야
+            # 데이터를 채울 대상을 고를 수 있다.
+            logger.info(
+                "추천 카드 일부 없음 — 사진 없이 나간다 (요청=%d건, 없음=%d건, id=%s)",
+                len(ordered_ids),
+                len(missing),
+                ",".join(missing[:10]),
+            )
         return RecommendationCardResult(
             status=_status(requested=len(ordered_ids), found=len(cards)),
             cards=cards,
@@ -115,10 +153,19 @@ class RecommendationCardTool:
 
     def _to_card(self, row: StoredPlaceDetail) -> RecommendationCard:
         parking = normalize_parking(row.parking_info_raw)
+        thumbnail_url = row.thumbnail_url or row.first_image_url
+        # 이미 primary로 나간 주소는 대안이 아니다. `row.thumbnail_url`이 아니라
+        # **정해진 primary와** 견줘야 한다 — thumbnail_url이 비어 first_image_url이
+        # primary로 올라온 장소에서 둘이 갈리고, 그대로 두면 같은 404를 두 번 부른다.
+        # 두 컬럼이 같은 파일을 가리키는 장소도 있다(실측).
+        fallback_thumbnail_url = (
+            row.first_image_url if row.first_image_url != thumbnail_url else None
+        )
         return RecommendationCard(
             content_id=row.content_id,
             name=row.title,
-            thumbnail_url=row.thumbnail_url or row.first_image_url,
+            thumbnail_url=thumbnail_url,
+            fallback_thumbnail_url=fallback_thumbnail_url,
             category_label=self._category_label(row),
             parking_status=parking.availability,
             parking_note=parking.note,

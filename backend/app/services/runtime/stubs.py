@@ -17,6 +17,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
+from app.agent_context.info_schemas import RealtimeInfoDetailItem
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -48,6 +49,7 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
 )
 from app.state.schema import now_kst
@@ -322,6 +324,9 @@ class FakeToolProvider:
         반환한다 — C처럼 근접치 fallback을 흉내 내지는 않는다(그 오케스트레이션
         자체가 C 내부 책임이라 A 쪽 Fake에서 재현할 필요가 없다).
         """
+        # 공중화장실은 지명 없이 기기 위치로도 답하므로 되묻기보다 먼저 본다.
+        if request.question_type == "public_toilet":
+            return self._fake_public_toilet_info(request)
         if not request.place_name:
             return InfoContextResponse(
                 request_id=request.request_id,
@@ -368,6 +373,59 @@ class FakeToolProvider:
                 concentration_rate=58.0,
                 concentration_level="slightly_crowded",
                 concentration_label="다소 혼잡",
+            ),
+        )
+
+    def _fake_public_toilet_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        """인사동 주변 두 곳을 고정으로 돌린다.
+
+        좌표를 채워 프론트 카드의 도보 길찾기 경로까지 fake 모드에서 확인할 수
+        있게 한다 — 좌표가 비면 카드가 주소 검색으로 폴백해 다른 경로를 타게 된다.
+        """
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="public_toilet",
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name or "현재 위치",
+                fields={
+                    "인사동마루 신관 개방화장실": "도보 50m · 지금 이용 가능 · 24시간",
+                    "쌈지길(지하1층)": "도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+                },
+                detail_items=[
+                    RealtimeInfoDetailItem(
+                        title="인사동마루 신관 개방화장실",
+                        subtitle="도보 50m · 지금 이용 가능 · 24시간",
+                        details={
+                            "거리": "도보 50m",
+                            "개방 여부": "지금 이용 가능",
+                            "개방시간": "24시간",
+                            "주소": "서울특별시 종로구 인사동길 35-4",
+                            "유형": "민간개방",
+                            "화장실": "남자, 여자",
+                            "장애인화장실": "남자, 여자",
+                        },
+                        latitude=37.57432,
+                        longitude=126.98563,
+                    ),
+                    RealtimeInfoDetailItem(
+                        title="쌈지길(지하1층)",
+                        subtitle="도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+                        details={
+                            "거리": "도보 60m",
+                            "개방 여부": "지금은 닫혀 있음",
+                            "개방시간": "10:30~20:30",
+                            "주소": "서울특별시 종로구 인사동길 44",
+                            "유형": "민간개방",
+                        },
+                        latitude=37.57411,
+                        longitude=126.98527,
+                    ),
+                ],
+                source_url="https://data.seoul.go.kr/dataList/OA-22586/S/1/datasetView.do",
             ),
         )
 

@@ -99,6 +99,22 @@ function streamResponse(
       data: { stage: "interpreting", message: "조건을 파악하고 있어요.", elapsed_ms: 1 },
     },
   ];
+  /* 실제 서버는 조건 병합 직후, 도구 조회·채점·답변 스트리밍보다 앞서 이번 턴이
+     쓸 위치를 알려준다(docs/design/agent-response-streaming.md 4.3절). 여기서
+     빠뜨리면 화면이 그 이벤트를 안 받는 상태로만 검증된다. */
+  const merged = (
+    response.state as {
+      user_conditions?: { current_location: string | null; search_center: string | null } | null;
+    } | null
+  )?.user_conditions;
+  events.push({
+    event: "location_resolved",
+    data: {
+      current_location: merged?.current_location ?? null,
+      search_center: merged?.search_center ?? null,
+      elapsed_ms: 2,
+    },
+  });
   if (response.recommendations) {
     events.push(
       {
@@ -272,7 +288,7 @@ test("falls back to the current location instead of the old 종로구 default", 
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 현재 위치)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 현재 위치 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -283,7 +299,7 @@ test("shows the picked origin in the header pill when no center is set", async (
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 혜화역)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (혜화역에서 출발, 혜화역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -294,7 +310,7 @@ test("shows the picked search center in the header location pill", async () => {
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 안국역)" }),
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 안국역 주변에서 검색)" }),
   ).toBeInTheDocument();
 });
 
@@ -323,6 +339,171 @@ test("sends the search center picked on the location screen with the chat reques
   const chatCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/chat"));
   const requestBody = JSON.parse(String(chatCall?.[1]?.body));
   expect(requestBody.selected_search_center).toBe("안국역");
+});
+
+/*
+ * 발화가 정한 위치를 응답에서 되돌려 받는 흐름. 배선이 한쪽뿐이던 시절에는 위치
+ * 설정 화면에서 고른 값만 발화에 실려 나가고, 발화가 그 위치를 바꿔도 저장소는
+ * 예전 값을 계속 들고 있었다.
+ */
+function chatResponseWithConditions(currentLocation: string | null, searchCenter: string | null) {
+  return {
+    ...chatResponse(),
+    state: {
+      session_id: "sess_test",
+      run_id: "run_test",
+      user_conditions: { current_location: currentLocation, search_center: searchCenter },
+    },
+  };
+}
+
+/* 채팅 응답만 갈아끼우고 사이드바 부수 요청(/sessions·/schedules)은 원래대로 둔다. */
+function mockFetchWithChatResponse(response: ReturnType<typeof chatResponseWithConditions>) {
+  const base = mockFetch();
+  return vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/chat/stream")) return streamResponse(response);
+    return base(input);
+  });
+}
+
+/*
+ * 이벤트를 두 덩어리로 나눠 흘린다. location_resolved까지만 보낸 채 멈춰 세워야
+ * "카드가 뜨기 전에 칩이 이미 바뀌었는가"를 물을 수 있다 — 한 번에 다 보내면
+ * 두 시점이 같은 틱에 붙어 순서가 검증되지 않는다.
+ */
+function gatedStreamResponse(response: ReturnType<typeof chatResponseWithConditions>) {
+  const raw = streamResponse(response);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const text = await raw.text();
+      const marker = text.indexOf("event: result");
+      controller.enqueue(new TextEncoder().encode(text.slice(0, marker)));
+      await gate;
+      controller.enqueue(new TextEncoder().encode(text.slice(marker)));
+      controller.close();
+    },
+  });
+  return {
+    response: new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+    release,
+  };
+}
+
+test("moves the header pill before the recommendation cards arrive", async () => {
+  /* 위치는 조건 병합에서 확정되고 그 뒤 도구 조회·채점이 남는다 — 그 구간이 턴에서
+     제일 길다. 결과를 기다렸다가 바꾸면, 사용자는 "광화문역 근처"라고 말해 놓고
+     한참 동안 서대문역 기준으로 찾고 있는 줄 안다. */
+  setLocationCenter("서대문역");
+  const gated = gatedStreamResponse(chatResponseWithConditions("안국역", "광화문역"));
+  const base = mockFetch();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/chat/stream")) return gated.response;
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "지금 안국역인데 광화문역 근처 알려줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  /* 아직 result를 안 보냈다 — 칩만 먼저 바뀌어 있어야 한다.
+
+     findBy가 아니라 waitFor로 매번 다시 조회한다. 이 턴은 홈에서 시작해 채팅
+     화면으로 넘어가는 중이라, findBy가 홈의 칩을 붙잡은 직후 그 노드가 화면
+     교체로 떨어져 나가면 "찾았는데 document에 없다"로 깨진다. */
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
+    ).toBeInTheDocument(),
+  );
+  expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
+
+  gated.release();
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+});
+
+test("shows the location the utterance picked in the header pill", async () => {
+  /* "지금 안국역인데 광화문역 근처 알려줘" — 발화가 두 위치를 다 말하면 발화가
+     이긴다(백엔드 _apply_selected_locations). 그 결과가 화면에 안 돌아오면
+     사용자는 아직 서대문역을 기준으로 찾은 줄 안다. */
+  setLocationOrigin("서대문역");
+  setLocationCenter("서대문역");
+  vi.stubGlobal("fetch", mockFetchWithChatResponse(chatResponseWithConditions("안국역", "광화문역")));
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "지금 안국역인데 광화문역 근처 알려줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
+  ).toBeInTheDocument();
+});
+
+test("sends the location the utterance picked on the next turn", async () => {
+  /* 표시보다 이쪽이 크다. 저장소가 서대문역을 들고 있으면 다음 발화에 그 값이
+     selected_search_center로 다시 실려 나가고, 백엔드는 조건 병합보다 앞에서
+     그것을 채워 세션의 광화문역을 덮어쓴다 — 대화로 옮긴 위치가 원위치된다. */
+  setLocationCenter("서대문역");
+  vi.stubGlobal("fetch", mockFetchWithChatResponse(chatResponseWithConditions(null, "광화문역")));
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "광화문역 근처 알려줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "다른 장소 보기" }));
+
+  await waitFor(() => expect(chatCalls()).toHaveLength(2));
+  const requestBody = JSON.parse(String(chatCalls()[1][1]?.body));
+  expect(requestBody.selected_search_center).toBe("광화문역");
+});
+
+test("keeps the picked location when the server reports no location at all", async () => {
+  /* 서버 조건이 비어 오는 대표적인 경우는 세션에 아직 RECOMMEND 조건이 없을 때다
+     — 위치를 정해 두고 정보 질문부터 던지면 백엔드 _apply_selected_locations()가
+     RECOMMEND에만 걸리므로 user_conditions가 빈 채로 온다. 그때 지우면 질문 하나에
+     사용자가 손으로 고른 위치가 사라진다.
+
+     null은 "지우라"가 아니라 "서버도 모른다"는 뜻이라는 것이 이 테스트의 전부라,
+     응답 본문 자체는 기본 픽스처를 그대로 쓴다. */
+  setLocationCenter("서대문역");
+  vi.stubGlobal("fetch", mockFetchWithChatResponse(chatResponseWithConditions(null, null)));
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "경복궁 운영시간 알려줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 서대문역 주변에서 검색)" }),
+  ).toBeInTheDocument();
 });
 
 test("asks whether to refresh a location older than 30 minutes before a follow-up", async () => {
@@ -552,6 +733,82 @@ test("requesting more places sends a follow-up chat turn with the session id", a
   // 제외 목록은 B가 단일 기준이라 프론트가 보내지 않는다.
   expect(requestBody.session_id).toBe("sess_test");
   expect(requestBody.user_input).toBe("다른 곳 보여줘");
+});
+
+test("지난 턴의 추천 버튼은 새 턴이 오면 사라지고 카드는 남는다", async () => {
+  /*
+   * 옛 버튼이 남아 있으면 그때 기준의 요청이 지금 맥락으로 나가 결과가 어긋난다.
+   * 그래서 버튼만 별도 메시지로 두고 새 발화에서 걷어낸다 — 카드와 취향 표는
+   * 그때 무엇을 받았는지 보여주는 기록이라 그대로 남긴다.
+   */
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "다른 장소 보기" })).toHaveLength(1);
+
+  await userEvent.click(screen.getByRole("button", { name: "다른 장소 보기" }));
+
+  // 카드는 두 턴 것이 모두 남는다.
+  await waitFor(() => expect(screen.getAllByText("테스트 박물관")).toHaveLength(2));
+  // 버튼은 방금 턴의 것 하나뿐이다.
+  expect(screen.getAllByRole("button", { name: "다른 장소 보기" })).toHaveLength(1);
+});
+
+test("지난 턴의 되묻기 선택지는 새 턴이 오면 사라지고 문구는 남는다", async () => {
+  /*
+   * 되묻기는 통째로 지우지 않는다 — 그 메시지가 그 턴의 답변이라, 지우면
+   * "질문 → (빈칸) → 사용자가 고른 답"이 되어 왜 그 답을 했는지 알 수 없다.
+   * 누를 수 있는 것만 없애고 문구는 기록으로 남긴다.
+   */
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  let chatTurn = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        chatTurn += 1;
+        // 첫 턴만 되묻는다. 선택지를 누르면 그것이 다음 발화가 되어 두 번째 턴이 된다.
+        if (chatTurn === 1) {
+          return streamResponse({
+            llm_output: {
+              ...interpretResponse,
+              recommend: null,
+              clarification: {
+                options: [
+                  { id: "indoor", label: "실내" },
+                  { id: "outdoor", label: "실외" },
+                ],
+              },
+            },
+            state: { session_id: "sess_test", run_id: "run_test" },
+            recommendations: null,
+            message: "실내와 실외 중 어디가 좋으세요?",
+          });
+        }
+        return streamResponse();
+      }
+      if (url.endsWith("/sessions")) return Response.json({ sessions: [] });
+      if (url.endsWith("/schedules")) return Response.json({ items: [] });
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("실내와 실외 중 어디가 좋으세요?")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "실내" }));
+
+  // 다음 턴이 도착하면 선택지는 사라진다.
+  await waitFor(() => expect(screen.queryByRole("button", { name: "실외" })).not.toBeInTheDocument());
+  // 무엇을 물었는지는 기록으로 남는다.
+  expect(screen.getByText("실내와 실외 중 어디가 좋으세요?")).toBeInTheDocument();
 });
 
 test("clarification turn hints a fuller phrasing in the composer placeholder", async () => {

@@ -560,6 +560,11 @@ class TraceRecord(BaseModel):
 
     step/prompt_version/scoring_version/variant_id/error_type은 호출자(A/C/D)가
     해석한 값을 그대로 저장하며 검증하지 않는다 — B는 값의 의미를 판단하지 않는다.
+
+    metrics는 그 단계의 도메인 지표다(TP-242). 같은 경계 원칙을 따라 키와 값을
+    검증하지 않는다 — 무엇을 셀지는 그 기능을 아는 쪽이 정한다. 지표를 안 싣는
+    단계는 None으로 남는다. **사용자 텍스트는 담지 않는다** — 장소 이름·발화가
+    없다는 것이 trace_records를 대화 삭제 때 안 지우는 근거다.
     """
 
     session_id: str
@@ -572,6 +577,7 @@ class TraceRecord(BaseModel):
     latency_ms: int | None = None
     token_usage: int | None = None
     error_type: str | None = None
+    metrics: dict[str, Any] | None = None
     recorded_at: datetime = Field(default_factory=now_kst)
 
 

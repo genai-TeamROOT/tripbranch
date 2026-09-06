@@ -44,6 +44,7 @@ InfoQuestionType = Literal[
     "realtime_bus",
     "realtime_event",
     "realtime_traffic",
+    "public_toilet",
 ]
 
 
@@ -59,6 +60,10 @@ class InfoContextRequest(BaseModel):
     # 사용자 원문 질문. C는 판정에 쓰지 않고 응답 조립 참고용으로 실어 보낸다.
     specific_question: str | None = None
     visit_time: str | None = None
+    # 기기 GPS 좌표. INFO의 다른 유형은 "사용자가 말한 장소"를 지오코딩해 쓰지만,
+    # "근처에 화장실 있어?"는 지명이 아예 없을 수 있어 현재 위치가 유일한 기준점이
+    # 된다. 그래서 이 유형만 좌표를 함께 받는다 — 없으면 기존처럼 지명을 되묻는다.
+    origin_coordinates: Coordinates | None = None
 
     @field_validator("request_id")
     @classmethod
@@ -127,6 +132,51 @@ class RealtimeInfoDetailItem(BaseModel):
     details: dict[str, str] = Field(default_factory=dict)
     thumbnail_url: str | None = None
     external_url: str | None = None
+    # 항목별 길찾기용 좌표. 공중화장실처럼 목록의 각 항목이 곧 목적지인 카드에서
+    # 채운다. 좌표가 없는 항목은 프론트가 주소 검색으로 폴백한다.
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class PopulationAgeShareInfo(BaseModel):
+    """실시간 인구의 연령대별 비율 한 건. 순서는 어린 연령대부터다."""
+
+    label: str
+    rate: float = Field(ge=0)
+
+
+class CommercialPaymentCategoryInfo(BaseModel):
+    """업종 한 건의 최근 10분 결제 실적. 금액 단위는 원이고 구간으로만 온다."""
+
+    label: str
+    activity_level: str | None = None
+    payment_count: int | None = Field(default=None, ge=0)
+    payment_amount_min: int | None = Field(default=None, ge=0)
+    payment_amount_max: int | None = Field(default=None, ge=0)
+
+
+class SeoulRealtimeSummaryInfo(BaseModel):
+    """서울시 실시간 도시데이터 한 응답에서 뽑은 인구·상권 공통 요약.
+
+    ``concentration``과 ``realtime_commercial``은 둘 다 같은 ``citydata`` 응답
+    하나를 받아오므로, 어느 쪽 질문이든 같은 요약을 채울 수 있다 — 추가 호출이
+    없다는 게 이 모델을 두 결과에 함께 매다는 이유다.
+
+    상권 구획(``commercial_*``·``payment_*``)은 서울시가 인구 121곳 중 82곳에만
+    제공한다(D-084). 경복궁처럼 빠지는 지역에서는 인구 값만 차고 상권 값은 전부
+    ``None``이므로, 소비 측은 값이 없는 구획을 통째로 감춘다.
+    """
+
+    population_min: int | None = Field(default=None, ge=0)
+    population_max: int | None = Field(default=None, ge=0)
+    age_shares: list[PopulationAgeShareInfo] = Field(default_factory=list)
+    commercial_level: str | None = None
+    commercial_observed_at: str | None = None
+    payment_count: int | None = Field(default=None, ge=0)
+    payment_amount_min: int | None = Field(default=None, ge=0)
+    payment_amount_max: int | None = Field(default=None, ge=0)
+    # 결제 금액이 큰 순서로 최대 3건. 서울시 원문 업종을 거르지 않고 그대로 싣는다.
+    top_payment_categories: list[CommercialPaymentCategoryInfo] = Field(default_factory=list)
 
 
 class RealtimeCommercialInfoResult(BaseModel):
@@ -152,6 +202,7 @@ class RealtimeCommercialInfoResult(BaseModel):
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
     detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
     source_url: str | None = None
+    realtime_summary: SeoulRealtimeSummaryInfo | None = None
     error: ContextError | None = None
 
 
@@ -175,6 +226,7 @@ class RealtimePopulationInfoResult(BaseModel):
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
     source_url: str | None = None
     map_url: str | None = None
+    realtime_summary: SeoulRealtimeSummaryInfo | None = None
     error: ContextError | None = None
     # 우리 121곳 목록엔 없지만 서울시 API는 지원하는 지역을 찾았을 때만 채워진다
     # (TP-141/D-084). 응답 판정(area_name 등)에는 영향을 주지 않는다 — 감사
@@ -193,6 +245,7 @@ class RealtimeCityInfoResult(BaseModel):
         "realtime_bus",
         "realtime_event",
         "realtime_traffic",
+        "public_toilet",
     ]
     requested_place_name: str | None = None
     resolved_place_name: str | None = None
@@ -271,6 +324,34 @@ class PlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 무장애 여행 정보(D-077). 상세 카드의 별도 구획으로 그린다.
+    #
+    # 값이 없으면 None이고, 소비 측은 None인 항목을 숨긴다 — 이 데이터는 있으면
+    # 적고 없으면 비우는 식이라 빈 값을 "없음"으로 그리면 안 된다. 부정 표현은
+    # 장애인 화장실 4건·수유실 0건뿐이다(2026-09-04 서울 25개 구 실측).
+    #
+    # 아홉 항목뿐인 이유는 원문 15개 중 여섯을 뺐기 때문이다. 접근로·주출입구는
+    # 단차 서술이라 카드에서 다루지 않기로 했고(답변 경로의 wheelchair_access는
+    # 그대로 쓴다), 대중교통 접근은 카드의 이동수단 정보와 겹치며, 점자블록·점자
+    # 안내물·음성 안내는 visual_guide 한 줄로 합쳤다.
+    #
+    # 채움률(무장애 정보가 있는 1,229곳 기준): 장애인 화장실 48% · 장애인 주차
+    # 48% · 승강기 35% · 시각 안내 24% · 휠체어 대여 15% · 수유·기저귀 15% ·
+    # 의자식 좌석 12% · 유모차 대여 11% · 보조견 9%. 아홉 중 하나라도 있는 곳은
+    # 882곳으로, 전체 8,060곳으로 보면 11%다.
+    accessible_restroom: str | None = None
+    accessible_parking: str | None = None
+    elevator: str | None = None
+    visual_guide: str | None = None
+    wheelchair_rental: str | None = None
+    # 수유실과 기저귀교환대를 합친 값. 기저귀 쪽은 원문이 영유아·가족 편의
+    # 필드에 들어 있어 수유실만 보면 48곳에서 사라진다.
+    nursing_room: str | None = None
+    seating: str | None = None
+    # 채워지면 baby_carriage가 비고, 비면 baby_carriage가 남는다. 두 필드가 같은
+    # 사실을 말하는데 62%에서 어긋나 함께 낼 수 없다(resolve_stroller_rental).
+    stroller_rental: str | None = None
+    guide_dog: str | None = None
 
 
 class PlaceInfoResult(BaseModel):

@@ -303,3 +303,156 @@ async def test_사진_조회가_실패해도_상세_정보는_나온다() -> Non
     assert result.fields["parking"] == "가능 (240대)"
     assert result.place_card is not None
     assert result.place_card.photos == []
+
+
+class TestCardBarrierFree:
+    """상세 카드의 무장애 구획(D-077).
+
+    카드는 답변(fields)과 목적이 달라 항목 구성도 다르다 — 접근로·주출입구는
+    단차 서술이라 카드에서 빼고, 흩어져 있는 값 셋(시각 안내·수유/기저귀·좌석)은
+    한 줄로 합친다. 답변 경로의 wheelchair_access는 그대로 둔다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_아홉_항목을_채운다(self) -> None:
+        service = _service(
+            _details(
+                accessible_restroom_raw="장애인 화장실 있음(1층)",
+                accessible_parking_raw="장애인 주차구역 2면",
+                elevator_raw="엘리베이터 있음",
+                braille_block_raw="점자블록 있음",
+                wheelchair_rental_raw="대여가능(2대, 안내데스크)",
+                nursing_room_raw="수유실 있음(2층)",
+                disability_etc_raw="의자식 테이블 있음",
+                stroller_rental_raw="대여가능(10대)",
+                guide_dog_raw="보조견 동반 가능함",
+            )
+        )
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.accessible_restroom == "장애인 화장실 있음(1층)"
+        assert card.accessible_parking == "장애인 주차구역 2면"
+        assert card.elevator == "엘리베이터 있음"
+        assert card.visual_guide == "점자블록 있음"
+        assert card.wheelchair_rental == "대여가능(2대, 안내데스크)"
+        assert card.nursing_room == "수유실 있음(2층)"
+        assert card.seating == "의자식 테이블 있음"
+        assert card.stroller_rental == "대여가능(10대)"
+        assert card.guide_dog == "보조견 동반 가능함"
+
+    @pytest.mark.asyncio
+    async def test_무장애_정보가_없으면_전부_None이다(self) -> None:
+        """전체 8,060곳 중 무장애 원문이 있는 곳은 1,229곳(15%)뿐이다.
+
+        빈 값을 "없음"으로 채우면 안 된다 — 이 데이터는 있으면 적고 없으면
+        비우는 식이라, 없다고 답한 값은 장애인 화장실 4건뿐이다.
+        """
+        service = _service(_details(operating_hours="09:00~18:00"))
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.accessible_restroom is None
+        assert card.elevator is None
+        assert card.visual_guide is None
+        assert card.nursing_room is None
+        assert card.seating is None
+        assert card.guide_dog is None
+
+    @pytest.mark.asyncio
+    async def test_시각_안내_셋을_한_줄로_잇는다(self) -> None:
+        """개별 채움률이 6~17%라 따로 두면 세 줄 중 두 줄이 늘 빈다."""
+        service = _service(
+            _details(
+                braille_block_raw="점자블록 있음",
+                braille_promotion_raw="점자 안내책자 있음",
+                audio_guide_raw="음성안내기 대여 가능",
+            )
+        )
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.visual_guide == "점자블록 있음 / 점자 안내책자 있음 / 음성안내기 대여 가능"
+
+    @pytest.mark.asyncio
+    async def test_기저귀교환대는_수유실_줄에_함께_낸다(self) -> None:
+        """기저귀 원문이 수유실이 아니라 영유아·가족 편의 필드에 들어 있다.
+
+        70건이 이 필드에서만 기저귀를 말하고 그중 48건은 수유실 값이 없다 —
+        수유실만 보면 그 48곳에서 기저귀 갈 곳이 사라진다.
+        """
+        service = _service(_details(infant_family_etc_raw="기저귀교환대 있음"))
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.nursing_room == "기저귀교환대 있음"
+
+    @pytest.mark.asyncio
+    async def test_기저귀를_말하지_않는_영유아_값은_빼고_수유실만_낸다(self) -> None:
+        """"수유·기저귀" 줄에 유아용 식기가 붙으면 라벨과 값이 어긋난다."""
+        service = _service(
+            _details(
+                nursing_room_raw="수유실 있음(2층)",
+                infant_family_etc_raw="유아용식기 있음",
+            )
+        )
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.nursing_room == "수유실 있음(2층)"
+
+    @pytest.mark.asyncio
+    async def test_좌석을_말하지_않는_기타_값은_카드에_싣지_않는다(self) -> None:
+        """장애인 편의 기타에는 단차 서술이 섞여 있다(231건 중 19건).
+
+        통째로 실으면 카드에서 빼기로 한 축이 되돌아온다.
+        """
+        service = _service(
+            _details(disability_etc_raw="공연장까지 이동하는 경로에 2~3단 정도의 계단이 있음")
+        )
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.seating is None
+
+    @pytest.mark.asyncio
+    async def test_유모차는_무장애_값이_기존_값을_대체한다(self) -> None:
+        """둘 다 있는 34곳 중 21곳(62%)에서 두 원문이 서로 반대다.
+
+        서울공예박물관은 detailIntro2가 "없음", 무장애가 "대여가능(10대)"이라
+        함께 내면 카드에 모순된 두 줄이 나란히 보인다.
+        """
+        service = _service(
+            _details(baby_carriage="없음", stroller_rental_raw="대여가능(10대)")
+        )
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.stroller_rental == "대여가능(10대)"
+        assert card.baby_carriage is None
+
+    @pytest.mark.asyncio
+    async def test_무장애_값이_없으면_기존_유모차_값이_남는다(self) -> None:
+        """무장애 정보가 없는 장소가 대부분이라 이 경로가 기본이다."""
+        service = _service(_details(baby_carriage="가능"))
+
+        response = await service.fetch_info_context(_request("general_info"))
+
+        card = _result(response).place_card
+        assert card is not None
+        assert card.baby_carriage == "가능"
+        assert card.stroller_rental is None
