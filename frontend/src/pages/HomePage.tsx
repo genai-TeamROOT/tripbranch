@@ -359,22 +359,20 @@ export function HomePage() {
 
         {/*
          * 유리 오브. 남는 세로 공간을 통째로 갖는다 — 화면이 길수록 여백이
-         * 늘어나 공기감이 생기고, 짧으면 min-h 까지만 줄어든다.
+         * 늘어나 공기감이 생기고, 낮으면 이미지 자체가 작아진다(.tb-orb__img).
          *
-         * 장식이라 aria-hidden 이다. 누르는 기능은 없다.
+         * 장식이라 aria-hidden 이다. 누르는 기능도 움직임도 없다.
          */}
         <div className="flex flex-1 items-center justify-center py-3">
-          <div className="tb-orb" aria-hidden>
-            <span className="tb-orb__glow" />
-            <img
-              src="/glass-object.webp"
-              alt=""
-              width={148}
-              height={146}
-              decoding="async"
-              className="tb-orb__img"
-            />
-          </div>
+          <img
+            src="/glass-object.webp"
+            alt=""
+            aria-hidden
+            width={148}
+            height={146}
+            decoding="async"
+            className="tb-orb__img"
+          />
         </div>
 
         {errorMessage && <ErrorBanner message={errorMessage} />}

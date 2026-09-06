@@ -376,46 +376,19 @@
 /*
  * 홈 히어로 유리 오브(pages/HomePage).
  *
- * 바탕 워시는 뺐다(2026-09-07 사용자 결정) — 오브 자체가 유리라 뒤에 색을 더
- * 깔면 둘이 겹쳐 탁해진다. 지금 화면에서 색이 있는 곳은 오브 뒤 번짐 하나뿐이다.
- */
-.tb-orb {
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-
-/*
- * 물체 뒤에 깔리는 브랜드색 번짐.
+ * **가만히 있는 그림 하나다**(2026-09-07 사용자 결정). 뒤에 깔던 브랜드색 번짐과
+ * 흔들리는 움직임을 뺐다 — 오브 자체가 유리라 뒤에 색을 더 깔면 둘이 겹쳐
+ * 탁해지고, 유리 구슬은 가만히 있을 때가 제일 유리로 보인다.
  *
- * **장식만이 아니다.** 거의 검은 물체를 옅은 파란 바탕에 그대로 놓으면 오려붙인
- * 것처럼 뜬다 — 이 빛이 물체와 바탕을 이어 준다. 그리고 오브가 PNG라 무늬가 이미
- * 구워져 있어서, "그라데이션이 퍼지는" 움직임을 낼 수 있는 곳이 여기뿐이다.
- * 매듭이 열린 형태라 이 빛이 고리 사이로 비쳐 보인다.
- */
-.tb-orb__glow {
-  position: absolute;
-  width: 214px;
-  height: 214px;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 38% 34%, rgba(169, 192, 242, 0.75), rgba(169, 192, 242, 0) 62%),
-    radial-gradient(circle at 68% 72%, rgba(251, 228, 222, 0.7), rgba(251, 228, 222, 0) 60%),
-    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 55%);
-  filter: blur(22px);
-  pointer-events: none;
-}
-
-/*
- * 화면이 낮으면 오브를 줄인다. 안 줄이면 헤드라인과 예시 질문 사이 칸을 뚫고
- * 나가 글자와 겹친다.
+ * 흰 바탕에 흰 구슬이지만 묻히지 않는다(순백과 다른 픽셀 74.3%, 평균 밝기
+ * 226.6/255, 2026-09-07 실측). 그림자만으로 바닥에 얹힌다.
  *
- * **`max-height: 100%` 로는 안 된다.** 부모 높이가 flex 로 정해져서 백분율이
- * 확정값으로 안 풀린다 — 칸이 96px 로 줄어도 이미지는 233px 그대로였다
- * (375×667, 2026-09-07 실측). 그래서 화면 높이를 직접 보고 확정값을 준다.
+ * 화면이 낮으면 줄인다. 안 줄이면 헤드라인과 예시 질문 사이 칸을 뚫고 나가
+ * 글자와 겹친다. **`max-height: 100%` 로는 안 된다** — 부모 높이가 flex 로
+ * 정해져서 백분율이 확정값으로 안 풀린다(칸이 96px 로 줄어도 이미지는 233px
+ * 그대로였다, 375×667 실측). 그래서 화면 높이를 직접 보고 확정값을 준다.
  */
 .tb-orb__img {
-  position: relative;
   display: block;
   width: 148px;
   height: auto;
@@ -426,58 +399,11 @@
   .tb-orb__img {
     width: 120px;
   }
-
-  .tb-orb__glow {
-    width: 174px;
-    height: 174px;
-  }
 }
 
 @media (max-height: 680px) {
   .tb-orb__img {
     width: 98px;
-  }
-
-  .tb-orb__glow {
-    width: 142px;
-    height: 142px;
-  }
-}
-
-/*
- * 움직임은 허용한 환경에서만 얹는다. 멈춰 있어도 그림으로 성립하므로
- * (tb-page-enter 와 달리) 기본값은 정지다.
- */
-@media (prefers-reduced-motion: no-preference) {
-  .tb-orb__glow {
-    animation: tb-orb-glow-drift 16s ease-in-out infinite;
-  }
-
-  .tb-orb__img {
-    animation: tb-orb-breathe 44s ease-in-out infinite;
-  }
-}
-
-@keyframes tb-orb-glow-drift {
-  0%,
-  100% {
-    transform: translate(0, 0) scale(1);
-    opacity: 0.9;
-  }
-  50% {
-    transform: translate(16px, -14px) scale(1.14);
-    opacity: 1;
-  }
-}
-
-/* 한 바퀴 돌리지 않는다. 매듭 형태라 돌면 장식이 아니라 로딩 스피너로 읽힌다. */
-@keyframes tb-orb-breathe {
-  0%,
-  100% {
-    transform: rotate(-4deg) scale(1);
-  }
-  50% {
-    transform: rotate(4deg) scale(1.05);
   }
 }
 
