@@ -1,15 +1,14 @@
 /*
  * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면을 옮긴 것이다.
  *   저장하면 **계정에 남고**(PUT /api/preferences) 이 기기에도 함께 남는다
- *   (state/preferenceSync.ts). 홈 화면이 그 값을 다시 보여준다 — 확인하러 이
- *   화면까지 들어오지 않아도 되게.
+ *   (state/preferenceSync.ts). 홈 화면에는 보이지 않는다(2026-09-07) — 홈의
+ *   취향 칩 줄을 지운 뒤로는 확인하려면 이 화면에 다시 들어와야 한다.
  * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
  *   SHEET_PATH_PATTERNS에 /preferences가 없다).
  *
- * **저장해도 추천 순위는 아직 달라지지 않는다.** 고른 값을 추천 요청에 싣는
- * 경로는 순위가 바뀌는 변경이라 실측한 뒤에 넣기로 했다. 그래서 부제도 Figma의
- * "상황별 추천에 반영돼요"를 그대로 쓰지 않았다 — 안 되는 일을 된다고 말하는
- * 문구가 된다.
+ * **저장하면 추천 순위에 반영된다**(SCORING_VERSION 1.5.0 취향 RAG 질의
+ * 보강). 부제도 그에 맞춰 고쳤다 — 예전에는 "반영은 아직 준비 중"이라고
+ * 적었는데, 파이프라인이 이미 반영하므로 그 문구가 거짓이 돼 있었다.
  *
  * 칩 목록과 각 칩이 대응하는 DB 코드는 preferenceOptions.ts에 있다 —
  * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
@@ -300,8 +299,8 @@ export function PreferencesPage() {
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
               {isEn
-                ? `You can see your picks again on the home screen. Applying them to recommendations is still in the works. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
-                : `고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
+                ? `Your picks aren't shown on the home screen, but they do shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
+                : `고른 취향은 홈 화면에는 안 보이지만, 추천 결과에는 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
             </p>
 
             {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
