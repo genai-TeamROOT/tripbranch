@@ -149,11 +149,18 @@
     justify-content: center;
     min-height: 100dvh;
     overflow-x: hidden;
+
+    /*
+     * 768px 미만에서 본문 칼럼의 최대 폭. **셸과 드로어가 이 값을 함께 쓴다** —
+     * 한쪽만 고치면 둘의 왼쪽 모서리가 어긋나 드로어가 여백으로 비친다
+     * (.tb-drawer 주석 참고).
+     */
+    --tb-shell-max: 640px;
   }
 
   .tb-shell {
     width: 100%;
-    max-width: 640px;
+    max-width: var(--tb-shell-max);
     /* min-height 가 아니라 height. 박스가 늘어나면 그 안의 position:fixed
        하단 버튼이 늘어난 바닥에 붙어 화면 밖으로 스크롤돼 사라진다. */
     height: 100dvh;
@@ -180,6 +187,25 @@
       transform: translateX(300px);
       box-shadow: -16px 0 32px rgba(16, 24, 40, 0.1);
     }
+  }
+
+  /*
+   * 모바일 푸시 드로어. **왼쪽을 창 끝이 아니라 본문 칼럼의 왼쪽에 맞춘다.**
+   *
+   * 드로어는 오버레이가 아니라 늘 왼쪽에 놓여 있고 본문이 밀려나며 드러난다
+   * (SideDrawer.tsx). 그런데 셸은 768px 미만에서 최대 640px 짜리 가운데 칼럼이라,
+   * 창이 그보다 넓어지면 양옆에 여백이 생긴다. 드로어가 `left: 0` 이면 그 여백
+   * 사이로 **닫혀 있는 드로어가 그대로 비친다** — 641~767px 구간에서 (창폭-640)/2
+   * 만큼, 767px 에서 63.5px 이 보였다(2026-09-06 실측).
+   *
+   * 그래서 셸과 같은 지점에서 시작시킨다. 열렸을 때 셸이 +300px 밀리는 동작은
+   * 그대로다. 768px 이상에서는 드로어 자체가 md:hidden 이라 이 값이 쓰이지 않는다.
+   *
+   * 닫혔을 때 감추는 방법(display:none)은 쓰지 않았다 — 닫는 0.28초 동안 셸이
+   * 되돌아오는 사이 뒤가 빈 배경으로 보인다.
+   */
+  .tb-drawer {
+    left: max(0px, calc(50% - var(--tb-shell-max) / 2));
   }
 
   .tb-sidebar {

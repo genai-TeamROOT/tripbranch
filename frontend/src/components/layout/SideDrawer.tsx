@@ -17,7 +17,9 @@ interface SideDrawerProps {
 export function SideDrawer({ open, onNavigate }: SideDrawerProps) {
   return (
     <div
-      className="fixed inset-y-0 left-0 z-10 flex w-[300px] flex-col bg-white md:hidden"
+      /* left-0 이 아니다 — 왼쪽 위치는 .tb-drawer 가 잡는다(index.css). 본문 칼럼이
+         가운데 정렬이라 창 끝에 붙이면 여백 사이로 비친다. */
+      className="tb-drawer fixed inset-y-0 z-10 flex w-[300px] flex-col bg-white md:hidden"
       aria-hidden={!open}
       inert={!open}
     >
