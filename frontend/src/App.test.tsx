@@ -1179,9 +1179,21 @@ test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () =>
 
   const section = screen.getByRole("heading", { name: "내 취향" }).closest("section");
   expect(section).not.toBeNull();
-  expect(within(section as HTMLElement).getByText("조용한 곳")).toBeInTheDocument();
-  expect(within(section as HTMLElement).getByText("카페")).toBeInTheDocument();
-  expect(within(section as HTMLElement).getByText("데이트 코스")).toBeInTheDocument();
+  const shown = within(section as HTMLElement);
+
+  /*
+   * 칩이 띠로 흐른다(2026-09-07). 이음매를 메우려고 같은 칩을 여러 벌 깔기 때문에
+   * getByText 로는 "여러 개 발견"이 난다.
+   *
+   * **몇 벌인지는 재지 않는다.** 그 수는 트랙 폭을 채우려고 개수에 따라 달라지는
+   * 값이라(HomePage 의 MARQUEE_MIN_CHIPS) 여기 박아 두면 폭을 조정할 때마다
+   * 깨진다. 대신 계약을 잰다 — **화면에 있고, 읽히는 것은 딱 한 번**.
+   */
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    const chips = shown.getAllByText(label);
+    expect(chips.length).toBeGreaterThan(0);
+    expect(chips.filter((chip) => !chip.hasAttribute("aria-hidden"))).toHaveLength(1);
+  }
 
   // 홈에서는 읽기만 한다 — 고치려면 취향 설정 화면으로 간다.
   expect(within(section as HTMLElement).getByRole("link", { name: "바꾸기" })).toHaveAttribute(

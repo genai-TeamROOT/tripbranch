@@ -32,9 +32,22 @@ import { buildAgentStageTimings } from "../utils/agentTiming";
 import { buildLocationChipModel } from "../utils/locationChip";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
+/*
+ * 취향 띠 한 묶음에 최소 이만큼은 깔린다.
+ *
+ * 취향은 최대 5개뿐이라 한 번만 늘어놓으면 트랙을 못 채운다 — 그러면 마지막 칩
+ * 뒤로 빈 구간이 지나가 흐름이 끊겨 보인다(290px 대 313px, 2026-09-07 실측).
+ * 칩 하나가 대략 86px이라 6개면 500px대까지 채워, 데스크톱 셸(640px)에서도
+ * 묶음이 트랙보다 넓다.
+ */
+const MARQUEE_MIN_CHIPS = 6;
+
 const HOME_TEXT = {
   ko: {
-    headline: "갑자기 일정이 바뀌셨나요?",
+    /* 두 줄을 다른 톤으로 낸다 — 앞줄은 브랜드색 Light, 뒷줄은 먹색 Bold.
+       세리프를 들이지 않고 대비를 만드는 자리다(2026-09-07). */
+    headlineSoft: "갑자기 일정이",
+    headlineHard: "바뀌셨나요?",
     subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
     locationNotice:
       "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
@@ -52,7 +65,8 @@ const HOME_TEXT = {
     changePreferences: "바꾸기",
   },
   en: {
-    headline: "Did your plans change suddenly?",
+    headlineSoft: "Did your plans",
+    headlineHard: "change suddenly?",
     subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
     locationNotice:
       "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
@@ -287,16 +301,33 @@ export function HomePage() {
 
      예전 기본값이던 "종로구"는 뺐다. 지원 지역이 종로구뿐이던 시절의 값이라
      지금은 사실이 아니고, 아무것도 모를 때 실제로 쓰이는 것은 기기 좌표다. */
+  /* 목록이 짧을수록 여러 번 깔아 묶음 폭을 채운다 — MARQUEE_MIN_CHIPS 주석 참고. */
+  const marqueeGroup = preferences.length
+    ? Array.from(
+        { length: Math.max(2, Math.ceil(MARQUEE_MIN_CHIPS / preferences.length)) },
+        (_, repeat) =>
+          preferences.map(({ label }) => ({ label, repeat, key: `${label}-${repeat}` })),
+      ).flat()
+    : [];
+
   const locationChip = buildLocationChipModel(
     locationSettings,
     state.interpreted_conditions?.location_query ?? null,
   );
 
   return (
-    <main className="flex h-full flex-col overflow-y-auto">
+    <main className="tb-home-wash flex h-full flex-col overflow-y-auto">
       <AppHeader location={locationChip} />
 
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-4 pt-2">
+      {/*
+       * 세로 간격을 gap 하나로 고르게 주지 않는다. 헤드라인이 위를, 오브가 남는
+       * 가운데를 갖고, 나머지는 컴포저 쪽으로 내려붙는다 — 요소를 빼거나 순서를
+       * 바꾸지 않고 **남는 공간을 어디에 줄지**만 정한 것이다(2026-09-07).
+       */}
+      {/* min-h-0 이 있어야 아래 오브 칸이 남는 높이에 맞춰 줄어든다. flex 자식은
+          기본이 min-height:auto 라 내용보다 작아지지 않고, 그러면 짧은 화면에서
+          오브가 칸을 뚫고 나가 홈 전체가 스크롤된다(2026-09-07 실측). */}
+      <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
         <div className="flex items-center justify-end">
           {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
               비어 있으면 비활성. */}
@@ -304,17 +335,64 @@ export function HomePage() {
             type="button"
             disabled={isLoading || !userInput.trim()}
             onClick={() => void startChat(userInput, "/dev-chat")}
-            /* 채움 대신 실선 한 겹. 보조 동작이 색 덩어리로 먼저 눈에 들어올
-               이유가 없다 — 누를 수 있다는 것만 알리면 된다. */
             className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
           >
             {text.developer}
           </button>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <h1 className="text-[24px] font-bold leading-snug text-ink">{text.headline}</h1>
-          <p className="text-sm leading-relaxed text-muted">{text.subtitle}</p>
+        <div className="pt-6">
+          <h1 className="text-[30px] leading-[1.32] tracking-[-0.035em]">
+            <span className="block font-light text-brand">{text.headlineSoft}</span>
+            <span className="block font-bold text-ink">{text.headlineHard}</span>
+          </h1>
+          <p className="mt-3 max-w-[30ch] text-sm leading-relaxed text-muted">{text.subtitle}</p>
+          {/*
+           * 위치 권한 고지. 예전에는 통짜 파란 패널이라 headline 다음으로 큰 색
+           * 덩어리였다 — 고지는 먼저 읽히는 글이 아니라 필요할 때 찾는 글이다.
+           * 헤드라인 밑 잔글씨로 내리고 세로선만 남겨 "부연"이라는 뜻을 지킨다.
+           */}
+          <p className="mt-3 max-w-[34ch] border-l-2 border-sky-soft pl-2.5 text-[11px] leading-relaxed text-muted">
+            {text.locationNotice}
+          </p>
+        </div>
+
+        {/*
+         * 유리 오브. 남는 세로 공간을 통째로 갖는다 — 화면이 길수록 여백이
+         * 늘어나 공기감이 생기고, 짧으면 min-h 까지만 줄어든다.
+         *
+         * 장식이라 aria-hidden 이다. 누르는 기능은 없다.
+         */}
+        <div className="flex flex-1 items-center justify-center py-3">
+          <div className="tb-orb" aria-hidden>
+            <span className="tb-orb__glow" />
+            <img
+              src="/glass-object.png"
+              alt=""
+              width={208}
+              height={233}
+              decoding="async"
+              className="tb-orb__img"
+            />
+          </div>
+        </div>
+
+        {errorMessage && <ErrorBanner message={errorMessage} />}
+
+        <div className="mt-2 flex flex-wrap items-start gap-2">
+          {text.prompts.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              disabled={isLoading}
+              onClick={() => setUserInput(prompt)}
+              /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 누를 수
+                 있는 것에만 입힌다: 취향 칩은 읽기만 하므로 실선 한 겹이다. */
+              className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
+            >
+              {prompt}
+            </button>
+          ))}
         </div>
 
         {/*
@@ -324,67 +402,45 @@ export function HomePage() {
          *
          * 아직 아무것도 저장하지 않았으면 줄 자체를 그리지 않는다. 빈 자리를
          * 남기면 홈 첫 화면이 그만큼 밀린다.
+         *
+         * **띠로 흐른다**(2026-09-07). 제목과 "바꾸기"는 흐르는 자리 밖에 둔다 —
+         * 같이 흘러가면 취향을 바꾸러 갈 길이 화면에서 사라졌다 나타났다 한다.
          */}
         {preferences.length > 0 && (
-          <section className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-bold text-label">{text.myPreferences}</h2>
-              <Link
-                to="/preferences"
-                className="text-xs font-bold text-brand transition-colors hover:text-brand-deep"
-              >
-                {text.changePreferences}
-              </Link>
+          <section className="mt-3.5 flex items-center gap-2.5">
+            <h2 className="shrink-0 text-xs font-bold text-label">{text.myPreferences}</h2>
+            <div className="tb-marquee min-w-0 flex-1">
+              <ul className="tb-marquee__run flex w-max gap-1.5">
+                {/* 앞 묶음만 읽힌다. 뒷 묶음은 이음매를 메우는 그림이라
+                    aria-hidden 이고, 앞 묶음 안의 반복분도 마찬가지다. */}
+                {marqueeGroup.map(({ label, key, repeat }) => (
+                  <li
+                    key={`a-${key}`}
+                    aria-hidden={repeat > 0 || undefined}
+                    className="whitespace-nowrap rounded-full border border-border bg-white/55 px-3 py-1.5 text-xs font-medium text-ink"
+                  >
+                    {label}
+                  </li>
+                ))}
+                {marqueeGroup.map(({ label, key }) => (
+                  <li
+                    key={`b-${key}`}
+                    aria-hidden
+                    className="whitespace-nowrap rounded-full border border-border bg-white/55 px-3 py-1.5 text-xs font-medium text-ink"
+                  >
+                    {label}
+                  </li>
+                ))}
+              </ul>
             </div>
-            <ul className="flex flex-wrap gap-2">
-              {preferences.map((preference) => (
-                <li
-                  key={preference.label}
-                  /* 파란 채움 + 파란 글씨였다. 누를 수 없는 라벨이 화면에서 가장
-                     진한 색 덩어리일 이유가 없어 실선 한 겹으로 낮췄다. 글자는
-                     사용자가 고른 말이므로 text-ink 그대로 둔다. */
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-ink"
-                >
-                  {preference.label}
-                </li>
-              ))}
-            </ul>
+            <Link
+              to="/preferences"
+              className="shrink-0 text-xs font-bold text-brand transition-colors hover:text-brand-deep"
+            >
+              {text.changePreferences}
+            </Link>
           </section>
         )}
-
-        {/*
-         * 통짜 파란 패널이었다. 위치 권한 고지가 화면에서 headline 다음으로 큰 색
-         * 덩어리라 위계가 뒤집혀 있었다 — 고지는 필요할 때 찾아 읽는 글이지
-         * 먼저 읽히는 글이 아니다. 왼쪽 세로선만 남겨 "부연"이라는 뜻을 지키고
-         * 본문은 muted 로 내린다.
-         */}
-        <section className="border-l-2 border-sky-soft pl-3 text-sm leading-relaxed text-muted">
-          {text.locationNotice}
-        </section>
-
-        {errorMessage && <ErrorBanner message={errorMessage} />}
-
-        <div className="flex flex-wrap items-start gap-3">
-          {text.prompts.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              disabled={isLoading}
-              onClick={() => setUserInput(prompt)}
-              /* shadow-resting 은 rgba(36,84,224,.1) 파란 글로우다. 모든 알약
-                 밑에 같은 빛이 깔리면 무엇이 떠 있는 것인지가 사라진다 — 그림자는
-                 실제로 떠 있어야 하는 것(컴포저·헤더 칩)에만 남긴다.
-
-                 **테두리를 취향 칩보다 한 단계 진하게 쓴다**(gray-300 #cbd3e1 vs
-                 border #e2e6ee). 둘 다 border 로 뒀더니 흰 바탕 위에서 누를 수 있는
-                 것과 읽기만 하는 것이 같은 무게로 보였다(2026-09-06 실측). 그림자를
-                 걷어낸 자리를 선의 농도가 대신한다. */
-              className="rounded-full border border-gray-300 bg-white px-4 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:border-brand hover:bg-sky-light/40 disabled:opacity-50"
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
       </div>
 
       <ChatComposer
