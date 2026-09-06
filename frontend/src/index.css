@@ -383,6 +383,14 @@
 .tb-home-wash {
   position: relative;
   background: linear-gradient(180deg, #e4ebfb 0%, #f2f6fe 34%, #ffffff 72%);
+  /*
+   * **반드시 가로를 잘라야 한다.** 아래 ::before 번짐이 오른쪽으로 90px 걸쳐
+   * 있는데, 이 요소는 세로 스크롤 컨테이너(overflow-y:auto)라 CSS 규칙상
+   * overflow-x 가 visible 로 남지 못하고 auto 로 계산된다 — 그 90px 이 그대로
+   * 가로 스크롤이 됐다(430·1280 양쪽에서 scrollWidth 가 90px 더 컸다,
+   * 2026-09-07 실측). documentElement 는 멀쩡해서 눈에 잘 안 띈다.
+   */
+  overflow-x: hidden;
 }
 
 /* 오른쪽 위에서 번지는 옅은 빛. 워시만으로는 가로로 평평해서 띠처럼 보인다. */
