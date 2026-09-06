@@ -29,7 +29,7 @@ const FROSTED_BUTTON_CLASS =
   "flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80";
 
 export function AppHeader({ location: locationChip = null, onBack }: AppHeaderProps) {
-  const { openDrawer } = useAppShell();
+  const { drawerOpen, openDrawer, closeDrawer } = useAppShell();
   const location = useLocation();
   const navigate = useNavigate();
   const isDesktop = useIsDesktopSidebar();
@@ -80,10 +80,22 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
     >
       <div className="relative flex items-center justify-between px-4 pb-3 pt-6">
         <div className="flex items-center gap-2">
+          {/*
+           * 여닫이다 — 열려 있을 때 다시 누르면 닫힌다(2026-09-07). 예전에는
+           * openDrawer 만 불러서, 열어 둔 채로 누르면 아무 일도 안 났다.
+           *
+           * 셸이 이미 "밀려난 본문 아무 곳이나 누르면 닫기"를 갖고 있는데
+           * (AppShell 의 onClickCapture), 그 캡처가 이 버튼보다 **먼저** 돌기
+           * 때문에 둘이 서로를 무효화했다. data-drawer-toggle 표식을 보고 셸이
+           * 이 버튼만 건너뛴다 — 여닫이는 이 버튼 하나가 온전히 갖는다.
+           */}
           <button
             type="button"
-            onClick={openDrawer}
-            aria-label="메뉴 열기"
+            /* 셸의 탭-투-클로즈가 이 버튼은 건너뛰게 하는 표식이다(AppShell). */
+            data-drawer-toggle=""
+            onClick={() => (drawerOpen ? closeDrawer() : openDrawer())}
+            aria-label={drawerOpen ? "메뉴 닫기" : "메뉴 열기"}
+            aria-expanded={drawerOpen}
             className={cn(FROSTED_BUTTON_CLASS, "md:hidden")}
           >
             <Menu size={18} />

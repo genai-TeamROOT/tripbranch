@@ -64,7 +64,18 @@ function AppShellInner() {
         className={`tb-shell ${drawerOpen ? "tb-shell--pushed" : ""}`}
         // 드로어가 열려 본문이 오른쪽으로 밀려난 상태에서, 밀려난 본문 아무 곳이나
         // 누르면 바깥을 누른 것으로 보고 드로어를 닫는다(탭-투-클로즈).
-        onClickCapture={drawerOpen ? closeDrawer : undefined}
+        //
+        // **햄버거만 건너뛴다.** 그 버튼도 셸 안에 있어서, 캡처가 먼저 닫고 버튼이
+        // 다시 여는 바람에 열린 채로 다시 눌러도 닫히지 않았다(2026-09-07 실측).
+        // 여닫이는 버튼 하나가 온전히 갖는다.
+        onClickCapture={
+          drawerOpen
+            ? (event) => {
+                if ((event.target as HTMLElement).closest("[data-drawer-toggle]")) return;
+                closeDrawer();
+              }
+            : undefined
+        }
       >
         {/*
          * 기반 화면만 감싼다. 시트는 BottomSheetLayer가 이미 아래에서 올라오는

@@ -116,6 +116,41 @@ test("햄버거를 누르면 셸 드로어를 연다", async () => {
 });
 
 /*
+ * **여닫이다**(2026-09-07). 예전에는 openDrawer 만 불러서 열어 둔 채로 다시
+ * 누르면 아무 일도 안 났다.
+ *
+ * 두 상태를 짝으로 잠근다 — 여는 쪽만 보면 예전 코드로도 통과한다.
+ */
+test("열려 있을 때 햄버거를 누르면 닫는다", async () => {
+  const user = userEvent.setup();
+  const openDrawer = vi.fn();
+  const closeDrawer = vi.fn();
+  renderHeader(null, { drawerOpen: true, openDrawer, closeDrawer });
+
+  await user.click(screen.getByRole("button", { name: "메뉴 닫기" }));
+
+  expect(closeDrawer).toHaveBeenCalledOnce();
+  /* 닫고 곧바로 다시 여는 일이 없어야 한다. */
+  expect(openDrawer).not.toHaveBeenCalled();
+});
+
+/* 무엇이 열려 있는지 소리로도 알 수 있어야 한다. */
+test("햄버거가 열림 여부를 알린다", () => {
+  const { unmount } = renderHeader(null, { drawerOpen: false });
+  expect(screen.getByRole("button", { name: "메뉴 열기" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  unmount();
+
+  renderHeader(null, { drawerOpen: true });
+  expect(screen.getByRole("button", { name: "메뉴 닫기" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+});
+
+/*
  * pill은 단순 표시가 아니라 위치 설정으로 가는 입구다. 시트로 열기 위해
  * 현재 위치를 backgroundLocation으로 실어 보내는지까지 확인한다 —
  * 이게 빠지면 전체 페이지로 갈아치워져 대화가 사라진다.

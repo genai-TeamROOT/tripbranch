@@ -77,6 +77,28 @@ test("햄버거를 누르면 드로어가 열린다", async () => {
 });
 
 /*
+ * **햄버거는 여닫이다**(2026-09-07). 열어 둔 채로 다시 눌러도 닫히지 않았다.
+ *
+ * 원인이 셸에 있어서 AppHeader 단위 테스트로는 안 잡힌다 — 그 버튼도 셸 안에
+ * 있는데, 셸의 탭-투-클로즈(onClickCapture)가 버튼보다 **먼저** 돌아 닫고
+ * 버튼이 다시 열었다. 둘이 서로를 무효화하는 것은 함께 그려야만 드러난다.
+ */
+test("햄버거를 다시 누르면 드로어가 닫힌다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+  expect(drawerRoot()).toHaveAttribute("aria-hidden", "false");
+
+  await user.click(screen.getByRole("button", { name: "메뉴 닫기" }));
+  expect(drawerRoot()).toHaveAttribute("aria-hidden", "true");
+
+  /* 한 번 더 — 닫은 뒤에도 다시 열려야 한다(한 방향으로만 굳지 않는다). */
+  await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+  expect(drawerRoot()).toHaveAttribute("aria-hidden", "false");
+});
+
+/*
  * 이 드로어에는 닫기 ✕ 버튼이 없다. 밀려난 본문을 누르는 것이 유일한
  * "취소하고 돌아가기" 경로라, 이게 깨지면 모바일에서 드로어에 갇힌다.
  */
