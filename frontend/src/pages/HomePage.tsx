@@ -304,7 +304,9 @@ export function HomePage() {
             type="button"
             disabled={isLoading || !userInput.trim()}
             onClick={() => void startChat(userInput, "/dev-chat")}
-            className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light disabled:opacity-50"
+            /* 채움 대신 실선 한 겹. 보조 동작이 색 덩어리로 먼저 눈에 들어올
+               이유가 없다 — 누를 수 있다는 것만 알리면 된다. */
+            className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
           >
             {text.developer}
           </button>
@@ -338,7 +340,10 @@ export function HomePage() {
               {preferences.map((preference) => (
                 <li
                   key={preference.label}
-                  className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-brand-deep"
+                  /* 파란 채움 + 파란 글씨였다. 누를 수 없는 라벨이 화면에서 가장
+                     진한 색 덩어리일 이유가 없어 실선 한 겹으로 낮췄다. 글자는
+                     사용자가 고른 말이므로 text-ink 그대로 둔다. */
+                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-ink"
                 >
                   {preference.label}
                 </li>
@@ -347,7 +352,13 @@ export function HomePage() {
           </section>
         )}
 
-        <section className="rounded-2xl bg-sky-light p-3.5 text-sm leading-relaxed text-brand-deep">
+        {/*
+         * 통짜 파란 패널이었다. 위치 권한 고지가 화면에서 headline 다음으로 큰 색
+         * 덩어리라 위계가 뒤집혀 있었다 — 고지는 필요할 때 찾아 읽는 글이지
+         * 먼저 읽히는 글이 아니다. 왼쪽 세로선만 남겨 "부연"이라는 뜻을 지키고
+         * 본문은 muted 로 내린다.
+         */}
+        <section className="border-l-2 border-sky-soft pl-3 text-sm leading-relaxed text-muted">
           {text.locationNotice}
         </section>
 
@@ -360,7 +371,15 @@ export function HomePage() {
               type="button"
               disabled={isLoading}
               onClick={() => setUserInput(prompt)}
-              className="rounded-full bg-white px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting transition-colors hover:bg-chip disabled:opacity-50"
+              /* shadow-resting 은 rgba(36,84,224,.1) 파란 글로우다. 모든 알약
+                 밑에 같은 빛이 깔리면 무엇이 떠 있는 것인지가 사라진다 — 그림자는
+                 실제로 떠 있어야 하는 것(컴포저·헤더 칩)에만 남긴다.
+
+                 **테두리를 취향 칩보다 한 단계 진하게 쓴다**(gray-300 #cbd3e1 vs
+                 border #e2e6ee). 둘 다 border 로 뒀더니 흰 바탕 위에서 누를 수 있는
+                 것과 읽기만 하는 것이 같은 무게로 보였다(2026-09-06 실측). 그림자를
+                 걷어낸 자리를 선의 농도가 대신한다. */
+              className="rounded-full border border-gray-300 bg-white px-4 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:border-brand hover:bg-sky-light/40 disabled:opacity-50"
             >
               {prompt}
             </button>
