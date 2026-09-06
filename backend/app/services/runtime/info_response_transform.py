@@ -25,6 +25,7 @@ from app.schemas import (
     PopulationForecastBar,
     QuestionType,
     RealtimeInfoDetailItem,
+    RoadIncidentCategoryCount,
     SeoulRealtimePaymentCategory,
     SeoulRealtimeSummary,
 )
@@ -218,6 +219,10 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
             realtime_source_url=result.source_url,
             realtime_map_url=result.map_url,
             realtime_detail_items=_to_realtime_detail_items(result.detail_items),
+            road_incident_counts=[
+                RoadIncidentCategoryCount(label=item.label, count=item.count)
+                for item in result.road_incident_counts
+            ],
         )
     return None
 

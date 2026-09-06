@@ -325,4 +325,33 @@ describe("RoadTrafficStatusSection", () => {
     );
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("돌발상황 4분류를 서울시가 준 순서 그대로 건수와 함께 보여준다", () => {
+    render(
+      <RoadTrafficStatusSection
+        card={{
+          ...trafficCard,
+          road_incident_counts: [
+            { label: "사고/고장", count: 0 },
+            { label: "공사/집회", count: 2 },
+            { label: "기상/화재", count: 0 },
+            { label: "기타", count: 0 },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("사고/고장")).toBeInTheDocument();
+    expect(screen.getByText("공사/집회")).toBeInTheDocument();
+    expect(screen.getByText("기상/화재")).toBeInTheDocument();
+    expect(screen.getByText("기타")).toBeInTheDocument();
+    // 진행 중(1건 이상)인 분류만 강조색을 쓴다.
+    expect(screen.getByText("2")).toHaveClass("text-rust");
+    expect(screen.getAllByText("0")[0]).toHaveClass("text-ink");
+  });
+
+  it("건수 데이터가 없으면(구버전 응답) 4분류 칸을 그리지 않는다", () => {
+    const { container } = render(<RoadTrafficStatusSection card={trafficCard} />);
+    expect(container.querySelector(".grid")).not.toBeInTheDocument();
+  });
 });

@@ -234,6 +234,13 @@ class RealtimePopulationInfoResult(BaseModel):
     stale_area_detected: StaleAreaProbeDebug | None = None
 
 
+class RoadIncidentCategoryCountInfo(BaseModel):
+    """도로 위 돌발상황 한 분류의 진행 중 건수(사고/고장·공사/집회·기상/화재·기타)."""
+
+    label: str
+    count: int = Field(ge=0)
+
+
 class RealtimeCityInfoResult(BaseModel):
     """서울시 도시데이터의 주차·대중교통·행사 결과를 공통 카드 계약으로 전달한다."""
 
@@ -258,6 +265,8 @@ class RealtimeCityInfoResult(BaseModel):
     # 서울시 실시간 도시데이터 지도 미리보기와 같은 링크다. 도로소통은 핫스팟
     # 지역 하나에 대응하는 단일 스냅샷이라 지도로 위치를 바로 확인하고 싶어한다.
     map_url: str | None = None
+    # realtime_traffic만 채운다. 4분류 전부(0건 포함)를 항상 담는다.
+    road_incident_counts: list[RoadIncidentCategoryCountInfo] = Field(default_factory=list)
     error: ContextError | None = None
 
 

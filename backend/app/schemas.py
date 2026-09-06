@@ -1315,6 +1315,16 @@ class InfoPlaceCard(BaseModel):
     # 상권(realtime_commercial) 카드에만 싣는다 — 두 유형만 서울시 citydata를 이미
     # 호출하므로 추가 호출 없이 채울 수 있다.
     seoul_realtime_summary: SeoulRealtimeSummary | None = None
+    # 도로 위 돌발상황 4분류 진행 건수(realtime_traffic 전용). 0건 포함 항상 4개다 —
+    # 값이 없는 분류를 조용히 감추면 "이 지역엔 그 유형이 없다"는 뜻으로 읽힌다.
+    road_incident_counts: list[RoadIncidentCategoryCount] = Field(default_factory=list)
+
+
+class RoadIncidentCategoryCount(BaseModel):
+    """도로 위 돌발상황 한 분류의 진행 중 건수(사고/고장·공사/집회·기상/화재·기타)."""
+
+    label: str
+    count: int = Field(ge=0)
 
 
 class SeoulRealtimePaymentCategory(BaseModel):

@@ -62,6 +62,7 @@ from app.agent_context.info_schemas import (
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    RoadIncidentCategoryCountInfo,
     SeoulRealtimeSummaryInfo,
 )
 from app.agent_context.schemas import (
@@ -1585,6 +1586,14 @@ class ContextService:
                 source_url=_CITYDATA_SOURCE_URL,
                 map_url=(
                     _seoul_realtime_map_url(area) if question_type == "realtime_traffic" else None
+                ),
+                road_incident_counts=(
+                    [
+                        RoadIncidentCategoryCountInfo(label=c.label, count=c.count)
+                        for c in citydata.road_traffic.incident_counts
+                    ]
+                    if question_type == "realtime_traffic" and citydata.road_traffic is not None
+                    else []
                 ),
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),

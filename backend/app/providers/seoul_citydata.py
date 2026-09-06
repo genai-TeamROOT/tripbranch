@@ -20,6 +20,7 @@ from app.domain.models import (
     RealtimeParkingLot,
     RealtimePopulationResult,
     RealtimeSubwayArrival,
+    RoadIncidentCategoryCount,
     RoadTrafficStatus,
 )
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
@@ -287,8 +288,51 @@ def map_realtime_event_response(payload: Mapping[str, object]) -> tuple[Realtime
     )
 
 
+# ACDNT_TYPE 원문 → TOPIS 지도가 쓰는 표준 4분류. 코드표 API(OA-13312, "서울시 돌발
+# 유형 코드 정보")가 서비스 종료라 직접 조회할 수 없어, 원문 유형명에 든 키워드로
+# 분류한다. 실측(2026-09-06, 121곳 전수)에서는 "공사"·"집회및행사"·"기타" 세 값만
+# 나왔지만, 사고·고장·기상·화재는 원래도 드문 사건이라 그 시점에 없었을 뿐 스키마에
+# 없는 값이 아니다 — ITS 국가교통정보센터의 표준 돌발유형 체계(사고/고장차량/공사/
+# 행사/기상통제/기타)를 그대로 참고했다.
+_ROAD_INCIDENT_CATEGORY_ORDER: tuple[str, ...] = (
+    "사고/고장",
+    "공사/집회",
+    "기상/화재",
+    "기타",
+)
+_ROAD_INCIDENT_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "사고/고장": ("사고", "고장"),
+    "공사/집회": ("공사", "집회", "행사"),
+    "기상/화재": ("기상", "화재", "재해"),
+}
+
+
+def _road_incident_category(item: Mapping[str, object]) -> str:
+    text = " ".join(
+        value
+        for value in (_text(item.get("ACDNT_TYPE")), _text(item.get("ACDNT_DTYPE")))
+        if value
+    )
+    for label, keywords in _ROAD_INCIDENT_CATEGORY_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return label
+    return "기타"
+
+
+def _road_incident_counts(row: Mapping[str, object]) -> tuple[RoadIncidentCategoryCount, ...]:
+    """진행 중인 도로 위 돌발상황을 4분류 건수로 집계한다. 0건도 그대로 낸다."""
+
+    counts = dict.fromkeys(_ROAD_INCIDENT_CATEGORY_ORDER, 0)
+    for item in _mappings(row.get("ACDNT_CNTRL_STTS")):
+        counts[_road_incident_category(item)] += 1
+    return tuple(
+        RoadIncidentCategoryCount(label=label, count=counts[label])
+        for label in _ROAD_INCIDENT_CATEGORY_ORDER
+    )
+
+
 def map_realtime_traffic_response(payload: Mapping[str, object]) -> RoadTrafficStatus | None:
-    """ROAD_TRAFFIC_STTS.AVG_ROAD_DATA를 정규화한다.
+    """ROAD_TRAFFIC_STTS.AVG_ROAD_DATA와 ACDNT_CNTRL_STTS를 함께 정규화한다.
 
     개별 도로 링크 배열(``ROAD_TRAFFIC_STTS.ROAD_TRAFFIC_STTS``, 좌표 폴리라인 포함)은
     이번 스코프에서 쓰지 않는다 — 지역 평균 스냅샷(단계·속도·안내문구)만 다룬다.
@@ -309,6 +353,7 @@ def map_realtime_traffic_response(payload: Mapping[str, object]) -> RoadTrafficS
         average_speed_kmh=_float(avg_map.get("ROAD_TRAFFIC_SPD")),
         message=_text(avg_map.get("ROAD_MSG")),
         observed_at=_text(avg_map.get("ROAD_TRAFFIC_TIME")),
+        incident_counts=_road_incident_counts(row),
     )
 
 
@@ -441,6 +486,12 @@ class FakeRealtimeCityDataProvider:
                     average_speed_kmh=32.0,
                     message="해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
                     observed_at="2026-08-20 14:00",
+                    incident_counts=(
+                        RoadIncidentCategoryCount("사고/고장", 0),
+                        RoadIncidentCategoryCount("공사/집회", 1),
+                        RoadIncidentCategoryCount("기상/화재", 0),
+                        RoadIncidentCategoryCount("기타", 0),
+                    ),
                 ),
             ),
             source=ProviderSource.FAKE_SEOUL_CITYDATA,

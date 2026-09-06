@@ -6,7 +6,10 @@
  */
 
 import { useState } from "react";
-import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
+import type {
+  InfoPlaceCard as InfoPlaceCardData,
+  RoadIncidentCategoryCount,
+} from "../../types";
 import {
   AXIS_TICK_COUNT,
   axisCeiling,
@@ -176,12 +179,39 @@ export function CongestionLevelGauge({
 }
 
 /** 도로소통 단계·평균속도·안내문구를 카드에 시각적으로 보여준다. */
+/**
+ * 도로 위 돌발상황 4분류(사고/고장 · 공사/집회 · 기상/화재 · 기타) 진행 건수 카드.
+ * 값이 있는(1건 이상) 분류만 rust로 강조한다 — 전부 0건이면 눈에 띌 이유가 없고,
+ * 서울시 지도 화면도 평상시엔 네 칸이 전부 조용한 회색이다.
+ */
+function RoadIncidentCountGrid({ counts }: { counts: RoadIncidentCategoryCount[] }) {
+  if (counts.length === 0) return null;
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {counts.map((item) => (
+        <div key={item.label} className="rounded-xl border border-border/70 bg-chip px-3 py-2.5">
+          <p className="truncate text-[11px] font-medium text-muted">{item.label}</p>
+          <p
+            className={`mt-1 text-lg font-bold leading-tight ${
+              item.count > 0 ? "text-rust" : "text-ink"
+            }`}
+          >
+            {item.count}
+            <span className="ml-0.5 text-xs font-semibold">건</span>
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RoadTrafficStatusSection({ card }: { card: InfoPlaceCardData }) {
   if (card.question_type !== "realtime_traffic") return null;
   const level = card.answer_fields["도로소통 단계"];
   if (!level) return null;
   const speed = card.answer_fields["평균 주행속도"];
   const message = card.answer_fields["안내"];
+  const incidentCounts = card.road_incident_counts ?? [];
 
   return (
     <section className="border-t border-border px-4 py-3">
@@ -198,6 +228,12 @@ export function RoadTrafficStatusSection({ card }: { card: InfoPlaceCardData }) 
         ariaLabelPrefix="현재 도로소통 단계"
       />
       {message && <p className="mt-2 text-xs text-muted">{message}</p>}
+      <RoadIncidentCountGrid counts={incidentCounts} />
+      {incidentCounts.length > 0 && (
+        <p className="mt-2 text-[11px] text-muted">
+          진행 중인 돌발상황 · 사고/고장·공사/집회·기상/화재·기타로 분류
+        </p>
+      )}
     </section>
   );
 }
