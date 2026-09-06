@@ -209,6 +209,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "realtime_map_url": None,
             "realtime_detail_items": [],
             "seoul_realtime_summary": None,
+            "road_incident_counts": [],
         },
     }
     assert len(captured_requests) == 1

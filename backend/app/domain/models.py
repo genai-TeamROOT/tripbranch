@@ -294,6 +294,21 @@ class RealtimeCityEvent:
 
 
 @dataclass(frozen=True)
+class RoadIncidentCategoryCount:
+    """도로 위 돌발상황(citydata의 ACDNT_CNTRL_STTS) 한 분류의 진행 중 건수.
+
+    서울시 원문(``ACDNT_TYPE``)은 개별 사건 단위라 종류가 세분화돼 있다
+    (예: "공사", "집회및행사", "기타"). TOPIS가 지도에서 쓰는 표준 4분류
+    (사고/고장·공사/집회·기상/화재·기타)로 묶어서 보여준다 — 이 표준 코드표
+    API(OA-13312)는 서비스 종료라 직접 조회할 수 없어, 원문 유형명 키워드로
+    분류한다(``_ROAD_INCIDENT_CATEGORY_KEYWORDS``).
+    """
+
+    label: str
+    count: int
+
+
+@dataclass(frozen=True)
 class RoadTrafficStatus:
     """지역 인근 도로의 평균 소통 현황(citydata의 ROAD_TRAFFIC_STTS.AVG_ROAD_DATA)."""
 
@@ -301,6 +316,9 @@ class RoadTrafficStatus:
     average_speed_kmh: float | None
     message: str | None
     observed_at: str | None
+    # 4분류 전부를 항상 채운다(0건 포함) — 서울시 지도 화면과 같은 방식이라
+    # 조용히 사라지는 분류가 없어야 "이 지역엔 그 유형이 없다"는 뜻으로 읽힌다.
+    incident_counts: tuple[RoadIncidentCategoryCount, ...] = ()
 
 
 @dataclass(frozen=True)

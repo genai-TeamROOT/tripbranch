@@ -16,6 +16,7 @@ from app.agent_context.info_schemas import (
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    RoadIncidentCategoryCountInfo,
     SeoulRealtimeSummaryInfo,
 )
 from app.services.runtime.info_response_transform import to_info_place_card
@@ -483,7 +484,41 @@ def test_realtime_city_card_keeps_detail_items_and_data_source() -> None:
     assert card.realtime_area_name == "광화문·덕수궁"
     assert card.realtime_observed_at == "8월 20일 16:20"
     assert card.realtime_source_url == "https://data.seoul.go.kr/example"
+    # realtime_parking은 road_incident_counts를 안 보낸다 — realtime_traffic 전용.
+    assert card.road_incident_counts == []
     assert card.realtime_detail_items[0].details["거리"] == "약 200m"
+
+
+def test_realtime_traffic_card_carries_road_incident_counts() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="realtime-traffic-card",
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="realtime_traffic",
+                requested_place_name="명동",
+                resolved_place_name="명동 관광특구",
+                area_name="명동 관광특구",
+                observed_at="2026-09-06 18:30",
+                fields={"도로소통 단계": "서행"},
+                road_incident_counts=[
+                    RoadIncidentCategoryCountInfo(label="사고/고장", count=0),
+                    RoadIncidentCategoryCountInfo(label="공사/집회", count=2),
+                    RoadIncidentCategoryCountInfo(label="기상/화재", count=0),
+                    RoadIncidentCategoryCountInfo(label="기타", count=0),
+                ],
+            ),
+        )
+    )
+
+    assert card is not None
+    assert [(item.label, item.count) for item in card.road_incident_counts] == [
+        ("사고/고장", 0),
+        ("공사/집회", 2),
+        ("기상/화재", 0),
+        ("기타", 0),
+    ]
 
 
 def test_photos_reach_the_final_card_in_order() -> None:
