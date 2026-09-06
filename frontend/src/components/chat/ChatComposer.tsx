@@ -1,13 +1,13 @@
 /*
  * 역할: ChatPage 하단에서 후속 사용자 입력을 받는다.
  * 입력: 텍스트 입력, 요청 중 여부, 제출 콜백, 상황별 placeholder.
- * 출력: 채팅 입력 form.
+ * 출력: 채팅 입력 form. 입력창은 여러 줄을 받으며(Shift+Enter) 내용만큼 위로 자란다.
  * 호출 시점: ChatPage가 대화 하단 입력창을 렌더링할 때 호출된다.
  * TODO: 실제 다회 대화 의미 분석이 생기면 입력 종류와 컨텍스트 전달을 확장한다.
  */
 
 import { Send, Square } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Language } from "../../types";
 import { PhotoInputButton } from "./PhotoInputButton";
 import { VoiceInputButton } from "./VoiceInputButton";
@@ -64,12 +64,47 @@ export function ChatComposer({
   // 덮어쓰는데, 둘을 동시에 쓰는 흐름이 아니라 그 편이 자연스럽다.
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  /*
+   * 입력창 높이를 내용에 맞춘다. **먼저 auto로 되돌리는 것이 핵심이다** —
+   * scrollHeight는 지금 높이보다 작아지지 않아서, 지우는 중에는 줄어들지 않는다.
+   *
+   * 최댓값은 여기서 계산하지 않고 CSS(max-h-40)에 맡긴다. 두 곳에 같은 숫자를
+   * 적어두면 한쪽만 고쳐진다. max-height는 scrollHeight를 깎지 않으므로 이 계산은
+   * 그대로 맞고, 넘치는 만큼은 overflow-y-auto가 안에서 스크롤한다.
+   */
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [text]);
+
+  async function submit() {
     const nextText = text.trim();
     if (!nextText || disabled) return;
     setText("");
     await onSubmit(nextText);
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await submit();
+  }
+
+  /*
+   * textarea는 Enter가 줄바꿈이라 전송을 직접 처리한다. Enter=전송,
+   * Shift+Enter=줄바꿈.
+   *
+   * **조합 중 Enter는 전송이 아니다.** 한글·일본어 입력기는 조합을 확정할 때
+   * Enter를 쓴다 — "안녕"의 마지막 글자를 확정하려고 누른 Enter를 전송으로 받으면
+   * 쓰던 도중에 글이 나가버린다.
+   */
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    void submit();
   }
 
   const resolvedSendLabel = sendLabel ?? (language === "en" ? "Send" : "보내기");
@@ -83,7 +118,10 @@ export function ChatComposer({
       )}
       <form
         onSubmit={handleSubmit}
-        className="flex items-center gap-1 rounded-full border border-white bg-white/60 p-1.5 shadow-card backdrop-blur-md"
+        /* items-end — 여러 줄이 되면 버튼이 첫 줄 옆이 아니라 아래에 붙어야 한다.
+           rounded-full 은 높이의 절반이 반지름이라 늘어날수록 통이 부푼다.
+           한 줄일 때(52px)의 반지름 26px 과 거의 같은 값으로 고정한다. */
+        className="flex items-end gap-1 rounded-3xl border border-white bg-white/60 p-1.5 shadow-card backdrop-blur-md"
       >
         {onPhotoSelect && (
           <PhotoInputButton
@@ -95,12 +133,17 @@ export function ChatComposer({
             onError={setVoiceError}
           />
         )}
-        <input
+        {/* min-h-10 은 버튼(h-10)과 같은 높이다 — 한 줄일 때 지금과 같은 모양이 된다.
+            jsdom 처럼 scrollHeight 가 0인 환경에서도 이 값이 바닥을 잡아준다. */}
+        <textarea
+          ref={inputRef}
+          rows={1}
           value={text}
           onChange={(event) => setText(event.target.value)}
+          onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder={placeholder}
-          className="min-w-0 flex-1 bg-transparent px-1.5 py-2 text-base text-ink placeholder:text-muted focus:outline-none disabled:opacity-50"
+          className="min-h-10 max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-base leading-6 text-ink placeholder:text-muted focus:outline-none disabled:opacity-50"
         />
         <VoiceInputButton
           disabled={disabled}
