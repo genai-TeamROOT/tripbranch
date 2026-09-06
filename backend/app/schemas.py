@@ -237,6 +237,18 @@ class ScheduleItem(BaseModel):
     # 대중교통으로 전환된다(tools/schedule_travel._select_mode) — 그 구간까지 도보로
     # 적히면 화면이 사실과 다른 말을 한다. RecommendationItem.travel_mode를 함께
     # 내려주는 것과 같은 이유다("프론트가 스스로 추측하지 않게 한다").
+    # 일정 화면 카드에 쓸 장소 사진. 후보(RecommendationItem)가 이미 들고 있는 값을
+    # 편성 단계에서 그대로 옮겨 담는다 — 화면이 나중에 장소별로 다시 조회하지 않게
+    # 하려는 것이다. `/chat/place-details`로도 사진을 얻을 수는 있지만 그 경로는
+    # INFO 전체(이름 재해석 + 외부 조회 + 취향 인사이트)를 타므로 정류장 수만큼
+    # 부르면 일정을 열 때마다 외부 호출이 그 수만큼 나간다.
+    #
+    # 후보에 없는 place_id(부분 재편성의 pinned 항목)는 None이고, 프론트는 그때
+    # 자리표시를 그린다 — operating_hours_display와 같은 취급이다.
+    image_url: str | None = None
+    # image_url이 404일 때 대신 그릴 주소. 추천 카드와 같은 규칙이다
+    # (RecommendationItem.image_url_fallback 주석 참고).
+    image_url_fallback: str | None = None
     travel_to_next_mode: TravelMode | None = None
     # 그 값이 경로 API 실측인지(True) 직선거리 추정인지(False).
     #

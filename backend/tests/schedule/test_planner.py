@@ -45,7 +45,13 @@ from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 _KST = ZoneInfo("Asia/Seoul")
 
 
-def _candidate(place_id: str, *, operating_hours_display: str | None = None) -> RecommendationItem:
+def _candidate(
+    place_id: str,
+    *,
+    operating_hours_display: str | None = None,
+    image_url: str | None = None,
+    image_url_fallback: str | None = None,
+) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
         name=f"장소 {place_id}",
@@ -53,6 +59,8 @@ def _candidate(place_id: str, *, operating_hours_display: str | None = None) -> 
         distance_km=0.3,
         remaining_minutes=120,
         operating_hours_display=operating_hours_display,
+        image_url=image_url,
+        image_url_fallback=image_url_fallback,
         environment_type="indoor",
         recommendation_reason="테스트용 고정 후보입니다.",
         explanations=[],
@@ -2123,3 +2131,73 @@ class TestDeriveItemCapacity:
         assert len(result.items) == 2
         assert "place-3" in [item.place_id for item in result.items]
         assert result.omitted_saved_place_names == []
+
+
+class Test일정_항목의_사진:
+    """편성이 후보의 사진을 일정 항목으로 옮기는지. (일정 화면 카드용)
+
+    **화면이 장소별로 다시 조회하지 않게 하려는 것이다.** `/chat/place-details`로도
+    사진을 얻을 수 있지만 그 경로는 INFO 전체(이름 재해석 + 외부 조회 + 취향
+    인사이트)를 타므로, 정류장 수만큼 부르면 일정을 열 때마다 외부 호출이 그 수만큼
+    나간다. 후보는 편성 시점에 이미 사진을 들고 있다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_후보의_사진이_일정_항목에_실린다(self) -> None:
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1),
+                _sample_item("place-2", 2),
+                _sample_item("place-3", 3),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        request = SchedulePlanningRequest(
+            candidates=[
+                _candidate(
+                    "place-1",
+                    image_url="https://tong.visitkorea.or.kr/a.jpg",
+                    image_url_fallback="https://tong.visitkorea.or.kr/a-big.jpg",
+                ),
+                _candidate("place-2"),
+                _candidate("place-3"),
+            ],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 19, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items[0].image_url == "https://tong.visitkorea.or.kr/a.jpg"
+        assert result.items[0].image_url_fallback == "https://tong.visitkorea.or.kr/a-big.jpg"
+        # 사진이 없는 후보는 None 그대로다 — 화면이 자리표시를 그린다.
+        assert result.items[1].image_url is None
+        assert result.items[1].image_url_fallback is None
+
+    @pytest.mark.asyncio
+    async def test_유지된_항목은_후보에_없어_사진이_없다(self) -> None:
+        """부분 재편성의 pinned 항목은 후보 목록에 없다.
+
+        operating_hours_display와 같은 취급이다 — 없는 키를 물어도 터지지 않고
+        None이 나와야 한다. 새로 채운 자리만 후보에서 사진을 받는다.
+        """
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2", image_url="https://tong.visitkorea.or.kr/b.jpg")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        by_id = {item.place_id: item for item in result.items}
+        assert by_id["place-2"].image_url == "https://tong.visitkorea.or.kr/b.jpg"
+        # 유지된 두 곳은 후보에 없다 — KeyError 없이 None 이어야 한다.
+        assert by_id["place-1"].image_url is None
+        assert by_id["place-3"].image_url is None

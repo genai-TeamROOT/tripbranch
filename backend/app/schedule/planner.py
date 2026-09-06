@@ -342,6 +342,9 @@ def _compose_items(
     """
 
     display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
+    # 후보가 이미 들고 있는 사진을 그대로 옮긴다. 운영시간 표기와 같은 방식이라
+    # 후보에 없는 pinned 항목은 자연히 None이 된다.
+    image_by_place = {c.place_id: (c.image_url, c.image_url_fallback) for c in candidates}
     edge_by_pair = {(edge.from_place_id, edge.to_place_id): edge for edge in travel_edges}
     items: list[ScheduleItem] = []
     for index, (draft, stop) in enumerate(zip(drafts, timeline.stops, strict=True)):
@@ -353,6 +356,7 @@ def _compose_items(
             if next_draft is None
             else edge_by_pair.get((draft.place_id, next_draft.place_id))
         )
+        image_url, image_url_fallback = image_by_place.get(draft.place_id, (None, None))
         items.append(
             ScheduleItem(
                 order=draft.order,
@@ -363,6 +367,8 @@ def _compose_items(
                 travel_to_next_min=stop.travel_to_next_min,
                 reason=draft.reason,
                 warnings=[warning] if warning is not None else [],
+                image_url=image_url,
+                image_url_fallback=image_url_fallback,
                 travel_to_next_mode=None if edge is None else edge.mode,
                 travel_to_next_measured=edge is not None and is_measured(edge),
             )
