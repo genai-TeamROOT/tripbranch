@@ -106,9 +106,12 @@ export function SchedulePage() {
       <AppHeader onBack={() => navigate(-1)} />
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10">
         {/*
-          빈 화면·실패 화면의 블록에서 `flex-1 justify-center`를 뺐다. 아래에
-          저장한 일정 목록이 붙은 뒤로는 중앙 블록이 화면을 다 차지해 **목록이
-          스크롤 밖으로 밀렸다** — 목록이 가장 필요한 상태에서 안 보였다.
+          **불러오기 실패 블록은 세로 가운데로 두지 않는다.** 그 아래에 저장한 일정
+          목록이 함께 뜰 수 있는데(다른 일정을 고를 유일한 입구다), 중앙 블록이
+          `flex-1`로 화면을 다 차지하면 목록이 스크롤 밖으로 밀린다.
+
+          빈 화면 블록은 다르다 — 저장한 일정이 하나도 없을 때만 나오므로 뒤에
+          붙을 것이 없다. 그래서 그쪽만 화면 가운데에 놓는다.
         */}
         {savedError ? (
           <div className="flex flex-col items-center gap-3 py-14 text-center">
@@ -129,7 +132,7 @@ export function SchedulePage() {
             동안(null)에도 띄우지 않는다 — 잠깐 스쳤다 사라진다.
           */
           savedList !== null && savedList.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-14 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 py-14 text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
                 <RouteIcon size={22} />
               </span>
