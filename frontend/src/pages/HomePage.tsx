@@ -390,6 +390,14 @@ export function HomePage() {
          * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
          * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
          *
+         * **text-muted(대비 4.76:1)보다 옅은 text-gray-400(2026-09-07)** — 실제
+         * 대비는 2.56:1로 WCAG AA(4.5:1)에 못 미친다. 11px 잔글씨라 원래도 본문
+         * 기준을 넘기지 못했었지만, 이 값은 명백히 더 내려간다. 필수로 읽어야
+         * 하는 안내가 아니라(안 읽어도 기능은 그대로 동작한다) 이 화면에서 가장
+         * 낮은 우선순위로 두기로 한 사용자 결정을 존중해 그대로 적용한다 —
+         * 다른 잔글씨(RecommendationDetailPreviewModal의 11px 캡션)에도 이미
+         * 쓰이는 값이라 새 색을 들이는 것도 아니다.
+         *
          * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
          * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
          * 은 띄어쓰기에서만 끊는다.
@@ -397,7 +405,7 @@ export function HomePage() {
          * text-balance 는 뺐다 — 문장마다 block 이 되면 각 문장 안에서만 균형을
          * 맞추므로 두 번째 문장이 두 줄로 쪼개질 여지만 생긴다.
          */}
-        <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-muted">
+        <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-gray-400">
           {/*
            * 문장마다 한 줄이다. 좁은 화면에서는 block, sm 이상에서는 inline —
            * 넓으면 두 문장이 한 줄에 다 들어간다.
