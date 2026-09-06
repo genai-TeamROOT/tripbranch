@@ -40,6 +40,7 @@ function ChipGroup({
   options,
   selected,
   onToggle,
+  blockUnselected,
   isEn,
 }: {
   icon: typeof Sparkles;
@@ -47,6 +48,14 @@ function ChipGroup({
   options: readonly PreferenceOption[];
   selected: Set<string>;
   onToggle: (option: string) => void;
+  /*
+   * 아직 안 고른 칩을 못 누르게 한다. 예전에는 상한에 걸리면 `toggle`이 조용히
+   * 무시했는데, 눌러도 아무 일이 안 나는 것과 고장은 화면에서 구분되지 않는다 —
+   * 못 누른다는 사실이 칩 자체에 보여야 한다.
+   *
+   * 이미 고른 칩은 빼는 동작이라 언제나 누를 수 있다.
+   */
+  blockUnselected: boolean;
   isEn: boolean;
 }) {
   return (
@@ -63,8 +72,10 @@ function ChipGroup({
               key={option.label}
               type="button"
               aria-pressed={isSelected}
+              disabled={!isSelected && blockUnselected}
               onClick={() => onToggle(option.label)}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+              /* disabled:opacity-40은 이 화면의 "선택 초기화"와 같은 표현이다. */
+              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
                 isSelected ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
               }`}
             >
@@ -148,6 +159,34 @@ export function PreferencesPage() {
   }
 
   /*
+   * **동행은 하나만 고른다**(2026-09-06 사용자 결정). 안 고르는 것도 된다 —
+   * 필수는 아니다.
+   *
+   * 다른 동행을 누르면 막지 않고 **바꾼다.** 막으면 먼저 빼고 다시 눌러야 해서
+   * 한 번에 될 일이 두 번 걸린다. 먼저 빼고 넣으므로 개수가 늘지 않고, 그래서
+   * 5개를 다 고른 상태에서도 동행 교체는 된다 — 상한 판정(blockUnselected)에서
+   * 동행만 예외인 이유가 이것이다. 이 둘을 따로 만들면 "5개 찼을 때 동행을 못
+   * 바꾸는" 상태가 생긴다.
+   *
+   * 예전에 동행을 둘 이상 저장해 둔 값은 열 때 손대지 않는다 — 저장한 것을
+   * 말없이 지우지 않는다. 동행 칩을 한 번 누르면 그때 하나로 정리된다.
+   */
+  function toggleCompanion(option: string) {
+    touchedRef.current = true;
+    setCleared(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(option)) {
+        next.delete(option);
+        return next;
+      }
+      for (const companion of COMPANION_OPTIONS) next.delete(companion.label);
+      if (next.size < MAX_SELECTED) next.add(option);
+      return next;
+    });
+  }
+
+  /*
    * 초기화는 저장해 둔 값까지 지운다. 화면만 비우면 저장값을 되돌릴 방법이
    * 없어서다 — 저장 버튼은 3개 미만이면 눌리지 않으므로 "다 빼고 저장"이라는
    * 경로가 존재하지 않는다.
@@ -202,6 +241,26 @@ export function PreferencesPage() {
 
   const remaining = MIN_SELECTED - selected.size;
   const canSave = remaining <= 0;
+  const atMax = selected.size >= MAX_SELECTED;
+  /* 동행이 이미 하나 있으면 다른 동행은 교체라 개수가 늘지 않는다 — 상한에 걸려
+     있어도 누를 수 있어야 한다(toggleCompanion 주석). */
+  const companionPicked = COMPANION_OPTIONS.some((option) => selected.has(option.label));
+
+  /*
+   * 카운터 옆에 붙는 한 줄. 아래 저장 버튼이 "몇 개 더"를 세는 것과 역할이 다르다 —
+   * 여기는 **규칙**(최소 3, 최대 5, 다 찼을 때 무엇을 해야 하는지)을 말한다.
+   */
+  const limitHint = isEn
+    ? !canSave
+      ? `Pick at least ${MIN_SELECTED} to save`
+      : atMax
+        ? `That's all ${MAX_SELECTED}. Remove one to swap.`
+        : `You can pick ${MAX_SELECTED - selected.size} more`
+    : !canSave
+      ? `저장하려면 ${MIN_SELECTED}개는 골라야 해요`
+      : atMax
+        ? "다 골랐어요. 바꾸려면 하나를 빼주세요"
+        : `${MAX_SELECTED - selected.size}개 더 고를 수 있어요`;
 
   return (
     <main className="relative flex h-full flex-col overflow-y-auto">
@@ -244,15 +303,28 @@ export function PreferencesPage() {
             </p>
 
             {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
-            <div className="mt-3 flex items-center justify-between">
+            {/* 좁은 화면에서는 초기화가 다음 줄로 내려간다(ml-auto가 오른쪽에 붙인다).
+                안내 문구를 줄임표로 자르지 않기 위해서다 — 자르면 지금 무엇을 해야
+                하는지가 사라진다. */}
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              {/* 최소와 최대를 함께 낸다. `N / 5`만 내면 3개를 채워야 저장된다는
+                  사실이 이 자리에서 안 보인다. */}
               <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-                {isEn ? `${selected.size} / ${MAX_SELECTED} selected` : `${selected.size} / ${MAX_SELECTED}개 선택됨`}
+                {isEn
+                  ? `${selected.size} of ${MIN_SELECTED}–${MAX_SELECTED} selected`
+                  : `${MIN_SELECTED}–${MAX_SELECTED}개 중 ${selected.size}개 선택됨`}
               </span>
+              {/*
+               * 라이브 영역으로 두지 않는다. 아래 "지웠어요" 안내가 이미 role=status라
+               * 둘이 되고, 칩을 누를 때마다 매번 울려 시끄럽다. 상한에 걸렸다는 사실은
+               * 칩이 disabled가 되는 것으로 이미 전달된다.
+               */}
+              <span className="text-xs text-muted">{limitHint}</span>
               <button
                 type="button"
                 onClick={handleReset}
                 disabled={selected.size === 0}
-                className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
+                className="ml-auto text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
               >
                 {isEn ? "Clear selection" : "선택 초기화"}
               </button>
@@ -265,6 +337,7 @@ export function PreferencesPage() {
             options={MOOD_OPTIONS}
             selected={selected}
             onToggle={toggle}
+            blockUnselected={atMax}
             isEn={isEn}
           />
           <ChipGroup
@@ -273,14 +346,18 @@ export function PreferencesPage() {
             options={THEME_OPTIONS}
             selected={selected}
             onToggle={toggle}
+            blockUnselected={atMax}
             isEn={isEn}
           />
+          {/* 동행만 하나짜리다 — 라벨에도 그렇게 적는다. 규칙을 눌러 보고 알게
+              하지 않는다. */}
           <ChipGroup
             icon={Users}
-            label={isEn ? "Companions" : "동행"}
+            label={isEn ? "Companions (pick one)" : "동행 (1개만)"}
             options={COMPANION_OPTIONS}
             selected={selected}
-            onToggle={toggle}
+            onToggle={toggleCompanion}
+            blockUnselected={atMax && !companionPicked}
             isEn={isEn}
           />
 
@@ -291,8 +368,9 @@ export function PreferencesPage() {
                   key={keyword}
                   type="button"
                   aria-pressed={selected.has(keyword)}
+                  disabled={!selected.has(keyword) && atMax}
                   onClick={() => toggle(keyword)}
-                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
                     selected.has(keyword)
                       ? "bg-brand text-white"
                       : "bg-white text-ink shadow-resting"
