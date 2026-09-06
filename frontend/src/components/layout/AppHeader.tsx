@@ -1,7 +1,7 @@
 /*
  * 역할: 화면 상단의 프로스티드 헤더 — 두 가지 모드로 스스로 판단해 모양을 바꾼다.
  *   일반 모드: 모바일 전용 햄버거(드로어 열기) + 라벨이 있을 때만 위치 pill +
- *   onBack이 있을 때만 뒤로가기. 시트 모드: 우측 X 버튼만.
+ *   onBack이 있고 좁은 폭일 때만 뒤로가기. 시트 모드: 우측 X 버튼만.
  * 입력: 표시할 위치 라벨, 뒤로가기/닫기 콜백(있는 화면만).
  * 호출 시점: 신원이 필요한 화면들이 상단에 렌더링할 때.
  * 근거: DESIGN_SYSTEM.md §6.1, §5(isOpenAsSheet로 시트 여부 판정).
@@ -34,6 +34,17 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
   const navigate = useNavigate();
   const isDesktop = useIsDesktopSidebar();
 
+  /*
+   * **뒤로가기는 좁은 폭에서만 낸다**(2026-09-06). 사이드바가 상시 보이는 폭에서는
+   * 취향·위치·일정 어디서든 돌아갈 곳이 이미 화면 왼쪽에 다 펼쳐져 있다 — 헤더의
+   * 화살표는 같은 일을 하는 두 번째 길이라, 자리만 차지하고 어디로 가는지는 덜
+   * 알려준다.
+   *
+   * onBack 자체를 없애지 않는 이유는 좁은 폭에서는 여전히 필요하기 때문이다.
+   * 호출부(취향·위치·일정)는 셋 다 그대로 넘긴다.
+   */
+  const showBack = Boolean(onBack) && !isDesktop;
+
   // 바텀시트는 모바일 전용이라, 데스크톱에서는 시트로 열린 화면도 전체 페이지로
   // 그려진다(AppShell 참고) — 헤더도 시트 모드(X만)가 아니라 일반 모드로 보인다.
   if (isOpenAsSheet(location) && !isDesktop) {
@@ -55,10 +66,10 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
     <div
       className={cn(
         "sticky top-0 z-20 bg-gradient-to-b from-black/5 to-transparent",
-        // 데스크톱은 햄버거가 md:hidden으로 빠지고, 위치 pill도 onBack도 없으면
-        // 이 자리가 통째로 빈 그라디언트 띠로 남는다. 보여줄 게 없을 때는
+        // 데스크톱은 햄버거가 md:hidden으로 빠지고 뒤로가기도 빠지므로, 위치 pill이
+        // 없으면 이 자리가 통째로 빈 그라디언트 띠로 남는다. 보여줄 게 없을 때는
         // 데스크톱에서 아예 접는다 — 모바일은 햄버거가 항상 있어야 하므로 그대로 둔다.
-        !locationChip && !onBack && "md:hidden",
+        !locationChip && !showBack && "md:hidden",
       )}
     >
       <div className="relative flex items-center justify-between px-4 pb-3 pt-6">
@@ -72,7 +83,7 @@ export function AppHeader({ location: locationChip = null, onBack }: AppHeaderPr
             <Menu size={18} />
           </button>
 
-          {onBack && (
+          {showBack && (
             <button
               type="button"
               onClick={onBack}

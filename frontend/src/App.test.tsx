@@ -974,11 +974,13 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
   expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
-  // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 아니라 일반 헤더의
-  // 뒤로가기가 보이고, 시트 배경에 가려졌던 홈은 더 이상 DOM에 없다.
+  // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 없고, 시트 배경에 가려졌던
+  // 홈도 더 이상 DOM에 없다.
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+  // 뒤로가기도 없다(2026-09-06) — 사이드바가 상시 보이는 폭에서는 돌아갈 곳이
+  // 이미 화면 왼쪽에 다 펼쳐져 있어 헤더의 화살표가 같은 일을 두 번 한다.
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
 });
 
 /*

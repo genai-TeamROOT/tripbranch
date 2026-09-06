@@ -3,6 +3,7 @@
  * 입력: location prop(utils/locationChip 모델), 셸 드로어 컨텍스트.
  * 출력: 헤더(햄버거)가 항상 있고 pill은 모델이 있을 때만 그려진다. 출발지와 검색
  *   기준이 다르면 둘 다 그려진다. pill을 누르면 위치 설정으로 이동한다.
+ *   뒤로가기는 사이드바가 없는 좁은 폭에서만 그려진다.
  *
  * AppHeader는 useAppShell()로 드로어를 열기 때문에 Provider 밖에서 렌더하면
  * 던진다 — 모든 케이스를 AppShellProvider로 감싼다.
@@ -12,7 +13,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { buildLocationChipModel } from "../../utils/locationChip";
 import { AppHeader } from "./AppHeader";
 import { AppShellProvider } from "./AppShellContext";
@@ -30,10 +31,31 @@ function chipFor(settings: { origin: string | null; center: string | null } | nu
   return settings === null ? null : buildLocationChipModel(settings);
 }
 
+/*
+ * 폭 분기는 matchMedia로 판정한다(useIsDesktopSidebar). jsdom에는 레이아웃이 없어
+ * 실제 창 크기로는 바뀌지 않으므로, 여기서 응답을 직접 정한다.
+ */
+function setSidebarVisible(visible: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: visible,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function renderHeader(
   settings: { origin: string | null; center: string | null } | null,
   shell?: Partial<ShellValue>,
-  extra?: { routes?: ReactNode },
+  extra?: { routes?: ReactNode; onBack?: () => void },
 ) {
   const value: ShellValue | undefined = shell
     ? { drawerOpen: false, openDrawer: vi.fn(), closeDrawer: vi.fn(), ...shell }
@@ -42,7 +64,7 @@ function renderHeader(
   return render(
     <AppShellProvider value={value}>
       <MemoryRouter initialEntries={["/chat"]}>
-        <AppHeader location={chipFor(settings)} />
+        <AppHeader location={chipFor(settings)} onBack={extra?.onBack} />
         {extra?.routes}
       </MemoryRouter>
     </AppShellProvider>,
@@ -124,4 +146,37 @@ test("위치 pill을 누르면 위치 설정을 시트로 연다", async () => {
   );
 
   expect(screen.getByTestId("probe")).toHaveTextContent("/chat");
+});
+
+/*
+ * **뒤로가기는 사이드바가 없는 폭에서만 낸다**(2026-09-06).
+ *
+ * 사이드바가 상시 보이면 취향·위치·일정 어디서든 돌아갈 곳이 이미 화면 왼쪽에
+ * 다 펼쳐져 있다 — 헤더의 화살표는 같은 일을 하는 두 번째 길이라, 자리만 차지하고
+ * 어디로 가는지는 덜 알려준다.
+ *
+ * 두 폭을 짝으로 잠근다. 넓은 폭만 보면 버튼을 통째로 지워도 통과한다.
+ */
+test("사이드바가 없는 폭에서는 뒤로가기를 그린다", () => {
+  setSidebarVisible(false);
+  renderHeader(null, undefined, { onBack: vi.fn() });
+
+  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
+});
+
+test("사이드바가 보이는 폭에서는 뒤로가기를 그리지 않는다", () => {
+  setSidebarVisible(true);
+  renderHeader(null, undefined, { onBack: vi.fn() });
+
+  expect(screen.queryByRole("button", { name: "뒤로가기" })).not.toBeInTheDocument();
+});
+
+test("누르면 넘겨받은 뒤로가기 동작을 부른다", async () => {
+  setSidebarVisible(false);
+  const onBack = vi.fn();
+  renderHeader(null, undefined, { onBack });
+
+  await userEvent.click(screen.getByRole("button", { name: "뒤로가기" }));
+
+  expect(onBack).toHaveBeenCalledTimes(1);
 });
