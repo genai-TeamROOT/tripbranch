@@ -43,8 +43,11 @@ const HOME_TEXT = {
       accent: "상황",
       tail: "을 말해주시면 바로 대체 장소를 찾아볼게요.",
     },
-    locationNotice:
-      "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    /* 두 문장이라 좁은 화면에서는 문장마다 한 줄씩 간다 — 렌더 쪽 주석 참고. */
+    locationNotice: {
+      first: "추천 시작 시 브라우저가 위치 권한을 요청합니다.",
+      second: "허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    },
     prompts: [
       "비를 피할 실내 장소가 필요해",
       "남은 시간이 1시간 정도야",
@@ -63,8 +66,10 @@ const HOME_TEXT = {
       accent: "situation",
       tail: ", and we’ll find a place to visit in Seoul.",
     },
-    locationNotice:
-      "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
+    locationNotice: {
+      first: "Your browser will ask for location permission before starting.",
+      second: "We use it as the search point for this chat session.",
+    },
     prompts: [
       "I need an indoor place to avoid the rain",
       "I have about one hour left",
@@ -387,11 +392,21 @@ export function HomePage() {
          *
          * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
          * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
-         * 은 띄어쓰기에서만 끊는다. text-balance 는 두 줄 길이를 고르게 맞춘다 —
-         * 없으면 첫 줄 100%, 둘째 줄 74% 로 아래가 휑했다.
+         * 은 띄어쓰기에서만 끊는다.
+         *
+         * text-balance 는 뺐다 — 문장마다 block 이 되면 각 문장 안에서만 균형을
+         * 맞추므로 두 번째 문장이 두 줄로 쪼개질 여지만 생긴다.
          */}
-        <p className="mt-3 text-balance break-keep text-center text-[11px] leading-relaxed text-muted">
-          {text.locationNotice}
+        <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-muted">
+          {/*
+           * 문장마다 한 줄이다. 좁은 화면에서는 block, sm 이상에서는 inline —
+           * 넓으면 두 문장이 한 줄에 다 들어간다.
+           *
+           * 그냥 흘려보내면 두 번째 문장 첫머리("허용한")가 첫 줄 끝에 붙어
+           * 문장이 어디서 갈리는지 안 보였다(2026-09-07).
+           */}
+          <span className="block sm:inline">{text.locationNotice.first}</span>{" "}
+          <span className="block sm:inline">{text.locationNotice.second}</span>
         </p>
       </div>
 
