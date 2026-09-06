@@ -9,7 +9,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
-import { loadPreferences } from "../state/preferenceStorage";
+import { loadPreferences, savePreferences } from "../state/preferenceStorage";
 import { resetPreferenceSync } from "../state/preferenceSync";
 import { PreferencesPage } from "./PreferencesPage";
 import { PREFERENCE_GROUPS } from "./preferenceOptions";
@@ -108,17 +108,15 @@ test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", asy
   expect(screen.getByText("0 / 5개 선택됨")).toBeInTheDocument();
 });
 
-test("키워드 직접 입력으로 새 칩을 추가하면 선택된 채로 나타난다", async () => {
-  const user = userEvent.setup();
+/*
+ * **키워드를 직접 만드는 길을 없앴다**(2026-09-06). 칩 목록은 DB에 대응이 있는
+ * 것만 남긴 것인데(아래 테스트), 직접 입력한 키워드는 `codes: []`라 어디에도
+ * 대응하지 않는다 — 고를 수 있는 5칸 중 하나를 아무 데도 안 걸리는 값이 차지했다.
+ */
+test("키워드를 직접 만드는 입구가 없다", () => {
   renderPage();
 
-  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
-  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
-  await user.click(screen.getByRole("button", { name: "추가" }));
-
-  const chip = await screen.findByRole("button", { name: "조용한 서점" });
-  expect(chip).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByText("1 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "키워드 직접 입력" })).not.toBeInTheDocument();
 });
 
 /*
@@ -165,30 +163,27 @@ test("저장하면 이 기기에 남고, 다시 열면 고른 채로 시작한�
   expect(screen.getByRole("button", { name: "카페" })).toHaveAttribute("aria-pressed", "true");
 });
 
-test("직접 입력한 키워드는 custom으로 저장되고 다시 열어도 남는다", async () => {
+/*
+ * 입구는 없앴지만 **전에 저장해 둔 키워드는 계속 보여야 한다.** 안 그리면 선택
+ * 개수(N/5)에는 잡히는데 화면에 없는 칩이 생겨서, 5개를 다 못 고르는데 그 이유가
+ * 어디에도 안 보인다. 여기 있으면 눌러서 빼고 저장하는 것으로 정리된다.
+ */
+test("전에 직접 넣어둔 키워드는 남아 있고 눌러서 뺄 수 있다", async () => {
   const user = userEvent.setup();
-  const { unmount } = renderPage();
-
-  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
-  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
-  await user.click(screen.getByRole("button", { name: "추가" }));
-  for (const label of ["조용한 곳", "카페"]) {
-    await user.click(screen.getByRole("button", { name: label }));
-  }
-  await user.click(screen.getByRole("button", { name: "저장하기" }));
-
-  expect(loadPreferences()).toContainEqual({
-    label: "조용한 서점",
-    source: "custom",
-    codes: [],
-  });
-
-  unmount();
+  savePreferences([
+    { label: "조용한 서점", source: "custom", codes: [] },
+    { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+    { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
+  ]);
   renderPage();
-  expect(screen.getByRole("button", { name: "조용한 서점" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+
+  const custom = screen.getByRole("button", { name: "조용한 서점" });
+  expect(custom).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+
+  await user.click(custom);
+  expect(custom).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByText("2 / 5개 선택됨")).toBeInTheDocument();
 });
 
 /*

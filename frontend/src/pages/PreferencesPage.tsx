@@ -15,12 +15,11 @@
  * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
  */
 
-import { Compass, Plus, Sparkles, Users } from "lucide-react";
+import { Compass, Sparkles, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
-import { AddKeywordModal } from "../components/layout/AddKeywordModal";
 import { loadPreferences, type SavedPreference } from "../state/preferenceStorage";
 import { pushPreferences, syncPreferences } from "../state/preferenceSync";
 import { useTripState } from "../state/TripContext";
@@ -96,10 +95,15 @@ export function PreferencesPage() {
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(restored.map((preference) => preference.label)),
   );
+  /*
+   * **새로 만들 수는 없고, 이미 저장한 것만 보여준다**(2026-09-06). "키워드 직접
+   * 입력"을 없앴지만 그 전에 저장해 둔 값은 계속 그려야 한다 — 안 그리면 선택
+   * 개수(N/5)에는 잡히는데 화면에 없는 칩이 생겨서, 5개를 다 못 고르는데 이유가
+   * 어디에도 보이지 않는다. 여기 있으면 눌러서 빼고 저장하는 것으로 정리된다.
+   */
   const [customKeywords, setCustomKeywords] = useState<string[]>(() =>
     restored.filter((preference) => preference.source === "custom").map(({ label }) => label),
   );
-  const [showAddKeyword, setShowAddKeyword] = useState(false);
   const [cleared, setCleared] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -168,14 +172,6 @@ export function PreferencesPage() {
           : "계정에서 지우지 못했어요. 다른 기기에는 아직 남아 있을 수 있어요.",
       );
     }
-  }
-
-  function handleAddKeyword(keyword: string) {
-    if (selected.size >= MAX_SELECTED || selected.has(keyword)) return;
-    touchedRef.current = true;
-    setCleared(false);
-    setCustomKeywords((prev) => (prev.includes(keyword) ? prev : [...prev, keyword]));
-    setSelected((prev) => new Set(prev).add(keyword));
   }
 
   /*
@@ -308,14 +304,6 @@ export function PreferencesPage() {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => setShowAddKeyword(true)}
-            className="flex items-center gap-1.5 self-start text-sm font-bold text-brand"
-          >
-            <Plus size={16} /> {isEn ? "Add your own keyword" : "키워드 직접 입력"}
-          </button>
-
           {errorMessage && <ErrorBanner message={errorMessage} />}
 
           {cleared && (
@@ -351,10 +339,6 @@ export function PreferencesPage() {
           </button>
         </div>
       </div>
-
-      {showAddKeyword && (
-        <AddKeywordModal onAdd={handleAddKeyword} onClose={() => setShowAddKeyword(false)} />
-      )}
     </main>
   );
 }
