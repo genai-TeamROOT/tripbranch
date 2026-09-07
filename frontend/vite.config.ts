@@ -10,10 +10,67 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { VitePWA } from "vite-plugin-pwa";
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    /*
+     * PWA — 홈 화면에 설치하고 정적 자산은 오프라인에서도 뜨게 한다.
+     *
+     * **API 응답은 캐시하지 않는다.** 추천·위치·일정은 지금 시각과 지금 위치가
+     * 근거라, 캐시된 답이 되살아나면 사용자는 그것이 낡은 값인지 알 방법이 없다.
+     * 인증 토큰이 붙는 요청이기도 해서 다음 사람이 앞사람의 응답을 받는 사고로
+     * 이어진다. precache 대상은 빌드 산출물뿐이고, navigateFallback도 /api를
+     * 비켜 간다.
+     *
+     * registerType은 autoUpdate다. prompt로 두면 "새 버전이 있어요" 배너를
+     * 만들어야 하는데, 지금 이 앱에는 사용자가 버전을 고를 이유가 없다 —
+     * 서비스워커가 낡은 화면을 붙잡고 있는 사고가 그보다 훨씬 비싸다.
+     */
+    VitePWA({
+      registerType: "autoUpdate",
+      includeAssets: ["favicon.svg", "apple-touch-icon-180x180.png"],
+      manifest: {
+        name: "TripBranch",
+        short_name: "TripBranch",
+        description: "지금 시각과 위치에 맞는 여행지를 찾아 하루 동선을 짜 주는 AI 여행 도우미",
+        lang: "ko",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        /* 상태바 색이다. 앱 상단이 흰 바탕이라 여기만 브랜드색을 쓰면 홈 화면에서
+           띄웠을 때 머리 위에 파란 띠가 하나 더 생긴 것처럼 보인다. */
+        theme_color: "#ffffff",
+        /* 설치 후 첫 프레임(스플래시) 바탕. 앱의 진입 스플래시(.tb-splash)가
+           시작하는 색과 맞춰, 두 스플래시가 이어 보이게 한다(index.css). */
+        background_color: "#e6edfd",
+        icons: [
+          { src: "pwa-192x192.png", sizes: "192x192", type: "image/png" },
+          { src: "pwa-512x512.png", sizes: "512x512", type: "image/png" },
+          {
+            src: "maskable-icon-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+        ],
+      },
+      workbox: {
+        /* SPA라 어떤 경로로 들어와도 index.html이 답이다. 단 /api는 백엔드 몫이라
+           여기서 가로채면 오프라인일 때 JSON 자리에 HTML이 돌아간다. */
+        navigateFallback: "index.html",
+        navigateFallbackDenylist: [/^\/api\//],
+        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+        /* 개발자 화면(/dev/*)은 미리 받아 둘 이유가 없다 — 일반 사용자에게는
+           열 길조차 없는데 설치할 때마다 157 kB를 함께 내려받는다. 빼도 온라인에서
+           평소처럼 열린다(그때 네트워크로 받는다). */
+        globIgnores: ["**/Developer*.js", "**/dev-*.js"],
+      },
+    }),
+  ],
   build: {
     rollupOptions: {
       output: {
@@ -34,11 +91,7 @@ export default defineConfig({
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("/@supabase/")) return "vendor-supabase";
           if (id.includes("/framer-motion/")) return "vendor-motion";
-          if (
-            id.includes("/react-dom/") ||
-            id.includes("/react-router") ||
-            id.includes("/react/")
-          )
+          if (id.includes("/react-dom/") || id.includes("/react-router") || id.includes("/react/"))
             return "vendor-react";
           return undefined;
         },

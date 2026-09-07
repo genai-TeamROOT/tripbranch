@@ -12,6 +12,7 @@ import { loadPreferences, savePreferences } from "./preferenceStorage";
 import { syncPreferences } from "./preferenceSync";
 import { loadRecentSearches, rememberRecentSearch } from "./recentSearchesStorage";
 import { loadLocationSettings, setLocationCenter } from "./locationSettings";
+import { loadVisitedIndices, saveVisitedIndices } from "./scheduleProgress";
 import { loadFavorites, saveFavorites } from "./sidebarStorage";
 import { clearState } from "./storage";
 
@@ -25,6 +26,7 @@ function seedEverything() {
   saveFavorites([{ id: "fav-1", label: "회사 (역삼동)" }]);
   setLocationCenter("안국역");
   rememberRecentSearch("안국역");
+  saveVisitedIndices("sched-1", [0, 2]);
   sessionStorage.setItem("tripbranch_state", JSON.stringify({ version: 6, state: {} }));
 }
 
@@ -38,6 +40,27 @@ test("로그아웃하면 취향·즐겨찾기·검색 위치·대화가 모두 �
   expect(loadLocationSettings().center).toBeNull();
   expect(loadRecentSearches()).toEqual([]);
   expect(sessionStorage.getItem("tripbranch_state")).toBeNull();
+});
+
+/*
+ * 일정 체크는 일정마다 키가 하나씩 생긴다(tripbranch_schedule_progress:<id>).
+ * 이름이 고정된 다른 저장소와 달리 접두어로 훑어 지워야 해서 따로 잠근다 —
+ * 안 지우면 다음 사람 화면에 앞사람 체크가 남고, 본 일정마다 키가 쌓인다.
+ */
+test("로그아웃하면 일정마다 쌓인 체크 기록도 남지 않는다", () => {
+  saveVisitedIndices("sched-1", [0, 2]);
+  saveVisitedIndices("sched-2", [1]);
+  saveVisitedIndices("current", [0]);
+
+  clearLocalUserData();
+
+  expect(loadVisitedIndices("sched-1")).toEqual([]);
+  expect(loadVisitedIndices("sched-2")).toEqual([]);
+  expect(loadVisitedIndices("current")).toEqual([]);
+  /* 접두어로 훑으므로 우리 키가 하나도 안 남아야 한다. */
+  expect(
+    Object.keys(localStorage).filter((key) => key.startsWith("tripbranch_schedule_progress:")),
+  ).toEqual([]);
 });
 
 /*

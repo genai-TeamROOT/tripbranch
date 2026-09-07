@@ -21,6 +21,7 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
+import { useVisualViewportHeight } from "../hooks/useVisualViewportHeight";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
@@ -57,7 +58,7 @@ const CHAT_TEXT = {
   ko: {
     developer: "개발자용 보기",
     requestError: "추천을 불러오지 못했어요.",
-    composer: "추가 조건을 입력해 주세요",
+    composer: "트리비에게 물어보세요",
     clarificationComposer: "경복궁 근처에서 찾아줘",
     requestMore: "다른 곳 보여줘",
     relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
@@ -67,7 +68,7 @@ const CHAT_TEXT = {
   en: {
     developer: "Developer view",
     requestError: "We couldn’t load recommendations.",
-    composer: "Add another condition or ask a follow-up",
+    composer: "Ask Trivi",
     clarificationComposer: "Find somewhere near Gyeongbokgung",
     requestMore: "Show more places",
     relaxRadius: "Search in a wider area",
@@ -91,6 +92,9 @@ export function ChatPage() {
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  /* 입력창에 포커스가 가서 모바일 키보드가 뜨면 이 값이 채워진다 — 헤더까지
+     함께 스크롤되어 밀려 올라가는 대신, 아래에서 <main> 자체의 높이를 줄인다. */
+  const visualViewportHeight = useVisualViewportHeight();
   useAutoScrollToBottom(messagesContainerRef, isLoading);
   const { isNearTop, isScrollable, scrollToTop, scrollToBottom } =
     useScrollEdgeButton(messagesContainerRef);
@@ -422,7 +426,10 @@ export function ChatPage() {
   );
 
   return (
-    <main className="flex h-full flex-col overflow-y-auto">
+    <main
+      className="flex h-full flex-col overflow-y-auto"
+      style={visualViewportHeight != null ? { height: visualViewportHeight } : undefined}
+    >
       <AppHeader location={locationChip} />
 
       <div

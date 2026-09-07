@@ -31,6 +31,7 @@ import { resetSavedSchedulesCache } from "./savedSchedules";
 import { clearPreferences } from "./preferenceStorage";
 import { resetPreferenceSync } from "./preferenceSync";
 import { clearLocationSettings } from "./locationSettings";
+import { clearScheduleProgress } from "./scheduleProgress";
 import { clearFavorites } from "./sidebarStorage";
 import { clearState } from "./storage";
 
@@ -41,6 +42,9 @@ export function clearLocalUserData(): void {
   clearFavorites();
   clearLocationSettings();
   clearRecentSearches();
+  /* 일정에서 "다녀왔어요"로 체크한 것(state/scheduleProgress.ts). 일정마다 키가
+     하나씩 쌓이므로 접두어로 훑어 지운다. */
+  clearScheduleProgress();
   /* 화면이 이미 받아 둔 사본. 저장소를 지워도 이게 남아 있으면 다음 사람이 본다. */
   resetPreferenceSync();
   resetChatSessionsCache();
