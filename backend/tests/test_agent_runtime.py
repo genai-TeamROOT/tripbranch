@@ -2662,12 +2662,15 @@ async def test_schedule_continuation_during_pending_clarification_does_not_build
 
 
 @pytest.mark.asyncio
-async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
-    """ensure_current_context()는 세션을 만들 수 없어 최초 턴에는 GPS를 못 심는다.
+async def test_device_location_is_used_this_turn_but_not_kept_for_the_next() -> None:
+    """이번 턴의 좌표는 도구까지 그대로 가고, 다음 턴에는 남지 않는다.
 
-    apply()로 세션이 생긴 직후 run_agent_flow가 update_api_context를 호출해야
-    다음 턴부터 gps_expired가 False가 된다(session_orchestrator.py의 "알려진 한계"
-    후속 처리 — interpret.py의 동일 테스트를 run_agent_flow 기준으로도 고정한다).
+    예전에는 최초 턴 직후 세션에 GPS를 심어 다음 턴이 재사용했다. 서버가 사용자
+    좌표를 저장하지 않게 되면서(state/store.py::for_persistence) 심는 자리를 없앴다.
+
+    **다음 턴이 좌표를 잃는 것이 이 변경의 내용이다.** 화면은 매 턴 좌표를 실어
+    보내므로 실제 사용에서는 빈 채로 가는 일이 드물고, 비면 백엔드가 어디서 찾을지
+    되묻는다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -2692,11 +2695,10 @@ async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
         **providers,
     )
 
-    assert second.state.api_context.gps_expired is False
-    assert second.state.api_context.gps_location == DEVICE_LOCATION
-    assert providers["tool_provider"].last_request.gps_location == Coordinates(
-        latitude=37.5788, longitude=126.9770
-    )
+    # 2턴은 좌표를 안 실어 보냈고 세션에도 남아 있지 않다.
+    assert second.state.api_context.gps_expired is True
+    assert second.state.api_context.gps_location is None
+    assert providers["tool_provider"].last_request.gps_location is None
 
 
 @pytest.mark.asyncio
