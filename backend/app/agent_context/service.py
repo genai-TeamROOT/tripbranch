@@ -39,6 +39,7 @@ from app.agent_context.enrichment_service import (
 from app.agent_context.info_field_rules import (
     clean_barrier_free_text,
     clean_text,
+    compose_accessible_restroom,
     compose_nursing_room,
     compose_seating,
     compose_visual_guide,
@@ -3203,7 +3204,7 @@ def _to_place_card(
         homepage=clean_text(details.homepage),
         # 무장애 아홉 항목. 접근로·주출입구(단차 서술)와 대중교통 접근은 카드에
         # 싣지 않는다 — 답변 경로의 wheelchair_access는 그대로 둔다.
-        accessible_restroom=clean_barrier_free_text(details.accessible_restroom_raw),
+        accessible_restroom=compose_accessible_restroom(details),
         accessible_parking=clean_barrier_free_text(details.accessible_parking_raw),
         elevator=clean_barrier_free_text(details.elevator_raw),
         visual_guide=compose_visual_guide(details),

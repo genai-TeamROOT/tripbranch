@@ -120,6 +120,56 @@ _DIAPER_KEYWORD = "기저귀"
 # 값만 고르며, 그 값에 단차 서술이 함께 들어 있는 행은 실측 0건이었다.
 _SEATING_KEYWORDS = ("의자식", "입식")
 
+# 원문이 항목 구분에 파이프를 쓰는 곳이 있다(`"손잡이|등받이|비상 호출벨"`, 6곳).
+# 같은 뜻인데 어떤 곳은 쉼표라 화면에서 톤이 갈린다. 쉼표로 맞춘다.
+_PIPE_SEPARATOR_PATTERN = re.compile(r"\s*\|\s*")
+
+# `_GLUED_SENTENCE_PATTERN`이 못 잡는 붙음. 앞말이 `있음`이 아니라 괄호나 숫자로
+# 끝나면 그 패턴이 비켜간다(`"출입구 인근 1개소슬라이딩손잡이"`,
+# `"…간이화장실)손잡이"`, `"화장실 있음자동버튼손잡이"`).
+#
+# **설비 어휘를 열거해 그 앞에서만 끊는다.** 일반 규칙으로 넓히면 멀쩡한 문장을
+# 자른다 — 예를 들어 `"장애인 전용 화장실 있음(공용화장실,유아숲 맞은편)"`은
+# 끊을 자리가 없는 한 문장이다. 사전에 없는 말은 붙은 채로 남긴다.
+#
+# 앞에 공백이 없을 때만 끊는다. `"수평수직 손잡이"`처럼 이미 띄어 쓴 곳은
+# 건드리지 않기 위해서다.
+_GLUED_FACILITY_TERMS = (
+    "슬라이딩",
+    "자동물내림",
+    "자동버튼",
+    "자동문",
+    "미닫이",
+    "손잡이",
+    "등받이",
+    "비상 호출벨",
+    "점자표지판",
+    "점형블록",
+    "영유아 거치대",
+    "기저귀 교환대",
+    # 대중교통 안내에서 `"활터앞정류장저상버스 없음"`처럼 붙는다. 이 필드의 붙음
+    # 의심 10건 중 8건은 정류장·건물 이름이 원래 붙어 있는 고유명사라
+    # (`"서울역버스환승센터강우규의거터"`) 끊으면 안 되고, 진짜 붙음은 이 어휘뿐이다.
+    "저상버스",
+)
+_GLUED_FACILITY_PATTERN = re.compile(
+    r"(?<=[가-힣0-9)])(?=" + "|".join(_GLUED_FACILITY_TERMS) + ")"
+)
+
+# 항목을 다 떼어내고 나면 `"있음"` 하나만 남는 자리가 있다
+# (`"있음 / 더 센터 5층…"`, `"…비상 호출벨 / 있음"`). 무엇이 있다는 것인지가
+# 없어서 읽는 사람에게 뜻이 없다.
+_EMPTY_ITEM_PATTERN = re.compile(r"^(있음|없음)$")
+
+# 장애인 화장실 원문 안에 적혀 오는 영유아 설비. 그 화장실에 실제로 있는
+# 설비라 틀린 값은 아니지만, 화면에는 "수유·기저귀" 줄이 따로 있어 같은 말이
+# 두 번 나온다(실측 25곳 중 14곳). 항목 단위로 떼어내 그 줄로 옮긴다.
+_INFANT_FACILITY_TERMS = ("영유아 거치대", "기저귀 교환대", "기저귀교환대", "유아용 거치대")
+
+# 떼어낸 항목에서 이 꼬리를 지우고 나면 설비 이름만 남는다. 남는 것이 있으면
+# 그 항목은 영유아 설비만 말하는 것이 아니므로 건드리지 않는다.
+_ITEM_TAIL_PATTERN = re.compile(r"(있음|구비|설치(?:되어 있음|됨)?)$")
+
 
 def clean_barrier_free_text(value: object) -> str | None:
     """무장애 원문을 사람이 읽을 수 있는 한 문장으로 다듬는다.
@@ -134,10 +184,128 @@ def clean_barrier_free_text(value: object) -> str | None:
     if cleaned is None:
         return None
     without_tag = _SOURCE_TAG_PATTERN.sub(" ", cleaned)
+    unified = _PIPE_SEPARATOR_PATTERN.sub(", ", without_tag)
     separated = _GLUED_SENTENCE_PATTERN.sub(
-        f"있음{_WHEELCHAIR_ACCESS_SEPARATOR}", without_tag
+        f"있음{_WHEELCHAIR_ACCESS_SEPARATOR}", unified
     )
-    return _WHITESPACE_PATTERN.sub(" ", separated).strip() or None
+    separated = _GLUED_FACILITY_PATTERN.sub(_WHEELCHAIR_ACCESS_SEPARATOR, separated)
+    normalized = _WHITESPACE_PATTERN.sub(" ", separated).strip()
+    return _without_empty_items(normalized)
+
+
+def _split_items(value: str) -> list[str]:
+    """정리된 값을 항목 단위로 쪼갠다. 구분자는 쉼표와 `/` 둘뿐이다.
+
+    **읽기 전용이다.** 쪼갠 것을 다시 이어 붙이지 않는다 — 그렇게 하면 원문이
+    쓰던 구분자가 통째로 바뀐다(`"대여 가능(1대/안내데스크)"`가
+    `"대여 가능(1대, 안내데스크)"`가 됐다). 지울 때는 `_remove_item()`으로
+    그 자리만 도려낸다.
+    """
+    items: list[str] = []
+    for chunk in value.split(_WHEELCHAIR_ACCESS_SEPARATOR.strip()):
+        items.extend(part.strip() for part in chunk.split(","))
+    return [item for item in items if item]
+
+
+def _join_items(items: list[str]) -> str | None:
+    """새로 만든 항목 목록을 잇는다. 원문을 다시 잇는 데 쓰면 안 된다."""
+    return ", ".join(items) or None
+
+
+def _remove_item(value: str, item: str) -> str:
+    """항목 하나를 앞 구분자와 함께 도려낸다. 나머지는 원문 그대로 둔다."""
+    escaped = re.escape(item)
+    without = re.sub(rf"\s*[,/]\s*{escaped}(?=\s*(?:[,/]|$))", "", value)
+    if without == value:
+        without = re.sub(rf"^{escaped}\s*[,/]\s*", "", value)
+    return without.strip()
+
+
+def _without_empty_items(value: str) -> str | None:
+    """`"있음"`처럼 무엇에 대한 것인지 없는 조각을 뺀다.
+
+    항목을 쪼개다 남은 찌꺼기라, 그대로 두면 `"있음 / 더 센터 5층 …"`처럼 읽는
+    사람에게 뜻이 없는 말로 시작한다. 값 전체가 `"있음"` 하나뿐이면 그것은 답이므로
+    그대로 둔다 — 뺄 대상은 다른 항목과 함께 있을 때다.
+    """
+    items = _split_items(value)
+    if len(items) <= 1:
+        return value or None
+    result = value
+    for item in items:
+        if _EMPTY_ITEM_PATTERN.match(item):
+            result = _remove_item(result, item)
+    return result or None
+
+
+def _is_infant_only_item(item: str) -> bool:
+    """항목 전체가 영유아 설비만 말하는가.
+
+    **단어가 아니라 항목으로 본다.** `"장애인 전용 화장실 있음(공용화장실,유아숲
+    맞은편)"`의 `"유아숲"`은 공원 이름이라, 단어로 지우면 위치 안내가 잘린다.
+    설비 이름과 `"있음"` 같은 꼬리를 걷어내고 남는 것이 없을 때만 참이다.
+    """
+    remainder = item
+    for term in _INFANT_FACILITY_TERMS:
+        remainder = remainder.replace(term, "")
+    remainder = _ITEM_TAIL_PATTERN.sub("", remainder.strip()).strip()
+    return remainder == "" and item != remainder
+
+
+def _take_infant_items(value: str | None) -> tuple[str | None, list[str]]:
+    """정리된 화장실 값에서 영유아 설비 항목만 떼어낸다.
+
+    돌려주는 것은 (영유아 항목을 뺀 값, 떼어낸 항목들)이다. 뗄 것이 없으면
+    원래 값을 그대로 돌려준다.
+    """
+    if value is None:
+        return None, []
+    items = _split_items(value)
+    # 괄호 안에 든 항목은 건드리지 않는다. `"…(점자표지판, 손잡이, 영유아 거치대)"`
+    # 에서 마지막 항목만 떼면 여는 괄호가 닫히지 않는다. 중복이 남는 편이
+    # 문장이 깨지는 것보다 낫다.
+    infant = [
+        item
+        for item in items
+        if _is_infant_only_item(item) and "(" not in item and ")" not in item
+    ]
+    if not infant:
+        return value, []
+    kept = value
+    for item in infant:
+        kept = _remove_item(kept, item)
+    return kept or None, infant
+
+
+def compose_infant_family_etc(details: PlaceDetails) -> str | None:
+    """영유아·가족 편의 값에 화장실에서 떼어낸 항목을 더한다.
+
+    답변 경로(`extract_info_fields`)에는 영유아 전용 키가 따로 있어, 상세 카드가
+    쓰는 `compose_nursing_room()`이 아니라 이쪽이 옮긴 것을 받는다. 받는 자리가
+    없으면 화장실에서 뗀 항목이 그대로 사라진다.
+    """
+    base = clean_barrier_free_text(details.infant_family_etc_raw)
+    _, moved = _take_infant_items(clean_barrier_free_text(details.accessible_restroom_raw))
+    if not moved:
+        return base
+    if base is None:
+        return _join_items(moved)
+    additions = [item for item in moved if item not in base]
+    if not additions:
+        return base
+    return _WHEELCHAIR_ACCESS_SEPARATOR.join([base, _join_items(additions) or ""])
+
+
+def compose_accessible_restroom(details: PlaceDetails) -> str | None:
+    """장애인 화장실 값에서 영유아 설비 항목을 뺀다.
+
+    뺀 항목은 사라지지 않는다 — `compose_nursing_room()`이 "수유·기저귀" 줄로
+    받아 간다. 두 함수가 같은 규칙을 봐야 해서 한 모듈에 둔다.
+    """
+    without_infant, _ = _take_infant_items(
+        clean_barrier_free_text(details.accessible_restroom_raw)
+    )
+    return without_infant
 
 
 def _joined_barrier_free(*values: str | None) -> str | None:
@@ -176,7 +344,21 @@ def compose_nursing_room(details: PlaceDetails) -> str | None:
     infant_family = clean_barrier_free_text(details.infant_family_etc_raw)
     if infant_family is not None and _DIAPER_KEYWORD not in infant_family:
         infant_family = None
-    return _joined_barrier_free(details.nursing_room_raw, infant_family)
+    composed = _joined_barrier_free(details.nursing_room_raw, infant_family)
+
+    # 장애인 화장실 원문에서 떼어낸 영유아 설비를 여기서 받는다. 그냥 버리면
+    # 두 필드가 모두 비어 있던 곳(실측 8곳)에서 영유아 정보가 화면에서 통째로
+    # 사라진다. 이미 같은 말을 하고 있으면 더하지 않는다 — 옮기는 이유가 중복을
+    # 없애는 것이라 여기서 다시 겹치면 뜻이 없다.
+    _, moved = _take_infant_items(clean_barrier_free_text(details.accessible_restroom_raw))
+    if not moved:
+        return composed
+    if composed is None:
+        return _join_items(moved)
+    additions = [item for item in moved if item not in composed]
+    if not additions:
+        return composed
+    return _WHEELCHAIR_ACCESS_SEPARATOR.join([composed, _join_items(additions) or ""])
 
 
 def compose_seating(details: PlaceDetails) -> str | None:
@@ -288,7 +470,7 @@ def extract_info_fields(
         fields.update(
             _normalized(
                 ("wheelchair_access", _compose_wheelchair_access(details)),
-                ("accessible_restroom", clean_barrier_free_text(details.accessible_restroom_raw)),
+                ("accessible_restroom", compose_accessible_restroom(details)),
                 ("accessible_parking", clean_barrier_free_text(details.accessible_parking_raw)),
                 ("wheelchair_rental", clean_barrier_free_text(details.wheelchair_rental_raw)),
                 ("stroller_rental", stroller_rental),
@@ -298,7 +480,7 @@ def extract_info_fields(
                 ("braille_promotion", clean_barrier_free_text(details.braille_promotion_raw)),
                 ("audio_guide", clean_barrier_free_text(details.audio_guide_raw)),
                 ("public_transport", clean_barrier_free_text(details.public_transport_raw)),
-                ("infant_family_etc", clean_barrier_free_text(details.infant_family_etc_raw)),
+                ("infant_family_etc", compose_infant_family_etc(details)),
                 ("disability_etc", clean_barrier_free_text(details.disability_etc_raw)),
             )
         )
