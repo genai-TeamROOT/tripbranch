@@ -418,6 +418,7 @@ export function ChatPage() {
   const locationChip = buildLocationChipModel(
     locationSettings,
     state.interpreted_conditions?.location_query ?? null,
+    Boolean(state.device_location),
   );
 
   return (
