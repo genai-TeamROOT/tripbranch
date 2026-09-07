@@ -169,7 +169,7 @@ export function ChatComposer({
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder={placeholder}
-          className="min-h-10 max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-base leading-6 text-ink placeholder:text-muted focus:outline-none disabled:opacity-50"
+          className="min-h-10 max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-base leading-6 text-ink placeholder:text-sm placeholder:text-muted focus:outline-none disabled:opacity-50"
         />
         <VoiceInputButton
           disabled={disabled}

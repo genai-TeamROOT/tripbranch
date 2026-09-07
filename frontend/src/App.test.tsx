@@ -218,12 +218,7 @@ test("user chat hides condition debug card and shows recommendations", async () 
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   await renderApp();
 
-  await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
-    "비 오는 날 갈 곳",
-  );
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "비 오는 날 갈 곳");
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
@@ -263,12 +258,7 @@ test("user chat needs only one chat call", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   await renderApp();
 
-  await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
-    "비 오는 날 갈 곳",
-  );
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "비 오는 날 갈 곳");
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
@@ -287,7 +277,9 @@ test("falls back to the current location instead of the old 종로구 default", 
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 현재 위치 주변에서 검색)" }),
+    screen.getByRole("button", {
+      name: "위치 설정으로 이동 (현재 위치에서 출발, 현재 위치 주변에서 검색)",
+    }),
   ).toBeInTheDocument();
 });
 
@@ -298,7 +290,9 @@ test("shows the picked origin in the header pill when no center is set", async (
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (혜화역에서 출발, 혜화역 주변에서 검색)" }),
+    screen.getByRole("button", {
+      name: "위치 설정으로 이동 (혜화역에서 출발, 혜화역 주변에서 검색)",
+    }),
   ).toBeInTheDocument();
 });
 
@@ -309,7 +303,9 @@ test("shows the picked search center in the header location pill", async () => {
   await renderApp();
 
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 안국역 주변에서 검색)" }),
+    screen.getByRole("button", {
+      name: "위치 설정으로 이동 (현재 위치에서 출발, 안국역 주변에서 검색)",
+    }),
   ).toBeInTheDocument();
 });
 
@@ -321,12 +317,7 @@ test("sends the search center picked on the location screen with the chat reques
   setLocationCenter("안국역");
   await renderApp();
 
-  await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
-    "카페 추천해줘",
-  );
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "카페 추천해줘");
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   /* 이 화면은 발화 말고도 다른 요청을 보내므로(취향 조회 등) 순서로 집지 않고
@@ -409,9 +400,7 @@ test("moves the header pill before the recommendation cards arrive", async () =>
   await renderApp();
 
   await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("트리비에게 물어보세요"),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -423,7 +412,9 @@ test("moves the header pill before the recommendation cards arrive", async () =>
      교체로 떨어져 나가면 "찾았는데 document에 없다"로 깨진다. */
   await waitFor(() =>
     expect(
-      screen.getByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
+      screen.getByRole("button", {
+        name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)",
+      }),
     ).toBeInTheDocument(),
   );
   expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
@@ -438,20 +429,23 @@ test("shows the location the utterance picked in the header pill", async () => {
      사용자는 아직 서대문역을 기준으로 찾은 줄 안다. */
   setLocationOrigin("서대문역");
   setLocationCenter("서대문역");
-  vi.stubGlobal("fetch", mockFetchWithChatResponse(chatResponseWithConditions("안국역", "광화문역")));
+  vi.stubGlobal(
+    "fetch",
+    mockFetchWithChatResponse(chatResponseWithConditions("안국역", "광화문역")),
+  );
   await renderApp();
 
   await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("트리비에게 물어보세요"),
     "지금 안국역인데 광화문역 근처 알려줘",
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(
-    await screen.findByRole("button", { name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)" }),
+    await screen.findByRole("button", {
+      name: "위치 설정으로 이동 (안국역에서 출발, 광화문역 주변에서 검색)",
+    }),
   ).toBeInTheDocument();
 });
 
@@ -464,9 +458,7 @@ test("sends the location the utterance picked on the next turn", async () => {
   await renderApp();
 
   await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("트리비에게 물어보세요"),
     "광화문역 근처 알려줘",
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -492,16 +484,16 @@ test("keeps the picked location when the server reports no location at all", asy
   await renderApp();
 
   await userEvent.type(
-    screen.getByPlaceholderText(
-      "경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    ),
+    screen.getByPlaceholderText("트리비에게 물어보세요"),
     "경복궁 운영시간 알려줘",
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "위치 설정으로 이동 (현재 위치에서 출발, 서대문역 주변에서 검색)" }),
+    screen.getByRole("button", {
+      name: "위치 설정으로 이동 (현재 위치에서 출발, 서대문역 주변에서 검색)",
+    }),
   ).toBeInTheDocument();
 });
 
@@ -515,7 +507,7 @@ test("asks whether to refresh a location older than 30 minutes before a follow-u
   await screen.findByText("테스트 박물관");
 
   now.mockReturnValue(30 * 60 * 1000 + 1_001);
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳 보여줘");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "다른 곳 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
 
   expect(
@@ -546,7 +538,7 @@ test("does not ask again within 30 minutes after continuing with the previous lo
   await screen.findByText("테스트 박물관");
 
   now.mockReturnValue(30 * 60 * 1000 + 1_001);
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳 보여줘");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "다른 곳 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   await screen.findByText(
     "현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.",
@@ -556,7 +548,7 @@ test("does not ask again within 30 minutes after continuing with the previous lo
 
   // 스누즈 구간(30분) 안의 다음 턴 — 재확인 질문 없이 바로 보내져야 한다.
   now.mockReturnValue(30 * 60 * 1000 + 5 * 60 * 1000 + 1_001);
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페도 보여줘");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "카페도 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   await waitFor(() => expect(chatCalls()).toHaveLength(3));
   expect(screen.queryByText(/현재 위치를 확인한 지 .*지났어요/)).not.toBeInTheDocument();
@@ -567,7 +559,7 @@ test("does not ask again within 30 minutes after continuing with the previous lo
   // 스누즈가 끝난 뒤엔 다시 물어야 하고, 실제 GPS 나이(60분)를 그대로 보여줘야
   // 한다 — "이전 위치로 계속"이 나이를 30분으로 리셋해버리면 안 된다.
   now.mockReturnValue(60 * 60 * 1000 + 1_002);
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "한 곳 더 보여줘");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "한 곳 더 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   expect(
     await screen.findByText(
@@ -587,7 +579,7 @@ test("refreshing a location after 30 minutes requests browser GPS again", async 
   await screen.findByText("테스트 박물관");
 
   now.mockReturnValue(30 * 60 * 1000 + 1_001);
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페 추천해줘");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "카페 추천해줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   await screen.findByRole("button", { name: "현재 위치 다시 가져오기" });
 
@@ -805,7 +797,9 @@ test("지난 턴의 되묻기 선택지는 새 턴이 오면 사라지고 문구
   await userEvent.click(screen.getByRole("button", { name: "실내" }));
 
   // 다음 턴이 도착하면 선택지는 사라진다.
-  await waitFor(() => expect(screen.queryByRole("button", { name: "실외" })).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "실외" })).not.toBeInTheDocument(),
+  );
   // 무엇을 물었는지는 기록으로 남는다.
   expect(screen.getByText("실내와 실외 중 어디가 좋으세요?")).toBeInTheDocument();
 });
@@ -1040,7 +1034,7 @@ test("응답을 기다리는 동안 중단을 누르면 로딩이 멈추고 오�
     }),
   );
 
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 조건 추가");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "다른 조건 추가");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
 
   // progress 이벤트 하나를 흘려 "생각 중" 상태를 만든다.
@@ -1089,7 +1083,7 @@ test("텍스트가 이미 온 상태에서 중단하면 거기까지만 남기�
     }),
   );
 
-  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 조건 추가");
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "다른 조건 추가");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
 
   const encoder = new TextEncoder();
@@ -1156,7 +1150,7 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
 
   // 결과는 메시지로 쌓이므로 /chat으로 넘어가야 보인다.
   expect(await screen.findByText("감성 카페")).toBeInTheDocument();
-  expect(screen.getByPlaceholderText("추가 조건을 입력해 주세요")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("트리비에게 물어보세요")).toBeInTheDocument();
 });
 
 /*

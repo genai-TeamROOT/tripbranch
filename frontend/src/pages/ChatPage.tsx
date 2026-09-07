@@ -59,7 +59,7 @@ const CHAT_TEXT = {
   ko: {
     developer: "개발자용 보기",
     requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
-    composer: "추가 조건을 입력해 주세요",
+    composer: "트리비에게 물어보세요",
     clarificationComposer: "경복궁 근처에서 찾아줘",
     requestMore: "다른 곳 보여줘",
     relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
@@ -69,7 +69,7 @@ const CHAT_TEXT = {
   en: {
     developer: "Developer view",
     requestError: "We couldn’t load recommendations. Please try again.",
-    composer: "Add another condition or ask a follow-up",
+    composer: "Ask Trivi",
     clarificationComposer: "Find somewhere near Gyeongbokgung",
     requestMore: "Show more places",
     relaxRadius: "Search in a wider area",

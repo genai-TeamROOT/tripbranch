@@ -604,10 +604,7 @@ test("지난 대화를 열고 이어 물으면 같은 세션으로 나간다", a
     within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
   );
   await screen.findByText("비 오는데 어디 갈까");
-  await user.type(
-    screen.getByPlaceholderText("추가 조건을 입력해 주세요"),
-    "그럼 근처 카페는?{Enter}",
-  );
+  await user.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "그럼 근처 카페는?{Enter}");
 
   await waitFor(() => expect(server.chatSessionIds).toEqual(["chat-1"]));
   expect(server.resumed).toEqual(["chat-1"]);
@@ -624,10 +621,7 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
   await renderApp();
   const before = server.listCalls;
 
-  await user.type(
-    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
-    "방금 시작한 대화",
-  );
+  await user.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "방금 시작한 대화");
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   await waitFor(() => expect(within(sidebar()).getByText("방금 시작한 대화")).toBeInTheDocument());
@@ -645,10 +639,7 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
   await renderApp();
   server.holdStream = true;
 
-  await user.type(
-    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
-    "앞 대화의 질문",
-  );
+  await user.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "앞 대화의 질문");
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
   await waitFor(() => expect(server.pending).not.toBeNull());
 
@@ -817,10 +808,7 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
   await renderApp();
   server.holdStream = true;
 
-  await user.type(
-    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
-    "기다리던 질문",
-  );
+  await user.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "기다리던 질문");
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
   await waitFor(() => expect(server.pending).not.toBeNull());
 
@@ -898,7 +886,7 @@ test("지난 대화를 이어가면 새 발화 위에 지금 시각이 뜬다", 
   await screen.findByText("실내를 찾아볼게요");
   const before = screen.getAllByText(/오전|오후/).length;
 
-  await user.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "이어서 물어봄{Enter}");
+  await user.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "이어서 물어봄{Enter}");
 
   await waitFor(() => expect(screen.getAllByText(/오전|오후/).length).toBe(before + 1));
 });
