@@ -79,9 +79,13 @@ export function usePhotoSimilarSearch() {
         });
       } catch (error) {
         dispatch({ type: "FAIL_PHOTO_SIMILAR", payload: { messageId } });
+        /* 사유는 올린 사진 바로 아래에 붙는다. 다시 보낼 발화가 없으므로(파일이라
+           상태에 안 남는다) retryInput은 주지 않는다 — 사진을 다시 고르면 된다. */
         dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof ApiError ? error.message : "사진으로 장소를 찾지 못했어요.",
+          type: "FAIL_TURN",
+          payload: {
+            message: error instanceof ApiError ? error.message : "사진으로 장소를 찾지 못했어요.",
+          },
         });
       }
     },

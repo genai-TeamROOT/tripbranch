@@ -64,6 +64,15 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (message.type === "interpretation_summary") {
     return typeof message.text === "string";
   }
+  /* TP-245. 이 케이스가 없으면 요청이 한 번이라도 실패한 대화가 새로고침에서
+     통째로 버려진다 — schedule_result·place_info_result·photo_similar_result가
+     같은 이유로 겪었던 일이다. retryInput은 없을 수 있다(위치 갱신 실패 등). */
+  if (message.type === "turn_error") {
+    return (
+      typeof message.text === "string" &&
+      (message.retryInput === undefined || typeof message.retryInput === "string")
+    );
+  }
   if (message.type === "condition_debug") {
     return (
       typeof message.userInput === "string" &&

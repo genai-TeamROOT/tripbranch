@@ -13,6 +13,12 @@ import { setLocationCenter, setLocationOrigin } from "./state/locationSettings";
 import { resetChatSessionsCache } from "./state/chatSessions";
 import { resetSavedSchedulesCache } from "./state/savedSchedules";
 
+/* jsdom에는 createImageBitmap도 canvas도 없어서 축소본이 항상 null이 된다. 그러면
+   실패한 사진 말풍선에 남을 것이 없어 "사진이 남는지"를 확인할 수 없다. */
+vi.mock("./utils/imageThumbnail", () => ({
+  createThumbnailDataUrl: async () => "data:image/jpeg;base64,AAAA",
+}));
+
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
 // llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
 // 그대로 결과 메시지가 된다.
@@ -1168,3 +1174,94 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
  * handleSave), 저장됐다는 확인이 이 줄이었다. 지금은 홈에 아무 표시도 남지
  * 않는다.
  */
+// --- 실패한 턴을 대화 안에 남긴다(TP-245) ------------------------------------
+
+/*
+ * 예전에는 오류가 대화 목록 맨 위 배너에 떴다. 대화가 길어지면 화면 밖으로
+ * 밀려나는데 이 화면은 새 답변마다 맨 아래로 스크롤하므로, 사용자는 늘 배너에서
+ * 가장 먼 곳에 있었다. "다시 시도"가 달려 있는데도 누를 수가 없었다.
+ */
+function failingFetch() {
+  return vi.fn(async () =>
+    Response.json(
+      { error: { code: "internal_server_error", message: "서버가 응답하지 않았어요." } },
+      { status: 500 },
+    ),
+  );
+}
+
+async function sendFirstUtterance() {
+  await renderApp();
+  await userEvent.type(
+    screen.getByPlaceholderText("경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"),
+    "비 오는 날 갈 곳",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+}
+
+test("요청이 실패하면 사유가 대화 맨 아래에 남고 발화도 그대로 남는다", async () => {
+  await sendFirstUtterance();
+  await screen.findByText("테스트 박물관");
+
+  vi.stubGlobal("fetch", failingFetch());
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("서버가 응답하지 않았어요.");
+  /* 실패한 발화도 대화에 남는다 — 무엇에 대한 실패인지가 위아래로 읽혀야 한다. */
+  expect(screen.getByText("다른 곳")).toBeInTheDocument();
+  /* 앞 턴의 결과는 건드리지 않는다. */
+  expect(screen.getByText("테스트 박물관")).toBeInTheDocument();
+  /* 입력창이 풀려야 다시 쓸 수 있다. */
+  expect(screen.getByRole("button", { name: "보내기" })).toBeInTheDocument();
+});
+
+test("실패한 턴의 다시 시도를 누르면 같은 발화를 다시 보낸다", async () => {
+  await sendFirstUtterance();
+  await screen.findByText("테스트 박물관");
+
+  vi.stubGlobal("fetch", failingFetch());
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  await screen.findByRole("alert");
+
+  const base = mockFetch();
+  const sentBodies: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      sentBodies.push(String(init?.body ?? ""));
+      return base(input);
+    }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+  await waitFor(() => expect(sentBodies.some((body) => body.includes("다른 곳"))).toBe(true));
+});
+
+test("사진 검색이 실패해도 올린 사진은 대화에 남는다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json(
+          { error: { code: "internal_server_error", message: "사진 검색이 실패했어요." } },
+          { status: 500 },
+        );
+      }
+      return Response.json({ sessions: [], items: [] });
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  fireEvent.change(screen.getByTestId("photo-gallery-input"), { target: { files: [file] } });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("사진 검색이 실패했어요.");
+  /* 예전에는 실패하면 사진 말풍선을 지웠다. 채팅이 실패해도 발화는 남기면서
+     사진만 지우는 것은 일관되지 않았다. */
+  expect(await screen.findByAltText("올린 사진")).toBeInTheDocument();
+});

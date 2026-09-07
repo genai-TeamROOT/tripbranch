@@ -190,6 +190,12 @@ type TripAction =
     }
   /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
   | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
+  /*
+   * 실패한 턴을 대화에 한 줄로 남긴다(TP-245). SET_ERROR와 달리 state.error를
+   * 건드리지 않는다 — 채팅 화면에서 오류가 배너와 메시지 두 곳으로 갈리면
+   * 어디에 뜨는지 예측할 수 없게 된다.
+   */
+  | { type: "FAIL_TURN"; payload: { message: string; retryInput?: string } }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "SET_SAVED_PLACES"; payload: { items: SavedPlaceItem[] } }
@@ -882,11 +888,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ),
       };
     case "FAIL_PHOTO_SIMILAR":
-      /* 실패한 사진 말풍선은 지운다. 오류는 배너가 따로 알린다 — 말풍선을
-         남기면 무엇이 잘못됐는지 모른 채 사진만 덩그러니 남는다. */
+      /*
+       * 올린 사진은 남긴다(TP-245). 예전에는 지웠는데, 그 근거는 "말풍선을 남기면
+       * 무엇이 잘못됐는지 모른 채 사진만 덩그러니 남는다"였다. 이제 사유가 바로
+       * 뒤에 turn_error 한 줄로 붙으므로 그 근거가 사라졌다. 채팅 요청이 실패해도
+       * 사용자 발화는 남기면서 사진만 지우는 것은 일관되지 않기도 했다.
+       */
       return {
         ...state,
-        messages: state.messages.filter((message) => message.id !== action.payload.messageId),
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, status: "failed" }
+            : message,
+        ),
       };
     case "APPEND_SESSION_STATUS":
       return {
@@ -899,6 +913,22 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             type: "session_status",
             status: action.payload.status,
             error: action.payload.error,
+          },
+        ],
+      };
+    case "FAIL_TURN":
+      return {
+        ...state,
+        /* 입력창을 푸는 것이 목적이다. phase "error"를 읽는 코드는 없고, 실패
+           사실은 이제 메시지가 들고 있다. */
+        phase: "ready",
+        messages: [
+          ...state.messages,
+          {
+            id: createMessageId("turn-error"),
+            type: "turn_error",
+            text: action.payload.message,
+            retryInput: action.payload.retryInput,
           },
         ],
       };
