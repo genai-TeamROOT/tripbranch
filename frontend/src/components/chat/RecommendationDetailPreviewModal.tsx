@@ -29,7 +29,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
@@ -195,6 +195,61 @@ function DetailText({ fieldKey, value }: { fieldKey: keyof InfoPlaceCard; value:
   );
 }
 
+/*
+ * 값이 길면 두 줄까지만 보이고 "더 보기"로 편다(TP-248).
+ *
+ * **자르는 것이 아니라 접는다.** line-clamp는 화면에서만 가리고 글자는 그대로 두므로
+ * 낭독기와 브라우저 찾기는 전문을 본다. 무장애 정보는 사람이 그것을 믿고 실제로
+ * 이동하는 값이라, 어느 조각도 없어지면 안 된다.
+ *
+ * 두 줄인 이유는 접히는 것이 소수여야 "더 보기"가 신호로 읽히기 때문이다. 편의시설
+ * 값의 평균은 21자이고 60자를 넘는 것은 3%다(2026-09-07 실측) — 한 줄로 접으면
+ * 아홉 줄 중 절반에 버튼이 붙어 오히려 지저분해진다.
+ */
+function CollapsibleDetailText({
+  fieldKey,
+  value,
+  isEn,
+}: {
+  fieldKey: keyof InfoPlaceCard;
+  value: string;
+  isEn: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const clampRef = useRef<HTMLDivElement | null>(null);
+
+  /* 글자 수가 아니라 실제로 넘쳤는지로 판정한다. 화면 폭과 언어에 따라 같은 값도
+     줄 수가 달라져서, 글자 수로 재면 어떤 화면에서는 버튼이 헛돈다. */
+  useEffect(() => {
+    const node = clampRef.current;
+    if (!node || expanded) return;
+    const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [value, expanded]);
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <div ref={clampRef} className={expanded ? undefined : "line-clamp-2"}>
+        <DetailText fieldKey={fieldKey} value={value} />
+      </div>
+      {/* 편 뒤에는 넘침 판정이 거짓이 되므로(가릴 것이 없다) expanded도 함께 본다. */}
+      {(overflowing || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((previous) => !previous)}
+          className="text-xs font-medium text-brand underline underline-offset-2"
+        >
+          {expanded ? (isEn ? "Show less" : "접기") : isEn ? "Show more" : "더 보기"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface OperatingHoursRow {
   period: string;
   hours: string;
@@ -288,15 +343,7 @@ function InfoRow({
 }
 
 /** Figma InfoTable(29:203) — 아이콘+라벨 / 값을 한 줄씩, 실선으로 나눈다. */
-function InfoTable({
-  card,
-  item,
-  isEn,
-}: {
-  card: InfoPlaceCard;
-  item?: RecommendationItem;
-  isEn: boolean;
-}) {
+function InfoTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean }) {
   const visibleEntries = INFO_TABLE_FIELDS.filter(([key]) => {
     const value = card[key];
     return typeof value === "string" && value.trim();
@@ -310,18 +357,10 @@ function InfoTable({
           const value = card[key];
           if (typeof value !== "string") return null;
           const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
-          const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
           return (
-            <InfoRow
-              key={key}
-              icon={Icon}
-              label={isEn ? labelEn : labelKo}
-              emphasized={Boolean(statusSuffix)}
-            >
+            <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
               {operatingHours ? (
                 <OperatingHoursRows rows={operatingHours} />
-              ) : statusSuffix ? (
-                `${value} · ${statusSuffix}`
               ) : (
                 <DetailText fieldKey={key} value={value} />
               )}
@@ -357,7 +396,7 @@ function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean
             if (typeof value !== "string") return null;
             return (
               <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
-                <DetailText fieldKey={key} value={value} />
+                <CollapsibleDetailText fieldKey={key} value={value} isEn={isEn} />
               </InfoRow>
             );
           })}
@@ -505,12 +544,11 @@ function InfoTableSkeleton({
  */
 function QuickInfoPreview({ item, isEn }: { item?: RecommendationItem; isEn: boolean }) {
   if (!item?.operating_hours_display) return null;
-  const statusSuffix = operatingStatusSuffix(item, isEn);
+  /* 영업 상태는 장소명 옆으로 옮겼다(TP-248). 여기서도 말하면 같은 값이 한 화면에
+     두 번 나온다. */
   return (
-    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
-      {statusSuffix
-        ? `${item.operating_hours_display} · ${statusSuffix}`
-        : item.operating_hours_display}
+    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"}>
+      {item.operating_hours_display}
     </InfoRow>
   );
 }
@@ -1410,6 +1448,8 @@ export function RecommendationDetailPreviewModal({
     placeNameProp ??
     (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
+  /* 장소명 옆 배지. item이 없는 경로(INFO·사진 검색)에서는 null이라 안 그려진다. */
+  const operatingStatus = operatingStatusSuffix(item, isEn);
   /*
    * 사진이 아예 없을 것을 **열 때 이미 안다.**
    *
@@ -1654,9 +1694,23 @@ export function RecommendationDetailPreviewModal({
                 {item.category}
               </span>
             )}
-            <h2 id="recommendation-detail-title" className="text-xl font-bold text-ink">
-              {title}
-            </h2>
+            {/*
+              지금 열려 있는지는 이 화면에서 가장 먼저 보고 싶은 값이라 장소명 옆에
+              둔다(TP-248). 전에는 운영시간 줄의 접미사로 붙어 있어서 아래 표까지
+              내려가야 보였다.
+
+              `operatingStatusSuffix()`가 근거가 있을 때만 값을 낸다는 규칙은 그대로다
+              — INFO·사진 검색 경로에는 remaining_minutes가 없어 "영업 중"을 지어내면
+              안 된다. 그때는 배지 자체를 그리지 않는다.
+            */}
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <h2 id="recommendation-detail-title" className="text-xl font-bold text-ink">
+                {title}
+              </h2>
+              {operatingStatus && (
+                <span className="shrink-0 text-sm font-bold text-brand">{operatingStatus}</span>
+              )}
+            </div>
             {item && (
               <div className="flex items-center gap-1.5 text-sm text-muted">
                 <MapPin size={13} />
@@ -1679,7 +1733,7 @@ export function RecommendationDetailPreviewModal({
           ) : (
             detailCard && (
               <>
-                <InfoTable card={detailCard} item={item} isEn={isEn} />
+                <InfoTable card={detailCard} isEn={isEn} />
                 <AccessibilityTable card={detailCard} isEn={isEn} />
               </>
             )
