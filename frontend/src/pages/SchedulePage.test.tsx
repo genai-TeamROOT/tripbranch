@@ -3,7 +3,7 @@
  * 호출 시점: vitest 실행 시.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -118,7 +118,7 @@ function seedScheduleState() {
   );
 }
 
-test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보여준다", async () => {
+test("짠 일정이 있으면 목록에 '지금 일정' 줄이 뜨고, 누르면 정류장 타임라인과 피드백 토글을 보여준다", async () => {
   const user = userEvent.setup();
   seedScheduleState();
   render(
@@ -133,6 +133,17 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
     </AuthProvider>,
   );
 
+  /* 목록과 상세를 한 화면에 같이 두지 않는다 — 들어온 직후에는 상세가 아니라
+     "지금 일정" 줄만 보인다. */
+  expect(screen.queryByText("역삼 아트뮤지엄")).not.toBeInTheDocument();
+
+  /* 카드 아이콘은 고정 아이콘 대신 계정 아바타다(2026-09-07) — 기본 세션은
+     게스트라 이니셜이 "게"다(identityLabel.ts). */
+  const currentRow = screen.getByRole("button", { name: /지금 일정/ });
+  expect(await within(currentRow).findByText("게")).toBeInTheDocument();
+
+  await user.click(currentRow);
+
   /* 장소 이름은 두 곳에 나온다 — 시간 띠의 범례와 정류장 카드. 범례는 aria-hidden
      이라 소리로는 한 번만 읽히지만, 화면 질의에는 둘 다 걸린다. */
   expect(screen.getAllByText("역삼 아트뮤지엄").length).toBeGreaterThan(0);
@@ -146,6 +157,37 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
   expect(helpful).toHaveAttribute("aria-pressed", "false");
   await user.click(helpful);
   expect(helpful).toHaveAttribute("aria-pressed", "true");
+
+  /* "목록으로"를 누르면 상세가 걷히고 다시 "지금 일정" 줄로 돌아온다. */
+  await user.click(screen.getByRole("button", { name: "목록으로" }));
+  expect(screen.queryByText("역삼 아트뮤지엄")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /지금 일정/ })).toBeInTheDocument();
+});
+
+test("목록↔상세를 오가면 PageTransition의 떠오르는 페이드가 다시 걸린다", async () => {
+  const user = userEvent.setup();
+  seedScheduleState();
+  const { container } = render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+
+  /* AppShell 바깥에서 단독으로 띄운 화면이라 라우팅에 걸리는 PageTransition은
+     안 탄다 — 이 화면이 안에 한 겹 더 두는 것을 직접 확인한다. */
+  expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: /지금 일정/ }));
+  expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "목록으로" }));
+  expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
 });
 
 /*
@@ -198,7 +240,10 @@ function renderSaved(id: string) {
 }
 
 test("저장한 일정을 열면 그때 편성이 그대로 보인다", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(SAVED_DETAIL)),
+  );
 
   renderSaved(SAVED_DETAIL.id);
 
@@ -215,7 +260,10 @@ test("저장한 일정을 열면 그때 편성이 그대로 보인다", async ()
  * 맞춰, 넘기기만 하면 뜨는 상태에서 안 뜨는 것을 본다.
  */
 test("저장한 일정에는 지금 표시가 뜨지 않는다", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(SAVED_DETAIL)),
+  );
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(2026, 7, 31, 15, 15));
 
@@ -234,7 +282,10 @@ test("저장한 일정에는 지금 표시가 뜨지 않는다", async () => {
  * 시점 값이라, 화면이 지금 시각을 얹으면 사흘 전 일정이 방금 짠 것처럼 보인다.
  */
 test("저장한 일정에는 지금 시각이 아니라 저장한 시각을 밝힌다", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(SAVED_DETAIL)),
+  );
 
   renderSaved(SAVED_DETAIL.id);
 
@@ -256,19 +307,14 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
 });
 
 /*
- * 저장한 일정 목록을 사이드바에서 여기로 옮겼다(2026-09-04). **세 상태 모두**에
- * 있어야 한다 — 특히 "아직 짠 일정이 없어요"와 불러오기 실패 화면에서는 다른
- * 일정을 고를 유일한 입구다. 목록을 빼도 나머지 테스트는 전부 통과했다(되돌림 확인).
- */
-/*
- * 저장한 일정 목록은 **저장한 것이 있을 때** 세 상태 모두에서 보인다
- * (짠 일정 없음 / 있음 / ?saved= 불러오기 실패).
+ * 저장한 일정 목록을 사이드바에서 여기로 옮겼다(2026-09-04). 저장한 것이 있을
+ * 때 목록 화면(짠 일정 없음/있음)에는 있어야 한다.
  *
- * 예전에는 "세 상태 모두에 구획이 있다"였는데, 비었을 때도 "아직 저장한 일정이
- * 없어요"를 내는 바람에 첫 화면에서 **비었다는 안내가 두 개 겹쳐** 보였다.
- * 지금은 비면 구획째 사라지고, 무엇을 안내할지는 이 화면이 정한다.
+ * **불러오기 실패는 목록이 아니라 상세 자리에 뜬다**(2026-09-07). 목록과 상세를
+ * 한 화면에 같이 두지 않기로 하면서, 다른 일정을 고르는 입구는 목록 자체가
+ * 아니라 상세 화면 위의 "목록으로" 버튼이 맡는다 — `savedError` 테스트가 잠근다.
  */
-test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다", async () => {
+test("저장한 일정이 있으면 목록 화면(짠 일정 없음/있음)에서 목록이 보인다", async () => {
   const saved = {
     items: [
       {
@@ -280,7 +326,10 @@ test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다"
       },
     ],
   };
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json(saved)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(saved)),
+  );
 
   const listed = () => screen.findByRole("heading", { name: "저장한 일정" });
 
@@ -297,11 +346,11 @@ test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다"
     </AuthProvider>,
   );
   expect(await listed()).toBeInTheDocument();
-  /* 목록이 있으면 빈 안내는 뜨지 않는다 — 이것이 이번에 고친 것이다. */
+  /* 목록이 있으면 빈 안내는 뜨지 않는다. */
   expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
   empty.unmount();
 
-  // ② 짠 일정이 있을 때
+  // ② 짠 일정이 있을 때 — 상세가 아니라 "지금 일정" 줄과 함께 목록이 보인다.
   seedScheduleState();
   const filled = render(
     <AuthProvider>
@@ -315,9 +364,27 @@ test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다"
     </AuthProvider>,
   );
   expect(await listed()).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /지금 일정/ })).toBeInTheDocument();
   filled.unmount();
+});
 
-  // ③ 저장한 일정을 못 불러왔을 때 — 다른 일정을 고를 유일한 입구다.
+/*
+ * 저장한 일정을 못 불러오면 상세 자리에 오류가 뜨고, 목록은 같이 그리지 않는다
+ * — "목록으로" 버튼이 다른 일정을 고르는 유일한 입구다.
+ */
+test("저장한 일정을 못 불러오면 목록 없이 오류와 '목록으로' 버튼만 뜬다", async () => {
+  const saved = {
+    items: [
+      {
+        id: "aaaaaaaa-1111-4222-8333-444444444444",
+        title: "성수 저녁 코스",
+        session_id: null,
+        created_at: "2026-09-01T18:00:00+09:00",
+        updated_at: "2026-09-01T18:00:00+09:00",
+      },
+    ],
+  };
+  const user = userEvent.setup();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) =>
@@ -326,7 +393,13 @@ test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다"
         : Response.json(saved),
     ),
   );
+
   renderSaved("gone");
-  expect(await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요.")).toBeInTheDocument();
-  expect(await listed()).toBeInTheDocument();
+  expect(
+    await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요."),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "저장한 일정" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "목록으로" }));
+  expect(await screen.findByRole("heading", { name: "저장한 일정" })).toBeInTheDocument();
 });

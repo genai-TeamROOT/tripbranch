@@ -1,18 +1,29 @@
 /*
- * 역할: 일정의 정류장들을 그린다. 지금 있는 곳은 크게, 나머지는 썸네일 카드로.
- * 입력: 일정 항목들, 언어, 지금 어디에 있는지.
- * 출력: 정류장 카드와 그 사이 이동 한 줄, 장소 상세 모달 열기.
+ * 역할: 일정의 정류장들을 카드 목록으로 그린다.
+ * 입력: 일정 항목들, 언어, 이 일정을 구분하는 키.
+ * 출력: 정류장 카드와 그 사이 이동 한 줄, 장소 상세 모달 열기, "다녀왔어요" 체크.
  * 호출 시점: SchedulePage가 시간 띠 아래에 그린다.
  *
- * **모든 정류장을 같은 크기로 그리지 않는다.** 같으면 화면에 위계가 없어서 무엇을
- * 먼저 볼지가 정해지지 않는다. 이 앱은 갑자기 바뀐 일정을 다시 짜주는 앱이고, 그
- * 화면이 답할 첫 질문은 "지금 어디쯤인가"다 — 지금 있는 곳에만 큰 사진을 준다.
+ * **한때 "지금 있는 곳"만 사진을 크게 키워 보여줬다.** 전체 폭 사진 위에
+ * 그라디언트·문구·버튼을 겹친 큰 카드와 96px 정사각 썸네일 카드 사이를
+ * `layoutId` 공유 애니메이션으로 이으려 했는데, 두 카드의 내부 구조가 너무
+ * 달라 배율 계산이 어긋나 체크할 때마다 카드가 통째로 안 보이는 사고가 두
+ * 번 났다. 자리만 유지하는 페이드인으로 낮췄다가, 결국 그 위계 자체를
+ * 접었다(2026-09-07) — 모든 정류장을 같은 카드로 그리고, 체크는 각 카드가
+ * 독립적으로 켜고 끈다. "지금 어디쯤인가"는 체크 표시가 대신 말해준다.
  *
- * 지금이 일정 밖이면(시작 전·끝난 뒤·저장한 일정) 첫 정류장을 크게 그린다. 그때는
- * "지금 여기" 표시 없이 도착 시각만 적는다.
+ * **체크 상태는 SchedulePage가 들고 있다**(2026-09-07). 시간 띠(ScheduleRibbon)도
+ * 같은 체크를 보고 다시 그려야 해서, 저장·복원은 `useScheduleVisited` 훅으로
+ * 옮기고 여기는 그 결과만 받는다.
+ *
+ * **건너뛴 곳 표시는 여기(카드)가 맡는다**(2026-09-07). 시간 띠에서 색 영역으로
+ * 구분해 보려 했지만 시도할 때마다 "칸"처럼 보인다는 되돌림을 받았다 — 정류장
+ * 마다 이미 독립된 카드인 이곳이 오히려 자연스럽다. 체크한 것 중 가장 뒤보다
+ * 앞이면서 아직 체크 안 한 카드에 "건너뛰었어요"를 띄운다.
  */
 
 import { useState } from "react";
+import { Check } from "lucide-react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
 import { scheduleTravelLabel } from "../../utils/scheduleTravel";
@@ -21,10 +32,10 @@ import type { ScheduleItem } from "../../types";
 interface ScheduleRouteProps {
   items: ScheduleItem[];
   isEn: boolean;
-  /** 지금 머물고 있는 정류장. 이동 중이거나 일정 밖이면 null. */
-  nowIndex: number | null;
-  /** 지금 있는 곳을 떠날 때까지 남은 분. */
-  minutesLeftHere: number | null;
+  /** 체크한 정류장 인덱스 집합(`useScheduleVisited`). */
+  visited: Set<number>;
+  /** 정류장 체크를 켜고 끈다. */
+  onToggleVisited: (index: number) => void;
 }
 
 function travelLine(item: ScheduleItem, isEn: boolean): string | null {
@@ -39,109 +50,111 @@ function travelLine(item: ScheduleItem, isEn: boolean): string | null {
   );
 }
 
-export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: ScheduleRouteProps) {
+export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: ScheduleRouteProps) {
   const [detailFor, setDetailFor] = useState<ScheduleItem | null>(null);
-
-  /* 지금 있는 곳이 없으면 첫 곳을 크게 — 화면이 사진 없이 시작하지 않게 한다. */
-  const heroIndex = nowIndex ?? 0;
-  const hero = items[heroIndex];
-  const rest = items.filter((_, index) => index !== heroIndex);
+  const furthestVisited = visited.size > 0 ? Math.max(...visited) : -1;
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* 지금 있는 곳 */}
-      <div className="relative overflow-hidden rounded-2xl">
-        <PlaceThumbnail
-          src={hero.image_url}
-          fallbackSrc={hero.image_url_fallback}
-          className="aspect-[16/10] w-full"
-        />
-        {/* 사진 위 글자를 읽히게 하는 기능적 그라디언트다. 장식이 아니다. */}
-        <div className="absolute inset-0 bg-gradient-to-t from-ink-strong/85 via-ink-strong/45 to-transparent" />
-        <button
-          type="button"
-          onClick={() => setDetailFor(hero)}
-          className="absolute right-3 top-3 rounded-full bg-ink-strong/55 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-sm"
-        >
-          {isEn ? "View place details" : "장소 상세보기"}
-        </button>
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-4 text-white">
-          {nowIndex !== null && minutesLeftHere !== null && (
-            <span className="flex items-center gap-1.5 self-start rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-bold tabular-nums backdrop-blur-sm">
-              <span className="h-1.5 w-1.5 rounded-full bg-calm" aria-hidden />
-              {isEn
-                ? `Here now · leave in ${minutesLeftHere} min`
-                : `지금 여기 · ${minutesLeftHere}분 뒤 출발`}
-            </span>
-          )}
-          <h3 className="text-xl font-bold tracking-tight">{hero.place_name}</h3>
-          <p className="max-w-[40ch] text-[13px] leading-relaxed text-white/85">{hero.reason}</p>
-          <p className="mt-0.5 text-xs tabular-nums text-white/75">
-            {isEn
-              ? `Arrive ${hero.estimated_arrival} · stay ${hero.estimated_duration_min} min`
-              : `${hero.estimated_arrival} 도착 · ${hero.estimated_duration_min}분 머무름`}
-          </p>
-          {hero.warnings != null && hero.warnings.length > 0 && (
-            /* 경고 색은 기존 일정 화면과 같은 text-gold 다. 사진 위라 배경 없이도 읽힌다. */
-            <p className="mt-1 text-[11px] leading-snug text-gold">{hero.warnings.join(" / ")}</p>
-          )}
-        </div>
-      </div>
-
-      {rest.length > 0 && (
-        <div className="flex flex-col">
-          <h4 className="mb-2 text-xs font-bold text-muted">{isEn ? "Next" : "다음"}</h4>
-          {items.map((item, index) => {
-            if (index === heroIndex) return null;
-            const previous = items[index - 1];
-            const leg = previous ? travelLine(previous, isEn) : null;
-            return (
-              <div key={item.place_id}>
-                {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는
-                    위의 시간 띠가 대신한다. */}
-                {leg && (
-                  <p className="relative py-2 pl-10 text-xs tabular-nums text-muted before:absolute before:bottom-0 before:left-[19px] before:top-0 before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--color-border)_0_4px,transparent_4px_8px)]">
-                    {leg}
+    <div className="flex flex-col gap-2">
+      {items.map((item, index) => {
+        const isVisited = visited.has(index);
+        const isSkipped = !isVisited && index < furthestVisited;
+        const previous = items[index - 1];
+        const leg = previous ? travelLine(previous, isEn) : null;
+        return (
+          <div key={item.place_id}>
+            {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는
+                위의 시간 띠가 대신한다. */}
+            {leg && (
+              <p className="relative py-2 pl-10 text-xs tabular-nums text-muted before:absolute before:bottom-0 before:left-[19px] before:top-0 before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--color-border)_0_4px,transparent_4px_8px)]">
+                {leg}
+              </p>
+            )}
+            <div
+              className={`relative flex gap-3 rounded-2xl border border-border bg-white p-3 shadow-resting transition-opacity ${isVisited ? "opacity-60" : ""}`}
+            >
+              {/* 이미지 전체가 체크 버튼이다 — 배지만 누르게 하면 손끝 크기에 비해
+                  너무 좁다. 체크됐다는 표시(배지)는 눌러도 되는 자리 위에 얹는다. */}
+              <button
+                type="button"
+                onClick={() => onToggleVisited(index)}
+                aria-pressed={isVisited}
+                aria-label={
+                  isVisited
+                    ? isEn
+                      ? `Undo — ${item.place_name} not visited yet`
+                      : `${item.place_name} 체크 되돌리기`
+                    : isEn
+                      ? `Mark ${item.place_name} as visited`
+                      : `${item.place_name} 다녀왔어요 체크`
+                }
+                className="relative h-24 w-24 shrink-0"
+              >
+                <PlaceThumbnail
+                  src={item.image_url}
+                  fallbackSrc={item.image_url_fallback}
+                  className="h-24 w-24 rounded-xl"
+                />
+                {/* 체크 전에도 체크 아이콘을 그린다(회색) — 아이콘이 체크된 뒤에만
+                    나오면 처음 보는 사람은 누를 수 있는 곳인지 모른다. */}
+                <span
+                  className={`absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors ${
+                    isVisited
+                      ? "border-white bg-calm text-white"
+                      : isSkipped
+                        ? "border-white bg-gold text-white"
+                        : "border-border bg-white text-muted"
+                  }`}
+                >
+                  <Check size={13} />
+                </span>
+              </button>
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5 pr-20">
+                <span
+                  className={`text-xs font-bold tabular-nums ${
+                    isVisited ? "text-muted" : isSkipped ? "text-gold" : "text-brand"
+                  }`}
+                >
+                  {isVisited
+                    ? isEn
+                      ? "Been here"
+                      : "다녀왔어요"
+                    : isSkipped
+                      ? isEn
+                        ? "Skipped"
+                        : "건너뛰었어요"
+                      : isEn
+                        ? `Arrive ${item.estimated_arrival}`
+                        : `${item.estimated_arrival} 도착`}
+                </span>
+                <h3 className="truncate text-base font-bold tracking-tight text-ink">
+                  {item.place_name}
+                </h3>
+                <p className="line-clamp-2 text-[13px] leading-snug text-muted">{item.reason}</p>
+                <span className="mt-auto text-xs tabular-nums text-label">
+                  {isEn
+                    ? `Stay ${item.estimated_duration_min} min`
+                    : `${item.estimated_duration_min}분 머무름`}
+                </span>
+                {item.warnings != null && item.warnings.length > 0 && (
+                  <p className="mt-1 text-[11px] leading-snug text-gold">
+                    {item.warnings.join(" / ")}
                   </p>
                 )}
-                <div className="flex gap-3 rounded-2xl border border-border p-3">
-                  <PlaceThumbnail
-                    src={item.image_url}
-                    fallbackSrc={item.image_url_fallback}
-                    className="h-24 w-24 shrink-0 rounded-xl"
-                  />
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-xs font-bold tabular-nums text-brand">
-                      {isEn ? `Arrive ${item.estimated_arrival}` : `${item.estimated_arrival} 도착`}
-                    </span>
-                    <h3 className="truncate text-base font-bold tracking-tight text-ink">
-                      {item.place_name}
-                    </h3>
-                    <p className="line-clamp-2 text-[13px] leading-snug text-muted">{item.reason}</p>
-                    <span className="mt-auto text-xs tabular-nums text-label">
-                      {isEn
-                        ? `Stay ${item.estimated_duration_min} min`
-                        : `${item.estimated_duration_min}분 머무름`}
-                    </span>
-                    {item.warnings != null && item.warnings.length > 0 && (
-                      <p className="mt-1 text-[11px] leading-snug text-gold">
-                        {item.warnings.join(" / ")}
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setDetailFor(item)}
-                      className="mt-1 self-start text-xs font-bold text-brand"
-                    >
-                      {isEn ? "View place details" : "장소 상세보기"}
-                    </button>
-                  </div>
-                </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+              {/* 카드 우측 상단에 둬서, 아래로 늘어지던 텍스트 칸이 사진 높이에
+                  맞춰진다. */}
+              <button
+                type="button"
+                onClick={() => setDetailFor(item)}
+                className="absolute right-3 top-3 whitespace-nowrap text-xs font-bold text-brand"
+              >
+                {isEn ? "View place details" : "장소 상세보기"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
 
       {detailFor && (
         <RecommendationDetailPreviewModal

@@ -74,11 +74,28 @@ export function IdentityRow({ identity }: { identity: IdentityDisplay }) {
   );
 }
 
-function IdentityAvatar({ identity }: { identity: IdentityDisplay }) {
+/* 일정 목록 카드(SchedulePage·SavedScheduleList)도 같은 아바타를 쓴다(2026-09-07) —
+   장소 사진이 없는 카드에 고정 아이콘(RouteIcon) 대신 "누구의 일정인지"를
+   보여주는 편이 낫다는 판단이다. 그쪽은 사이드바보다 살짝 큰 사이즈가 필요해
+   `size`를 받는다 — 기본값(sm)은 사이드바 모양을 그대로 지킨다.
+   **md는 처음에 h-11(44px)이었다가 카드 텍스트에 비해 크다는 지적으로 한 단계
+   줄였다**(2026-09-07). */
+const AVATAR_SIZE_CLASS = {
+  sm: "h-8 w-8 text-xs",
+  md: "h-9 w-9 text-xs",
+} as const;
+
+export function IdentityAvatar({
+  identity,
+  size = "sm",
+}: {
+  identity: IdentityDisplay;
+  size?: keyof typeof AVATAR_SIZE_CLASS;
+}) {
   return (
     <span
       aria-hidden
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-bold text-white"
+      className={`flex shrink-0 items-center justify-center rounded-full bg-brand font-bold text-white ${AVATAR_SIZE_CLASS[size]}`}
     >
       {identity.initial}
     </span>
