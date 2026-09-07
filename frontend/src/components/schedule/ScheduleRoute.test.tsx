@@ -158,3 +158,21 @@ test("묶음 번호가 없는 옛 일정은 그대로 그린다", () => {
 
   expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
 });
+
+test("묶인 정류장 카드에만 테두리 색이 붙는다", () => {
+  /* TP-243 — 일정 화면에서도 묶음이 눈에 보여야 한다. 히어로(첫 정류장)를 뺀
+     나머지 목록에서 묶인 자리만 색을 받는다. */
+  const clustered = [
+    stop("국립현대미술관 서울", { cluster_id: 1, travel_to_next_min: 3 }),
+    stop("국제갤러리", { cluster_id: 1, travel_to_next_min: 21 }),
+    stop("광장시장", { cluster_id: null, travel_to_next_min: null }),
+  ];
+
+  const { container } = render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+
+  expect(container.querySelectorAll("[data-cluster-link]")).toHaveLength(1);
+});

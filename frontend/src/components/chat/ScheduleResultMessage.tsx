@@ -186,14 +186,16 @@ export function ScheduleResultMessage({
 
           <ul className="flex flex-col">
             {schedule.items.flatMap((item, index) => {
+              const next = schedule.items[index + 1];
+              const linkedToNext = next !== undefined && isSameCluster(item, next);
               const nodes = [
                 <ScheduleCard
                   key={item.place_id}
                   item={item}
                   isLast={index === schedule.items.length - 1}
+                  linkedToNext={linkedToNext}
                 />,
               ];
-              const next = schedule.items[index + 1];
               if (item.travel_to_next_min !== null) {
                 nodes.push(
                   <ScheduleTravelSegment
@@ -203,7 +205,7 @@ export function ScheduleResultMessage({
                     measured={item.travel_to_next_measured}
                     /* 묶음은 구간에 표시한다 — 붙어 있다는 건 두 곳 사이의
                        이야기라 카드 하나에 얹으면 어느 쪽 이야기인지 흐려진다. */
-                    clustered={next !== undefined && isSameCluster(item, next)}
+                    clustered={linkedToNext}
                   />,
                 );
               }

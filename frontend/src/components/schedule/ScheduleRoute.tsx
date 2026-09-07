@@ -112,7 +112,14 @@ export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: Schedu
                     {leg}
                   </p>
                 )}
-                <div className="flex gap-3 rounded-2xl border border-border p-3">
+                {/* 묶인 자리는 테두리에 색을 준다 (TP-243) — 이동 줄의 "이어서
+                    둘러보기"가 말로 하는 것을 테두리가 눈으로 보여준다. */}
+                <div
+                  data-cluster-link={item.cluster_id != null ? "true" : undefined}
+                  className={`flex gap-3 rounded-2xl border p-3 ${
+                    item.cluster_id != null ? "border-brand/40" : "border-border"
+                  }`}
+                >
                   <PlaceThumbnail
                     src={item.image_url}
                     fallbackSrc={item.image_url_fallback}

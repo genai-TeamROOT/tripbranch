@@ -34,7 +34,11 @@ export function ScheduleTravelSegment({
   return (
     <li className="flex gap-3">
       <div className="flex w-7 shrink-0 justify-center">
-        <span className="h-4 w-px bg-border" />
+        {/* 카드 쪽 연결선과 색이 이어져야 한 묶음으로 보인다 (TP-243). */}
+        <span
+          data-cluster-link={clustered ? "true" : undefined}
+          className={`h-4 ${clustered ? "w-0.5 bg-brand/40" : "w-px bg-border"}`}
+        />
       </div>
       <p
         className="flex flex-1 items-center pb-2 text-[11px] text-muted"

@@ -164,11 +164,8 @@ test("저장하면 목록을 다시 받아온다", async () => {
   unsubscribe();
 });
 
-test("묶인 구간에만 이어서 둘러보라는 말이 붙는다", () => {
-  /*
-   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다(utils/scheduleTravel
-   * isSameCluster). 두 화면이 따로 판정하면 같은 일정이 다르게 보인다.
-   */
+/* 앞 두 자리가 한 묶음, 세 번째는 묶음 밖. 묶음 테스트 둘이 같이 쓴다. */
+const CLUSTERED_SCHEDULE = (() => {
   const schedule = {
     items: [
       {
@@ -215,10 +212,28 @@ test("묶인 구간에만 이어서 둘러보라는 말이 붙는다", () => {
     route_summary: "동선 요약입니다.",
     basis_note: "기준 시각 안내",
   } as unknown as ScheduleResult;
+  return schedule;
+})();
 
-  render(<ScheduleResultMessage schedule={schedule} />);
+test("묶인 구간에만 이어서 둘러보라는 말이 붙는다", () => {
+  /*
+   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다(utils/scheduleTravel
+   * isSameCluster). 두 화면이 따로 판정하면 같은 일정이 다르게 보인다.
+   */
+  render(<ScheduleResultMessage schedule={CLUSTERED_SCHEDULE} />);
 
   expect(screen.getByText("도보 이동 3분 · 이어서 둘러보기")).toBeInTheDocument();
   /* 두 번째 구간은 묶음 밖으로 나가는 길이라 그냥 이동 줄이다. */
   expect(screen.getByText("대중교통 이동 21분")).toBeInTheDocument();
+});
+
+test("묶인 두 자리를 잇는 선에만 색이 붙는다", () => {
+  /*
+   * TP-243 — 말로만 알리면 타임라인을 훑는 눈에는 안 걸린다. 첫 카드와 그
+   * 사이 이동 줄, 둘의 세로선이 이어져 한 묶음으로 보인다. 세 번째 자리는
+   * 묶음 밖이라 색이 없다.
+   */
+  const { container } = render(<ScheduleResultMessage schedule={CLUSTERED_SCHEDULE} />);
+
+  expect(container.querySelectorAll("[data-cluster-link]")).toHaveLength(2);
 });

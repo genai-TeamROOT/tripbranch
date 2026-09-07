@@ -14,16 +14,29 @@ import type { ScheduleItem } from "../types";
 interface ScheduleCardProps {
   item: ScheduleItem;
   isLast: boolean;
+  /**
+   * 다음 정류장이 같은 묶음인가 (TP-243).
+   *
+   * 참이면 두 카드를 잇는 세로선에 색을 준다 — 이동 줄의 "이어서 둘러보기"가
+   * 말로 하는 것을 선이 눈으로 보여준다. 카드 자체를 감싸지 않는 이유는 묶음이
+   * 자리가 아니라 구간의 성질이기 때문이다(utils/scheduleTravel isSameCluster).
+   */
+  linkedToNext?: boolean;
 }
 
-export function ScheduleCard({ item, isLast }: ScheduleCardProps) {
+export function ScheduleCard({ item, isLast, linkedToNext = false }: ScheduleCardProps) {
   return (
     <li className="flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-bold text-white">
           {item.order}
         </span>
-        {!isLast && <span className="mt-1 w-px flex-1 bg-border" />}
+        {!isLast && (
+          <span
+            data-cluster-link={linkedToNext ? "true" : undefined}
+            className={`mt-1 flex-1 ${linkedToNext ? "w-0.5 bg-brand/40" : "w-px bg-border"}`}
+          />
+        )}
       </div>
 
       <div
