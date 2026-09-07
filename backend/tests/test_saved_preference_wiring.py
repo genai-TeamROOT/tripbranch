@@ -139,8 +139,16 @@ def test_게스트는_저장할_자리가_없다() -> None:
     assert _saved_taste_query(UserConditions(), None, store) is None
 
 
-def test_저장소가_없으면_저장값_없이_채점한다() -> None:
-    assert _saved_taste_query(UserConditions(), _principal(), None) is None
+def test_store를_안_주면_전역_저장소로_대신한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`/api/chat`·`/api/chat/stream`이 store를 안 넘겨 여기까지 None으로 온다
+    (2026-09-07 실사용 재현) — `get_session_context()`(state/service.py)와 같은
+    `store or get_store()` 패턴이 없어서, 세션은 되는데 저장된 취향만 프로덕션에서
+    한 번도 채점에 실리지 못했다. store=None을 그냥 None으로 못 박지 않는지 잠근다.
+    """
+    store = _store_with(_chip("아늑한 공간", "preference", "cozy"))
+    monkeypatch.setattr("app.services.runtime.agent_runtime.get_store", lambda: store)
+
+    assert _saved_taste_query(UserConditions(), _principal(), None) == "아늑한 공간"
 
 
 def test_고른_적이_없으면_None() -> None:
