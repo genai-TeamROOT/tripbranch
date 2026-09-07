@@ -199,7 +199,6 @@ from app.state.service import (
     SetPendingInfoContextRequest,
     SetSituationStateRequest,
     StateApplyResponse,
-    UpdateApiContextRequest,
     append_conversation_turn,
     apply,
     record_closed_exclusions,
@@ -210,7 +209,6 @@ from app.state.service import (
     set_pending_clarification,
     set_pending_info_context,
     set_situation_state,
-    update_api_context,
 )
 from app.state.session import new_trace_id
 from app.state.store import StateStore, get_store
@@ -3383,19 +3381,9 @@ async def _run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
         )
 
-    # 3-1) 최초 턴이면 방금 생성된 세션에 GPS를 심는다. ensure_current_context()(1번)는
-    #      세션이 이미 있을 때만 GPS를 갱신한다(B 계약상 read-only, 세션은 apply()만
-    #      생성) — 그래서 세션이 방금 생긴 최초 턴에는 1번에서 GPS를 심을 수 없다.
-    #      update_api_context()는 동기 함수라 await를 붙이지 않는다.
-    if state_response.session_created and valid_gps:
-        update_api_context(
-            UpdateApiContextRequest(
-                session_id=state_response.session_id,
-                gps_location=valid_gps,
-                gps_location_updated_at=now_kst(),
-            ),
-            store=store,
-        )
+    # 3-1) 최초 턴에 GPS를 심던 자리였다. 서버가 사용자 위치를 저장하지 않게 되면서
+    #      (state/store.py::for_persistence) 심어도 남지 않아 없앴다. 이번 턴의
+    #      좌표는 valid_gps로 그대로 쓰이고, 다음 턴은 화면이 다시 실어 보낸다.
 
     # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY/SCHEDULE)만 지운다 —
     #      transform()이 이미 session_context의 값을 읽어 병합 방식을 정했으므로,

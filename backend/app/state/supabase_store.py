@@ -34,6 +34,9 @@ from app.state.schema import (
     now_kst,
 )
 
+# store.py의 Supabase 임포트는 함수 안에 있어 순환하지 않는다.
+from app.state.store import for_persistence
+
 
 class SupabaseStateStore:
     """Supabase PostgREST를 사용하는 StateStore 구현체.
@@ -170,11 +173,12 @@ class SupabaseStateStore:
             raise StateStoreError("invalid agent_states row") from None
 
     def save_state(self, state: AgentState) -> None:
+        # 사용자 위치는 DB에 남기지 않는다 — 이유는 store.for_persistence 참고.
         self._request(
             "POST",
             "/agent_states",
             params={"on_conflict": "session_id"},
-            json=state.model_dump(mode="json"),
+            json=for_persistence(state).model_dump(mode="json"),
             prefer="resolution=merge-duplicates,return=minimal",
         )
 

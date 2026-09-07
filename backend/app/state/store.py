@@ -30,6 +30,45 @@ from app.state.schema import (
 )
 
 
+def for_persistence(state: AgentState) -> AgentState:
+    """저장할 사본을 만든다. **기기 좌표는 빼고 남긴다.**
+
+    개인정보 때문이다. 서버가 사용자의 좌표를 들고 있을 이유가 없는데, 로그아웃해도
+    남고 세션마다 한 벌씩 쌓였다(2026-09-07 기준 1,800건 이상).
+
+    **뺄 수 있는 근거는 화면이 매 턴 좌표를 실어 보낸다는 점이다.** 서버에 둔 사본은
+    "요청에 없을 때를 위한 여벌"이었는데 실제로는 매번 온다. 그 여벌을 읽던 자리는
+    둘뿐이고(runtime의 도구 조회 GPS, INFO 도보시간), 둘 다 없으면 이번 턴 좌표만
+    쓰고 넘어간다. `gps_location_confirmed_at`은 채우는 코드도 읽는 코드도 없다 —
+    30분 재확인은 화면이 sessionStorage의 시각으로 판정한다(utils/locationRefresh.ts).
+
+    **장소 이름(current_location·search_center)은 남긴다.** 함께 빼려다 되돌렸다 —
+    되묻기 버튼("검색 범위를 넓혀서 다시")은 세션에 저장된 조건을 베껴 재실행하는데,
+    이름이 사라지면 위치가 빈 채로 돌아 또 되묻기로 끝난다(2026-09-08 확인, 테스트
+    47건). 화면이 위치를 되돌려 보내주는 경로에서는 괜찮지만 그 고리가 끊기는 자리가
+    실제로 있다. 이름까지 빼려면 그 재실행 경로를 먼저 요청값 기준으로 고쳐야 한다
+    (TP-256).
+
+    **필드를 없애는 것이 아니라 DB에 안 적는 것이다.** 한 요청을 처리하는 동안에는
+    그대로 쓴다. 그래서 원본을 건드리지 않고 사본을 만들어 돌려준다 — 저장 뒤에도
+    진행 중인 턴은 값을 들고 있어야 한다.
+
+    **저장소 두 구현이 모두 이 함수를 거친다.** 인메모리 쪽까지 거치게 한 이유는
+    테스트가 현실과 다른 모양을 보지 않게 하려는 것이다 — 인메모리만 값을 계속
+    들고 있으면, 저장이 사라져 깨지는 경로를 테스트가 통과시킨다.
+
+    좌표를 서버에 심던 세 자리(runtime의 최초 턴, session_orchestrator의 매 턴 갱신,
+    interpret 라우트)는 이 변경과 함께 없앴다. 여기서 어차피 안 남으므로 남겨두면
+    턴마다 아무것도 저장하지 않는 쓰기가 한 번씩 더 나간다.
+    """
+
+    persisted = state.model_copy(deep=True)
+    persisted.api_context.gps_location = None
+    persisted.api_context.gps_location_updated_at = None
+    persisted.api_context.gps_location_confirmed_at = None
+    return persisted
+
+
 class StateStore(Protocol):
     """State 저장소 인터페이스.
 
@@ -164,7 +203,7 @@ class InMemoryStateStore:
         return state.model_copy(deep=True) if state else None
 
     def save_state(self, state: AgentState) -> None:
-        self._states[state.session_id] = state.model_copy(deep=True)
+        self._states[state.session_id] = for_persistence(state)
 
     def delete_state(self, session_id: str) -> None:
         self._states.pop(session_id, None)
