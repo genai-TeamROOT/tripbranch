@@ -227,6 +227,53 @@ describe("PopulationForecastBars 세로축", () => {
     // 붐빔 = CONGESTION_HEIGHT 92.
     expect((bars[0] as HTMLElement).style.height).toBe("92%");
   });
+
+  it("안내 아이콘은 어긋남과 무관하게 항상 뜨고, 무엇을 보여주는 데이터인지·출처·기준 시각을 말한다", () => {
+    render(<PopulationForecastBars card={scaledCard} />);
+
+    const icon = screen.getByLabelText("인구 혼잡도 예측 안내");
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    fireEvent.click(icon);
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "향후 12시간 인구 혼잡도 예측이에요 (9월 5일 16:25 기준, 통신 데이터 기반 · 서울시 실시간 도시데이터).",
+    );
+    // 어긋나지 않는 카드(scaledCard)라 어긋남 설명은 안 붙는다.
+    expect(tooltip).not.toHaveTextContent("계산 기준이 달라서");
+  });
+
+  it("바로 옆 막대끼리 인구 수와 혼잡도 단계 순서가 실제로 어긋나면, 같은 아이콘 툴팁에 그 설명을 덧붙인다", () => {
+    // 난지한강공원 실측(2026-09-05)과 같은 모양 — 예측(17시)이 현재보다 인구는
+    // 적은데 단계는 더 높다(약간 붐빔 3,250명 → 붐빔 2,750명).
+    const invertedCard: InfoPlaceCardData = {
+      ...scaledCard,
+      population_current_level: "약간 붐빔",
+      seoul_realtime_summary: { population_min: 3000, population_max: 3500 },
+      population_forecasts: [
+        {
+          forecast_at: "2026-09-05 17:00",
+          congestion_level: "붐빔",
+          population_min: 2500,
+          population_max: 3000,
+        },
+      ],
+    };
+    render(<PopulationForecastBars card={invertedCard} />);
+
+    fireEvent.click(screen.getByLabelText("인구 혼잡도 예측 안내"));
+    const tooltip = screen.getByRole("tooltip");
+    // 항상 뜨는 안내와 어긋남 설명이 같은 툴팁 안에 함께 있다.
+    expect(tooltip).toHaveTextContent("향후 12시간 인구 혼잡도 예측이에요");
+    expect(tooltip).toHaveTextContent(
+      "'현재'와 '예측' 혼잡도는 계산 기준이 달라서, 막대 높이(인구 수)와 색(혼잡도 단계)이 안 맞아 보일 때가 있어요.",
+    );
+  });
+
+  it("그래프가 뭘 보여주는지·출처는 아이콘 안내에만 있고, 별도 캡션으로 반복하지 않는다", () => {
+    render(<PopulationForecastBars card={scaledCard} />);
+    expect(screen.queryByText(/통신 데이터 기반/)).not.toBeInTheDocument();
+  });
 });
 
 describe("CongestionLevelChip", () => {
