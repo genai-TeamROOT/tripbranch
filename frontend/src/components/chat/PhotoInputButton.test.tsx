@@ -15,14 +15,14 @@ function makeFile(name = "a.jpg", size = 1_000) {
 }
 
 describe("PhotoInputButton", () => {
-  it("버튼을 누르면 사진·갤러리 메뉴가 열린다", () => {
+  it("버튼을 누르면 카메라·갤러리 메뉴가 열린다", () => {
     render(<PhotoInputButton onSelect={vi.fn()} />);
 
     expect(screen.queryByRole("menu")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "사진 추가" }));
 
     expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "사진" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "카메라" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "갤러리" })).toBeTruthy();
   });
 
