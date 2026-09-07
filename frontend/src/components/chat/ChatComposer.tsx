@@ -160,7 +160,15 @@ export function ChatComposer({
           />
         )}
         {/* min-h-10 은 버튼(h-10)과 같은 높이다 — 한 줄일 때 지금과 같은 모양이 된다.
-            jsdom 처럼 scrollHeight 가 0인 환경에서도 이 값이 바닥을 잡아준다. */}
+            jsdom 처럼 scrollHeight 가 0인 환경에서도 이 값이 바닥을 잡아준다.
+
+            placeholder-shown:pt-[10px]/pb-[6px] — 예시 문구만 실제 입력 글자보다
+            작다(text-sm vs text-base). line-height(leading-6, 24px)를 그대로
+            공유하면 작은 글자가 그 줄 안에서 위로 쏠려 보인다(2026-09-07, 실제
+            렌더로 측정: 24px 줄 높이를 유지한 채 py-2만 쓰면 중심선보다 위에
+            걸림). 값 자체를 계산이 아니라 헤드리스 브라우저로 여러 후보를 대 보고
+            중심선에 맞는 것으로 골랐다 — 총합(16px)은 py-2·py-2와 같게 유지해
+            입력칸 높이(min-h-10)는 그대로다. */}
         <textarea
           ref={inputRef}
           rows={1}
@@ -169,7 +177,7 @@ export function ChatComposer({
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder={placeholder}
-          className="min-h-10 max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-base leading-6 text-ink placeholder:text-sm placeholder:text-muted focus:outline-none disabled:opacity-50"
+          className="min-h-10 max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-base leading-6 text-ink placeholder:text-sm placeholder:text-muted placeholder-shown:pb-[6px] placeholder-shown:pt-[10px] focus:outline-none disabled:opacity-50"
         />
         <VoiceInputButton
           disabled={disabled}
