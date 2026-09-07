@@ -1900,6 +1900,69 @@ class TestFitDurationsToTimeAvailable:
         assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
 
     @pytest.mark.asyncio
+    async def test_조절한_체류시간이_5분_배수로_나가고_합이_총합과_같다(self) -> None:
+        """TP-244 완료 조건 — 저장값·표시값·항목 합이 전부 같은 수를 가리킨다.
+
+        **1분 단위로 나누던 때 이 입력이 86/74/60을 냈다.** 화면
+        (`ScheduleCard.tsx`)은 값을 그대로 찍으므로 "86분 머무름"이 뜬다.
+        표시할 때만 반올림하면 항목 표시의 합(85+75+60)과 총합 표시가 어긋나서
+        TP-215가 없앤 상태로 되돌아간다 — 그래서 배정값 자체를 5분 배수로 둔다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=120),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=60),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(time_available=250),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+        durations = [item.estimated_duration_min for item in result.items]
+
+        assert durations == [85, 75, 60]
+        assert all(minutes % 5 == 0 for minutes in durations)
+        # 대기가 없는 구성이라 총합은 체류 합 + 이동(15분 x 2구간)과 정확히 같다.
+        assert result.total_duration_min == sum(durations) + 15 * 2
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_LLM이_어중간한_체류시간을_줘도_5분_배수로_나간다(self) -> None:
+        """조절이 아예 일어나지 않는 경로다 — 허용 오차 안이라 fit이 no-op이다.
+
+        그래서 **배정 단계에서 맞추지 않으면 67분이 그대로 화면에 뜬다.**
+        프롬프트가 라운드 숫자를 안내하지만 그건 부탁이고, LLM이 어길 때 막을
+        곳은 `resolve_visit_duration()` 하나다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=67),
+                _sample_item("place-2", 2, estimated_duration_min=63),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=[_candidate("place-1"), _candidate("place-2")],
+            conditions=UserConditions(time_available=150),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+        durations = [item.estimated_duration_min for item in result.items]
+
+        assert durations == [65, 65]
+        assert result.total_duration_min == sum(durations) + 15
+
+    @pytest.mark.asyncio
     async def test_개장_전_대기가_늘어도_예산_쪽으로_움직인다(self) -> None:
         """**줄인 만큼 총합이 줄지 않는다.**
 

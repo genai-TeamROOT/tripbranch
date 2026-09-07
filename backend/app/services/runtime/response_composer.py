@@ -924,13 +924,44 @@ def _format_compare_travel_time(item: ComparisonItem) -> str | None:
 # 그대로 보여주는 쪽을 우선하기로 하고 30분으로 넓힘(실사용 피드백, 2026-08-14).
 
 
+# 계산해서 얻은 소요시간을 말할 때 쓰는 표시 단위(분). (TP-244)
+_DURATION_DISPLAY_ROUNDING_MIN = 10
+
+
 def _format_duration_label(total_minutes: int) -> str:
+    """분을 사람 말로 적는다. **값을 바꾸지 않는다.**
+
+    사용자가 말한 시간을 그대로 되돌려줄 때 쓴다("3시간 짜줘" -> "3시간 코스").
+    계산해서 얻은 값은 `_format_estimated_duration_label()`을 쓴다.
+    """
+
     hours, minutes = divmod(total_minutes, 60)
     if hours and minutes:
         return f"{hours}시간 {minutes}분"
     if hours:
         return f"{hours}시간"
     return f"{minutes}분"
+
+
+def _format_estimated_duration_label(total_minutes: int) -> str:
+    """편성이 계산한 소요시간을 10분 단위로 **올려** 적는다. (TP-244)
+
+    **올림인 이유.** 반올림하면 266분이 "4시간 20분"이 돼 실제보다 짧게 말한다.
+    사용자가 시간을 지키려고 묻는 값이라 짧게 말하는 쪽이 더 나쁘다.
+
+    **표시만 바꾼다.** `total_duration_min` 저장값은 정확값으로 남는다 — 올린
+    값을 저장하면 항목 체류시간의 합과 총합이 어긋난다. 허용 오차 판정
+    (`budget.classify_budget()`)도 정확값으로 내려진다. 표시용으로 올린 값이
+    판정을 뒤집으면 경계에서 화면과 편성이 서로 다른 것을 근거로 말하게 된다.
+
+    총합과 초과 분량을 같은 함수로 올리므로 화면에서 뺄셈이 맞는다 — 266분
+    편성을 180분 요청에 맞춰 말하면 "4시간 30분"(270)과 "1시간 30분"(90)이 되고
+    270 - 180 = 90으로 앞뒤가 맞는다. 한쪽만 올리면 여기가 어긋난다.
+    """
+
+    step = _DURATION_DISPLAY_ROUNDING_MIN
+    rounded = -(-total_minutes // step) * step
+    return _format_duration_label(rounded)
 
 
 def _topic_particle(word: str) -> str:
@@ -1075,11 +1106,14 @@ def _with_over_budget_note(
     if _budget_status(schedule, time_available_min) is not ScheduleBudgetStatus.OVER:
         return message
     over_min = schedule.total_duration_min - time_available_min
-    # `_format_duration_label()`은 항상 "시간"이나 "분"으로 끝나고 둘 다 받침이 있어
-    # 조사는 "으로"로 고정해도 된다.
+    # 라벨은 항상 "시간"이나 "분"으로 끝나고 둘 다 받침이 있어 조사는 "으로"로
+    # 고정해도 된다.
+    #
+    # **요청 시간은 그대로, 초과 분량은 올려 적는다.** (TP-244) 앞엣것은 사용자가
+    # 말한 값이라 손대면 안 되고, 뒤엣것은 편성이 계산한 값이다.
     return (
         f"{message} {_format_duration_label(time_available_min)}으로 말씀하셨는데 "
-        f"{_format_duration_label(over_min)}쯤 길어졌어요. "
+        f"{_format_estimated_duration_label(over_min)}쯤 길어졌어요. "
         "빼고 싶은 곳이 있으면 알려주세요."
     )
 
@@ -1120,7 +1154,7 @@ def compose_schedule_message(
     ):
         duration_label = _format_duration_label(time_available_min)
     else:
-        duration_label = _format_duration_label(schedule.total_duration_min)
+        duration_label = _format_estimated_duration_label(schedule.total_duration_min)
     return _with_saved_place_notes(
         _with_over_budget_note(
             f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}",

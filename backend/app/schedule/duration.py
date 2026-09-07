@@ -25,6 +25,25 @@ from dataclasses import dataclass
 
 from app.schemas import PlaceType
 
+# 체류시간을 배정하는 단위(분). (TP-244)
+#
+# **왜 값 자체를 맞추나.** 표시할 때만 반올림하면 항목 표시의 합과 총합 표시가
+# 어긋난다 — TP-215가 일부러 없앤 상태로 되돌아간다. 배정값이 이미 5분 배수면
+# 저장값·표시값·항목 합이 전부 같은 수를 가리킨다.
+VISIT_DURATION_STEP_MIN = 5
+
+
+def snap_to_step(minutes: int) -> int:
+    """가장 가까운 `VISIT_DURATION_STEP_MIN` 배수로 맞춘다. (TP-244)
+
+    딱 중간이면 올린다 — 체류시간을 임의로 깎는 쪽보다 낫다. 정책 범위를 보지
+    않으므로 호출부가 맞춘 뒤 `clamp()`한다. 순서를 뒤집으면 경계값(예: 최대
+    90분)이 95분으로 올라가 범위를 넘는다.
+    """
+
+    step = VISIT_DURATION_STEP_MIN
+    return (minutes + step // 2) // step * step
+
 
 @dataclass(frozen=True)
 class VisitDurationPolicy:
@@ -83,17 +102,24 @@ def resolve_visit_duration(
 
     0 이하와 None은 같게 취급한다. LLM이 0을 주는 것은 값을 만들지 못했다는
     뜻이지 "머물지 않는다"는 뜻이 아니다.
+
+    **어느 경로로 왔든 5분 배수로 맞춘다.** (TP-244) 프롬프트가 라운드 숫자를
+    안내하지만 그건 부탁이고, 지키지 않은 값을 막을 곳이 여기 말고 없다 —
+    LLM이 67분을 주면 화면에 "67분"이 그대로 뜬다. 범위로 자르는 것과 같은
+    이유이고 같은 자리다.
     """
 
     policy = policy_for(category)
     for proposal in (user_specified_min, stored_min, proposed_min):
         if proposal is not None and proposal > 0:
-            return policy.clamp(proposal)
+            return policy.clamp(snap_to_step(proposal))
     return policy.preferred_min
 
 
 __all__ = [
+    "VISIT_DURATION_STEP_MIN",
     "VisitDurationPolicy",
     "policy_for",
     "resolve_visit_duration",
+    "snap_to_step",
 ]
