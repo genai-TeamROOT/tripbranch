@@ -20,10 +20,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AuthProvider } from "../../auth/AuthContext";
 import { TripProvider } from "../../state/TripContext";
-import {
-  refreshSavedSchedules,
-  resetSavedSchedulesCache,
-} from "../../state/savedSchedules";
+import { refreshSavedSchedules, resetSavedSchedulesCache } from "../../state/savedSchedules";
 import { GUEST_SESSION, resetSupabaseMock, setMockSession } from "../../test/supabaseMock";
 import { resetSupabaseClient } from "../../auth/supabaseClient";
 import { SavedScheduleList } from "./SavedScheduleList";
@@ -129,12 +126,15 @@ test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", a
 
   /* 한 줄에 "열기"와 "메뉴" 두 버튼이 있다 — 정규식으로 찾으면 둘 다 걸린다. */
   const entry = await screen.findByRole("button", { name: "종로 반나절 일정 열기" });
+
+  /* 카드 아이콘은 고정 아이콘 대신 계정 아바타다(2026-09-07) — 기본 세션은
+     게스트라 이니셜이 "게"다. */
+  expect(screen.getByText("게")).toBeInTheDocument();
+
   await userEvent.click(entry);
 
   /* SchedulePage가 ?saved=로 받아 같은 화면에서 갈아 끼운다. */
-  await waitFor(() =>
-    expect(screen.getByTestId("search").textContent).toContain("saved=sched-1"),
-  );
+  await waitFor(() => expect(screen.getByTestId("search").textContent).toContain("saved=sched-1"));
 });
 
 test("저장한 일정 이름을 바꾸면 새 이름이 남는다", async () => {
@@ -198,4 +198,60 @@ test("목록이 갱신되면 다시 그린다", async () => {
   });
 
   expect(await screen.findByText("성수 저녁 코스")).toBeInTheDocument();
+});
+
+/*
+ * 검색·달력 필터(2026-09-07)는 목록을 지우지 않고 걸러낸다 — 실제로 지우면
+ * 삭제와 구분이 안 된다.
+ */
+test("검색어를 넣으면 이름이 안 맞는 일정은 숨는다", async () => {
+  server.schedules = [...SEED];
+  const user = userEvent.setup();
+  renderList();
+  await screen.findByText("종로 반나절");
+
+  await user.type(screen.getByRole("textbox", { name: "저장한 일정 검색" }), "성수");
+
+  expect(screen.queryByText("종로 반나절")).not.toBeInTheDocument();
+  expect(screen.getByText("성수 저녁 코스")).toBeInTheDocument();
+
+  await user.clear(screen.getByRole("textbox", { name: "저장한 일정 검색" }));
+  expect(await screen.findByText("종로 반나절")).toBeInTheDocument();
+});
+
+test("검색어에 맞는 일정이 없으면 안내만 뜨고 목록은 비운다", async () => {
+  server.schedules = [...SEED];
+  const user = userEvent.setup();
+  renderList();
+  await screen.findByText("종로 반나절");
+
+  await user.type(screen.getByRole("textbox", { name: "저장한 일정 검색" }), "존재하지않음");
+
+  expect(screen.getByText("조건에 맞는 저장한 일정이 없어요.")).toBeInTheDocument();
+  expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+});
+
+/*
+ * 달력 띠에서 날짜를 고르면 그 날 저장한 일정만 남는다. `SEED`의 두 날짜가
+ * 같은 주(8/30 일~9/5 토)에 들도록 "지금"을 그 주 안으로 고정한다 — 실제
+ * 오늘 기준이면 기본 화면이 다른 주를 보여줘 두 점이 안 보인다.
+ */
+test("달력에서 날짜를 고르면 그 날 저장한 일정만 남는다", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-08-31T09:00:00+09:00"));
+  server.schedules = [...SEED];
+  const user = userEvent.setup();
+  renderList();
+  await screen.findByText("종로 반나절");
+
+  await user.click(screen.getByRole("button", { name: "8월 31일, 저장한 일정 있음" }));
+
+  expect(screen.getByText("종로 반나절")).toBeInTheDocument();
+  expect(screen.queryByText("성수 저녁 코스")).not.toBeInTheDocument();
+
+  /* 같은 날짜를 다시 누르면 선택이 풀린다. */
+  await user.click(screen.getByRole("button", { name: "8월 31일, 저장한 일정 있음" }));
+  expect(screen.getByText("성수 저녁 코스")).toBeInTheDocument();
+
+  vi.useRealTimers();
 });

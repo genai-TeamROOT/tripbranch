@@ -18,19 +18,29 @@ import type { SavedScheduleSummary } from "../types";
 export interface SavedScheduleEntry {
   id: string;
   label: string;
-  /* 저장한 날. **last_active_at이 아니라 created_at을 쓴다** — 저장한 일정은
-     그 뒤로 바뀌지 않으므로 "언제 저장했는지"가 사용자가 찾는 단서다. */
+  /* 저장한 날짜와 시각. **last_active_at이 아니라 created_at을 쓴다** — 저장한
+     일정은 그 뒤로 바뀌지 않으므로 "언제 저장했는지"가 사용자가 찾는 단서다.
+     같은 날 여러 번 저장했을 때 날짜만으로는 구분이 안 돼 시각도 함께 둔다. */
   date: string;
+  /* date와 같은 시점의 원본 Date다. 달력 띠가 "그 날짜에 저장된 일정만"을
+     걸러내려면 로캘 문자열이 아니라 실제 날짜 비교가 필요하다. 못 읽었으면
+     null — 그 항목은 달력 필터에서 어느 날짜와도 안 걸린다. */
+  createdAt: Date | null;
 }
 
 function toEntry(schedule: SavedScheduleSummary): SavedScheduleEntry {
   const at = new Date(schedule.created_at);
+  const valid = !Number.isNaN(at.getTime());
   return {
     id: schedule.id,
     label: schedule.title,
-    date: Number.isNaN(at.getTime())
-      ? ""
-      : at.toLocaleDateString("ko-KR", { month: "long", day: "numeric" }),
+    date: valid
+      ? `${at.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })} ${at.toLocaleTimeString(
+          "ko-KR",
+          { hour: "2-digit", minute: "2-digit" },
+        )}`
+      : "",
+    createdAt: valid ? at : null,
   };
 }
 

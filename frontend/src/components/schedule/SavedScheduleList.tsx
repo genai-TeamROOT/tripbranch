@@ -1,5 +1,5 @@
 /*
- * 역할: 계정에 저장한 일정 목록 — 열기·이름 바꾸기·삭제.
+ * 역할: 계정에 저장한 일정 목록 — 검색·날짜로 훑어보기, 열기·이름 바꾸기·삭제.
  * 입력: 없다(계정에서 직접 받아온다, GET /api/schedules).
  * 출력: `?saved=<id>`로의 이동, 이름 변경·삭제 요청.
  * 호출 시점: SchedulePage가 화면 아래에 렌더한다.
@@ -12,19 +12,48 @@
  * (`MenuTarget = { kind, id }`) — 한 번에 하나만 열려야 하는데 상태를 두 벌 두면
  * 대화 메뉴를 열어둔 채 일정 메뉴도 열렸기 때문이다. 분리하면 그 이유가 사라져
  * `id` 하나만 든다.
+ *
+ * **검색·달력 필터는 순수 프론트 필터다**(2026-09-07). `GET /api/schedules`는
+ * 제목·날짜만 주고 장소 사진은 없어서, 카드 아이콘은 실제 장소 사진이 아니라
+ * 고정 아이콘이다 — 실제 사진을 쓰려면 B(`state/`) 쪽에 필드가 필요하다.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, Search } from "lucide-react";
 import { deleteSavedSchedule, renameSavedSchedule } from "../../api/trip";
+import { useAuth } from "../../auth/AuthContext";
+import { identityDisplay } from "../../auth/identityLabel";
+import { IdentityAvatar } from "../layout/SidebarAccount";
 import { useSavedSchedules } from "../../hooks/useSavedSchedules";
 import { refreshSavedSchedules, type SavedScheduleEntry } from "../../state/savedSchedules";
 import { useTripState } from "../../state/TripContext";
+import { ScheduleCalendarStrip } from "./ScheduleCalendarStrip";
+import { startOfWeek, toDateKey } from "../../utils/scheduleDates";
+
+function matchesQuery(label: string, query: string): boolean {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return true;
+  return label.toLowerCase().includes(trimmed);
+}
+
+function matchesDate(createdAt: Date | null, selectedDateKey: string | null): boolean {
+  if (!selectedDateKey) return true;
+  return createdAt !== null && toDateKey(createdAt) === selectedDateKey;
+}
 
 export function SavedScheduleList() {
   const navigate = useNavigate();
   const isEn = useTripState().language === "en";
+  const { session } = useAuth();
+  /* 카드 아이콘은 고정 아이콘 대신 계정 아바타를 쓴다(2026-09-07) — 목록의
+     일정들이 전부 이 계정 것이라 "누구의 것인지"를 보여주는 게 더 쓸모있다.
+     RequireUser가 이 화면 앞에서 이미 세션(게스트 포함)을 보장하지만, 타입상
+     null일 수 있어 없을 때는 그리지 않는다. */
+  const identity = session ? identityDisplay(session, isEn ? "en" : "ko") : null;
+  const [query, setQuery] = useState("");
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
 
   /*
    * 서버 목록은 훅이 들고, 여기서는 그것을 지역 상태로 받아 **낙관적 편집**(이름
@@ -75,12 +104,49 @@ export function SavedScheduleList() {
    */
   if (schedules.length === 0) return null;
 
+  const markedDateKeys = new Set(
+    schedules
+      .map((entry) => entry.createdAt)
+      .filter((createdAt): createdAt is Date => createdAt !== null)
+      .map(toDateKey),
+  );
+  const visible = schedules.filter(
+    (entry) => matchesQuery(entry.label, query) && matchesDate(entry.createdAt, selectedDateKey),
+  );
+
   return (
-    <section className="flex flex-col gap-1.5">
+    <section className="flex flex-col gap-3">
       <h2 className="text-xs font-bold text-label">{isEn ? "Saved schedules" : "저장한 일정"}</h2>
-      <ul className="flex flex-col gap-0.5">
-        {schedules.map((entry) => (
-          <li key={entry.id} className="relative rounded-xl px-2.5 py-2 hover:bg-chip">
+
+      <div className="flex h-11 items-center gap-2 rounded-xl border border-border bg-white px-3">
+        <Search size={15} className="shrink-0 text-muted" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label={isEn ? "Search saved schedules" : "저장한 일정 검색"}
+          placeholder={isEn ? "Search saved schedules" : "저장한 일정 이름으로 검색"}
+          className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted"
+        />
+      </div>
+
+      <ScheduleCalendarStrip
+        weekStart={weekStart}
+        onWeekChange={setWeekStart}
+        selectedDateKey={selectedDateKey}
+        onSelectDate={setSelectedDateKey}
+        markedDateKeys={markedDateKeys}
+        isEn={isEn}
+      />
+
+      {visible.length === 0 && (
+        <p className="py-4 text-center text-[13px] text-muted">
+          {isEn ? "No saved schedules match." : "조건에 맞는 저장한 일정이 없어요."}
+        </p>
+      )}
+
+      <ul className="flex flex-col gap-2">
+        {visible.map((entry) => (
+          <li key={entry.id} className="relative rounded-2xl border border-border p-3">
             {renaming === entry.id ? (
               <input
                 ref={renameInputRef}
@@ -95,7 +161,8 @@ export function SavedScheduleList() {
                 className="w-full rounded-md border border-border px-2 py-1 text-sm"
               />
             ) : (
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-3">
+                {identity && <IdentityAvatar identity={identity} size="md" />}
                 {/* 한 줄 전체가 버튼이다 — 날짜 쪽을 눌렀을 때 아무 일도 안 나면
                     고장으로 보인다. */}
                 <button
