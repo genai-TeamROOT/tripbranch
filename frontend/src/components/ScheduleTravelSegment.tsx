@@ -10,18 +10,15 @@
  * 내보내면 fast refresh가 깨진다(react-refresh/only-export-components).
  */
 
-import {
-  SCHEDULE_CLUSTER_NOTE,
-  SCHEDULE_TRAVEL_ESTIMATE_HINT,
-  scheduleTravelLabel,
-} from "../utils/scheduleTravel";
+import { SCHEDULE_TRAVEL_ESTIMATE_HINT, scheduleTravelLabel } from "../utils/scheduleTravel";
 import type { TravelMode } from "../types";
 
 interface ScheduleTravelSegmentProps {
   minutes: number;
   mode?: TravelMode | null;
   measured?: boolean;
-  /** 앞뒤 정류장이 같은 묶음인가 (TP-243). 맞으면 이동 줄에 한마디 덧붙인다. */
+  /** 앞뒤 정류장이 같은 묶음인가 (TP-243). 맞으면 세로선이 묶음 색으로 이어진다.
+   *  묶음 설명은 이 줄이 아니라 묶음 머리의 배지가 한 번만 한다. */
   clustered?: boolean;
 }
 
@@ -45,7 +42,6 @@ export function ScheduleTravelSegment({
         title={measured ? undefined : SCHEDULE_TRAVEL_ESTIMATE_HINT}
       >
         {scheduleTravelLabel(minutes, mode, measured)}
-        {clustered && ` · ${SCHEDULE_CLUSTER_NOTE}`}
       </p>
     </li>
   );

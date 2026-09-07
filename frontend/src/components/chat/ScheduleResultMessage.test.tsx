@@ -215,16 +215,31 @@ const CLUSTERED_SCHEDULE = (() => {
   return schedule;
 })();
 
-test("묶인 구간에만 이어서 둘러보라는 말이 붙는다", () => {
+test("묶음은 배지 하나로 알리고 이동 줄은 이동만 말한다", () => {
   /*
-   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다(utils/scheduleTravel
-   * isSameCluster). 두 화면이 따로 판정하면 같은 일정이 다르게 보인다.
+   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다. 예전에는 이동 줄에
+   * "· 이어서 둘러보기"를 덧붙였는데, 이동 표기와 층위가 달라 한 줄에서
+   * 부딪혔고 세 곳이 묶이면 줄마다 반복됐다.
    */
   render(<ScheduleResultMessage schedule={CLUSTERED_SCHEDULE} />);
 
-  expect(screen.getByText("도보 이동 3분 · 이어서 둘러보기")).toBeInTheDocument();
-  /* 두 번째 구간은 묶음 밖으로 나가는 길이라 그냥 이동 줄이다. */
-  expect(screen.getByText("대중교통 이동 21분")).toBeInTheDocument();
+  expect(screen.getByText("걸어서 5분 안쪽인 2곳")).toBeInTheDocument();
+  expect(screen.getByText("걸어서 3분")).toBeInTheDocument();
+  /* 묶음 밖으로 나가는 길은 그냥 이동 줄이다. */
+  expect(screen.getByText("대중교통으로 21분")).toBeInTheDocument();
+  expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
+});
+
+test("묶음 배지는 묶음마다 한 번만 뜬다", () => {
+  /* 세 곳이 한 묶음이어도 배지는 하나다 — 구간마다 붙이면 같은 말이 두 번 나온다. */
+  const everything = {
+    ...CLUSTERED_SCHEDULE,
+    items: CLUSTERED_SCHEDULE.items.map((item) => ({ ...item, cluster_id: 1 })),
+  } as unknown as ScheduleResult;
+
+  render(<ScheduleResultMessage schedule={everything} />);
+
+  expect(screen.getAllByText("걸어서 5분 안쪽인 3곳")).toHaveLength(1);
 });
 
 test("묶인 두 자리를 잇는 선에만 색이 붙는다", () => {
