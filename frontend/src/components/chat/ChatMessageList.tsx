@@ -275,7 +275,18 @@ export function ChatMessageList({
   language = "ko",
 }: ChatMessageListProps) {
   return (
-    <div className="flex flex-1 flex-col gap-4">
+    /*
+     * 메시지 사이 간격은 24px이다(2026-09-07, 16px에서 넓혔다).
+     *
+     * 말풍선을 쓰는 쪽은 사용자 발화뿐이고 어시스턴트의 말은 배경 없이 흐르므로
+     * (ClarificationMessage 주석), 블록을 갈라 주는 것이 배경이 아니라 이 간격
+     * 하나다. 16px일 때는 질문과 답이 한 덩어리로 붙어 읽혔다.
+     *
+     * 값은 계산이 아니라 16·24px을 실제로 렌더해 보고 골랐다. 한 턴 안의
+     * 답변·피드백·후속 질문 사이도 같이 넓어지는데, 24px에서는 아직 한 묶음으로
+     * 읽혀 흩어지지 않았다.
+     */
+    <div className="flex flex-1 flex-col gap-6">
       {messages
         .filter((message) => showDebug || message.type !== "condition_debug")
         .map((message, index, renderedMessages) => {
