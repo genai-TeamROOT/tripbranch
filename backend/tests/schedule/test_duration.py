@@ -81,3 +81,43 @@ def test_restaurant_minimum_admits_the_cafe_guidance() -> None:
 
     assert policy_for(PlaceType.RESTAURANT.value).minimum_min <= 60
     assert resolve_visit_duration(category=PlaceType.RESTAURANT.value, proposed_min=60) == 60
+
+
+def test_LLM이_준_어중간한_값을_5분_배수로_맞춘다() -> None:
+    """TP-244. 프롬프트가 라운드 숫자를 안내하지만 그건 부탁이고, 지키지 않은
+    값을 막을 곳이 여기 말고 없다 — 67분이 그대로 오면 화면에 "67분"이 뜬다.
+
+    **범위로 자르기 전에 맞춘다.** 순서를 뒤집으면 최대값 90분짜리 제안이
+    95분으로 올라가 범위를 넘는다.
+    """
+
+    assert resolve_visit_duration(category=PlaceType.ATTRACTION.value, proposed_min=67) == 65
+    assert resolve_visit_duration(category=PlaceType.ATTRACTION.value, proposed_min=63) == 65
+    assert resolve_visit_duration(category=PlaceType.ATTRACTION.value, proposed_min=62) == 60
+
+
+def test_맞춘_값이_정책_범위를_넘지_않는다() -> None:
+    """쇼핑 최대는 90분이다. 88분을 올리면 90분이라 경계에 딱 걸리고, 그보다
+    큰 제안은 범위로 잘린다 — 맞추기가 범위를 뚫는 구멍이 되면 안 된다."""
+
+    assert resolve_visit_duration(category=PlaceType.SHOPPING.value, proposed_min=88) == 90
+    assert resolve_visit_duration(category=PlaceType.SHOPPING.value, proposed_min=93) == 90
+    assert resolve_visit_duration(category=PlaceType.SHOPPING.value, proposed_min=32) == 30
+
+
+def test_분류_권장값은_이미_5분_배수다() -> None:
+    """제안이 없으면 권장값이 나간다. 정책 표의 값이 하나라도 5분 배수가
+    아니게 되면 여기서 잡힌다."""
+
+    for category in (
+        PlaceType.ATTRACTION,
+        PlaceType.CULTURAL_FACILITY,
+        PlaceType.FESTIVAL,
+        PlaceType.LEISURE,
+        PlaceType.SHOPPING,
+        PlaceType.RESTAURANT,
+    ):
+        policy = policy_for(category.value)
+        assert policy.minimum_min % 5 == 0
+        assert policy.preferred_min % 5 == 0
+        assert policy.maximum_min % 5 == 0

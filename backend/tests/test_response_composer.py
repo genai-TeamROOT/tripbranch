@@ -674,7 +674,13 @@ def _schedule_item(place_id: str = "p1") -> ScheduleItem:
 
 
 class TestComposeScheduleMessage:
-    def test_formats_hours_and_minutes(self) -> None:
+    def test_계산한_소요시간은_10분_단위로_올려_말한다(self) -> None:
+        """125분은 "2시간 10분"으로 나간다. (TP-244)
+
+        **올림이라 실제보다 길게 말한다.** 반올림하면 짧게 말하게 되는데, 시간을
+        지키려고 묻는 값이라 짧게 말하는 쪽이 더 나쁘다. 저장값(125)은 그대로다.
+        """
+
         schedule = ScheduleResult(
             items=[_schedule_item()],
             total_duration_min=125,
@@ -685,9 +691,12 @@ class TestComposeScheduleMessage:
 
         message = compose_schedule_message(schedule)
 
-        assert message == "2시간 5분 코스를 짜봤어요. 동선 요약입니다."
+        assert message == "2시간 10분 코스를 짜봤어요. 동선 요약입니다."
+        assert schedule.total_duration_min == 125
 
     def test_formats_minutes_only_when_under_an_hour(self) -> None:
+        """한 시간 미만은 "분"만 쓴다. 45분은 10분 단위로 올려 "50분"이다."""
+
         schedule = ScheduleResult(
             items=[_schedule_item()],
             total_duration_min=45,
@@ -698,7 +707,7 @@ class TestComposeScheduleMessage:
 
         message = compose_schedule_message(schedule)
 
-        assert message == "45분 코스를 짜봤어요. 짧은 코스예요."
+        assert message == "50분 코스를 짜봤어요. 짧은 코스예요."
 
     def test_uses_requested_time_when_close_to_actual(self) -> None:
         """실제 편성 시간(112분)이 요청 시간(120분)과 30분 이내로 가까우면
@@ -756,7 +765,7 @@ class TestComposeScheduleMessage:
 
         message = compose_schedule_message(schedule)
 
-        assert message == "2시간 5분 코스를 짜봤어요. 동선 요약입니다."
+        assert message == "2시간 10분 코스를 짜봤어요. 동선 요약입니다."
 
     def test_empty_items_returns_route_summary_without_duration_prefix(self) -> None:
         """items가 비면(후보 부족 등) planner.py가 route_summary를 안내 문구로
@@ -796,6 +805,20 @@ class Test가용시간_초과_안내:
             "3시간으로 말씀하셨는데 1시간쯤 길어졌어요. 빼고 싶은 곳이 있으면 알려주세요."
         )
 
+    def test_판정은_표시용으로_올린_값이_아니라_정확값으로_내린다(self) -> None:
+        """**경계값.** 205분은 175분 요청과 정확히 30분 차이라 허용 오차 안이다.
+        그래서 요청 시간을 그대로 라벨로 쓰고 초과 안내는 붙지 않는다.
+
+        표시용으로 올린 210분으로 판정하면 35분 차이가 되어 OVER로 뒤집히고,
+        화면이 "2시간 55분"이 아니라 "3시간 30분 ... 35분쯤 길어졌어요"를
+        말하게 된다. 판정과 표시가 서로 다른 수를 보게 되는 자리다.
+        """
+
+        message = compose_schedule_message(self._schedule(205), time_available_min=175)
+
+        assert message == "2시간 55분 코스를 짜봤어요. 동선 요약입니다."
+        assert "길어졌어요" not in message
+
     def test_일정을_깎지_않는다(self) -> None:
         """안내만 하고 항목은 그대로 나간다 — 문구는 결과를 바꾸지 않는다."""
 
@@ -814,11 +837,18 @@ class Test가용시간_초과_안내:
         assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
 
     def test_한_분_더_넘으면_붙는다(self) -> None:
+        """**요청 시간은 그대로, 계산값 둘은 10분 단위로 올린다.** (TP-244)
+
+        151분 편성이 "2시간 40분"(160), 초과 31분이 "40분"(40)으로 나가고
+        160 - 120 = 40이라 한 문장 안에서 뺄셈이 맞는다. 한쪽만 올리면 여기가
+        어긋난다.
+        """
+
         message = compose_schedule_message(self._schedule(151), time_available_min=120)
 
-        assert "2시간으로 말씀하셨는데 31분쯤 길어졌어요" in message
+        assert "2시간으로 말씀하셨는데 40분쯤 길어졌어요" in message
         # 라벨도 함께 실제값으로 바뀐다.
-        assert message.startswith("2시간 31분 코스를 짜봤어요.")
+        assert message.startswith("2시간 40분 코스를 짜봤어요.")
 
     def test_짧게_편성되면_붙지_않는다(self) -> None:
         message = compose_schedule_message(self._schedule(60), time_available_min=300)
@@ -1961,5 +1991,5 @@ class TestScheduleTimeBudgetStatus:
 
         message = compose_schedule_message(schedule, time_available_min=180)
 
-        assert message.startswith("4시간 26분 코스를 짜봤어요")
-        assert "1시간 26분쯤 길어졌어요" in message
+        assert message.startswith("4시간 30분 코스를 짜봤어요")
+        assert "1시간 30분쯤 길어졌어요" in message

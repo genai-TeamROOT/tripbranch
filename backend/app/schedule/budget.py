@@ -28,7 +28,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
-from app.schedule.duration import VisitDurationPolicy, policy_for
+from app.schedule.duration import (
+    VISIT_DURATION_STEP_MIN,
+    VisitDurationPolicy,
+    policy_for,
+)
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schedule.timeline import (
     FALLBACK_TRAVEL_MINUTES,
@@ -241,6 +245,10 @@ def fit_durations_to_budget(
     매긴 항목 간 상대 크기가 유지된다. 균등하게 깎으면 "국립박물관은 더 오래"라는
     판단이 사라진다.
 
+    **5분 배수로 배정한다.** (TP-244) 옮기는 양을 5분의 배수로만 잡으므로 정책
+    범위 안에 있던 값은 5분 배수로 남는다. 예산과 최대 4분이 어긋나는데, 그
+    4분은 허용 오차 안에서 무해하고 판정은 정확값으로 내려진다.
+
     **이미 허용 오차 안이면 아무것도 하지 않는다.** 판정이 곧 목표라서, 목표를
     만족한 편성을 굳이 예산에 딱 맞게 늘리거나 줄일 이유가 없다. 그리고 밴드 안에서
     체류를 늘리는 것은 "사용자가 말한 3시간은 꽉 채워 다니겠다는 뜻"이라고 가정하는
@@ -270,24 +278,38 @@ def fit_durations_to_budget(
             for slot in slots
         ]
 
-    available = sum(headroom)
-    if available == 0:
+    # **5분 단위로 옮긴다.** (TP-244) 1분 단위로 나누면 "67분"·"63분"처럼 화면에
+    # 그대로 뜨는 값이 나온다. 표시할 때만 반올림하는 방법을 쓰지 않는 이유는
+    # duration.VISIT_DURATION_STEP_MIN 주석에 있다.
+    #
+    # **내림이라 예산과 최대 4분이 남는다.** 올리면 여유(headroom)를 넘겨 정책
+    # 범위를 깨거나 반대 방향으로 지나칠 수 있다. 남는 4분은 허용 오차 30분
+    # 안에서 무해하고, 남았다는 사실은 classify_budget()이 정확값으로 판정한다.
+    headroom_steps = [room // VISIT_DURATION_STEP_MIN for room in headroom]
+    available_steps = sum(headroom_steps)
+    if available_steps == 0:
         return current
 
-    move = min(abs(delta), available)
-    shares = [room * move // available for room in headroom]
-    # 정수 나눗셈에서 남는 분은 여유가 큰 자리부터 1분씩 준다. 여유가 같으면 앞
+    move_steps = min(abs(delta) // VISIT_DURATION_STEP_MIN, available_steps)
+    if move_steps == 0:
+        return current
+
+    shares = [room * move_steps // available_steps for room in headroom_steps]
+    # 정수 나눗셈에서 남는 몫은 여유가 큰 자리부터 한 칸씩 준다. 여유가 같으면 앞
     # 자리부터 — 같은 입력에 같은 결과가 나와야 테스트가 성립한다.
-    remainder = move - sum(shares)
-    for index in sorted(range(len(slots)), key=lambda i: (-headroom[i], i)):
+    remainder = move_steps - sum(shares)
+    for index in sorted(range(len(slots)), key=lambda i: (-headroom_steps[i], i)):
         if remainder == 0:
             break
-        if shares[index] < headroom[index]:
+        if shares[index] < headroom_steps[index]:
             shares[index] += 1
             remainder -= 1
 
     sign = 1 if delta > 0 else -1
-    return [value + sign * share for value, share in zip(current, shares, strict=True)]
+    return [
+        value + sign * share * VISIT_DURATION_STEP_MIN
+        for value, share in zip(current, shares, strict=True)
+    ]
 
 
 __all__ = [
