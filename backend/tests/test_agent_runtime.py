@@ -1315,6 +1315,122 @@ async def test_spoken_location_beats_selected_search_center() -> None:
 
 
 @pytest.mark.asyncio
+async def test_modify_turn_uses_locations_sent_with_this_request() -> None:
+    """조건을 직접 나르지 않는 턴도 이번 요청에 실려 온 위치를 쓴다.
+
+    화면에서 출발지를 바꾸고 "다른 곳 보여줘"라고 하면 MODIFY로 분류되는데, 이
+    경로는 `_apply_selected_locations()`가 손대지 않아 병합된 세션 조건(=1턴의
+    옛 위치)을 그대로 물려받았다. 요청에는 새 위치가 실려 오는데도 무시돼,
+    화면에는 성수동이 떠 있고 실제 검색은 경복궁에서 도는 상태가 됐다
+    (2026-09-07 로컬 실측으로 재현).
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.state.user_conditions.current_location == "안국역"
+    assert first.state.user_conditions.search_center == "경복궁"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="성수동",
+            selected_search_center="성수동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.current_location == "성수동"
+    assert second.state.user_conditions.search_center == "성수동"
+
+
+@pytest.mark.asyncio
+async def test_modify_turn_keeps_session_locations_when_request_sends_none() -> None:
+    """요청이 위치를 안 실어 보내면 세션에 쌓인 조건을 그대로 쓴다.
+
+    위 테스트의 반대편이다 — "이번 요청 값이 있으면 쓴다"를 "없어도 덮어써서
+    조건을 날린다"로 잘못 구현하면 여기서 걸린다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.current_location == "안국역"
+    assert second.state.user_conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_beats_request_locations_on_modify_turn() -> None:
+    """그 턴에 말한 위치는 화면 설정을 이긴다 — MODIFY 턴에서도 같다.
+
+    `_apply_selected_locations()`가 RECOMMEND에서 지키는 규칙
+    (test_spoken_location_beats_selected_search_center)을 새 경로도 똑같이
+    지켜야 한다. 아니면 "창덕궁 근처"라고 말한 턴이 화면에 남아 있던 인사동으로
+    검색된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 근처로 바꿔줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="인사동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.search_center == "창덕궁"
+
+
+@pytest.mark.asyncio
 async def test_blank_selected_search_center_is_ignored() -> None:
     """공백만 온 값은 위치를 고른 것으로 치지 않는다 — 평소 되묻기로 끝나야 한다."""
     store = InMemoryStateStore()

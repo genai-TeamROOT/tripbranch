@@ -1110,6 +1110,61 @@ def _apply_selected_locations(llm_output: LLMOutput, request: AgentRequest) -> L
     )
 
 
+def _override_locations_from_request(
+    state_response: StateApplyResponse, request: AgentRequest
+) -> StateApplyResponse:
+    """조건 병합이 끝난 뒤, 화면에서 정한 위치를 이번 턴 조건에 반영한다.
+
+    **`_apply_selected_locations()`가 닿지 못하는 턴을 받는다.** 저쪽은
+    `llm_output.recommend`를 들고 있는 턴(RECOMMEND·SCHEDULE)에만 적용되고, 조건을
+    직접 나르지 않는 MODIFY("그거 말고 다른 곳")·COMPARE·INFO는 그냥 지나간다.
+    그런 턴은 병합된 세션 조건에서 위치를 물려받으므로, 사용자가 위치 설정 화면에서
+    출발지를 바꿔도 **이번 요청에 그 값이 실려 왔는데도 무시된다.**
+
+    2026-09-07 로컬 실측(POST /api/chat 2턴):
+
+        턴1  "카페 추천해줘"           + 출발지 안국역 / 검색지 광화문역
+        턴2  "그거 말고 다른 곳 보여줘"  + 출발지 성수동 / 검색지 성수동
+        → 턴2 조건 current_location='안국역', search_center='광화문역'
+
+    성수동을 보냈는데 안국역에서 찾는다. 화면에는 성수동이 떠 있으므로 사용자가
+    보는 것과 실제 검색이 어긋난다.
+
+    **발화가 화면 설정을 이긴다** — `_apply_selected_locations()`와 같은 규칙이다.
+    이번 턴에 그 필드의 연산이 적용됐다면 발화가 값을 정했다는 뜻이므로 손대지
+    않는다. 연산이 없을 때만 덮는다. RECOMMEND 턴은 저 함수가 이미 요청값을
+    채워 연산을 만들었으므로 여기서는 아무 일도 하지 않는다.
+
+    **세션에 다시 쓰지는 않는다.** 병합이 끝난 뒤라 이 덮어쓰기는 이번 턴에만
+    산다. 요청은 매 턴 같은 값을 다시 실어 오므로 다음 턴도 같은 결과가 되고,
+    위치를 서버에 저장하지 않게 되면(docs/location-storage-removal.local.md) 이
+    함수는 그대로 둔 채 저장만 빠진다.
+
+    **되묻기 버튼으로 해소된 턴은 여기서 안 고쳐진다.** 그 경로는 세션 조건을
+    베껴 payload를 만들고, 그 값이 연산으로 적용돼 위 규칙에 걸린다. 저장을
+    없애면 세션 조건이 비어 `_apply_selected_locations()`가 요청값을 채우므로
+    자연히 풀린다 — 이 변경에서 따로 손대지 않는다.
+    """
+
+    applied_fields = {op.field for op in state_response.applied_operations if op.field}
+    updates: dict[str, str] = {}
+    for field, selected in (
+        ("current_location", request.selected_current_location),
+        ("search_center", request.selected_search_center),
+    ):
+        if field in applied_fields or selected is None:
+            continue
+        normalized = selected.strip()
+        if normalized and getattr(state_response.user_conditions, field) != normalized:
+            updates[field] = normalized
+    if not updates:
+        return state_response
+
+    return state_response.model_copy(
+        update={"user_conditions": state_response.user_conditions.model_copy(update=updates)}
+    )
+
+
 def _resolve_travel_origin_override(
     *, override: TravelOrigin, session_context: SessionContextResponse
 ) -> _ClarificationResolution | None:
@@ -3237,6 +3292,25 @@ async def _run_agent_flow(
             )
         except Exception:
             logger.warning("조건 병합 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+
+    # 조건을 직접 나르지 않는 턴(MODIFY·COMPARE·INFO)이 화면에서 정한 위치를 놓치는
+    # 것을 여기서 받는다. 병합 바로 뒤에 두는 이유는 아래 location_resolved부터
+    # 도구 조회·채점까지 이 값을 읽는 자리가 전부 이 아래이기 때문이다 — 한 곳만
+    # 고치면 나머지가 따라온다.
+    state_response = _override_locations_from_request(state_response, request)
+
+    # 라우트의 "발화 수신"(routes/chat.py)과 짝을 이루는 줄이다. 저쪽은 브라우저가
+    # **보낸** 값이고 이쪽은 서버가 **쓰기로 정한** 값이다. 둘이 다를 수 있다 —
+    # "쌍문동에 갈만한곳"이라고 말하면 화면에 설정된 서대문역을 발화가 이긴다.
+    # 한쪽만 보면 정상 동작을 버그로 읽게 돼 실제로 그렇게 한 번 헤맸다(2026-09-08).
+    # 좌표는 여기서도 남기지 않는다 — 이유는 routes/chat.py의 _log_incoming_location.
+    logger.info(
+        "위치 확정 | 출발지=%s | 검색지=%s | 분류=%s | 세션=%s",
+        state_response.user_conditions.current_location or "-",
+        state_response.user_conditions.search_center or "-",
+        llm_output.intent.value if hasattr(llm_output.intent, "value") else llm_output.intent,
+        state_response.session_id,
+    )
 
     # 이번 턴이 쓸 위치가 여기서 확정된다 — 화면 우상단 위치 칩이 이 값을 보여준다.
     # done까지 기다리면 도구 조회(fetching_context)와 채점(scoring), 답변 스트리밍이
