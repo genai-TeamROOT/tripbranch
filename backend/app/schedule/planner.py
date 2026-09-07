@@ -29,6 +29,7 @@ from app.schedule.budget import (
     DurationSlot,
     cap_item_count_to_budget,
     classify_budget,
+    cluster_ids_in_order,
     derive_item_range,
     effective_budget_min,
     fit_durations_to_budget,
@@ -205,9 +206,18 @@ class _ResolvedTravel:
 
 
 def _draft_from_llm_item(
-    item: ScheduleLLMItem, candidate: RecommendationItem | None, order: int
+    item: ScheduleLLMItem,
+    candidate: RecommendationItem | None,
+    order: int,
+    *,
+    clustered: bool = False,
 ) -> _ItemDraft:
-    """LLM이 제안한 항목을 체류시간 정책으로 클램프해 초안으로 만든다."""
+    """LLM이 제안한 항목을 체류시간 정책으로 클램프해 초안으로 만든다.
+
+    `clustered`는 이 자리가 도보로 이웃과 붙어 있다는 뜻이다(TP-243). 최소값만
+    낮아지므로, LLM이 45분을 주면 60분으로 끌어올리지 않는다 — 어느 분류가
+    완화되는지는 `duration.policy_for()` 주석에 있다.
+    """
 
     return _ItemDraft(
         order=order,
@@ -217,6 +227,7 @@ def _draft_from_llm_item(
         visit_duration_min=resolve_visit_duration(
             category=candidate.category if candidate is not None else None,
             proposed_min=item.estimated_duration_min,
+            clustered=clustered,
         ),
     )
 
@@ -271,6 +282,7 @@ def _fit_to_time_available(
     candidates: Sequence[RecommendationItem],
     start_at: datetime,
     travel_minutes: TravelMinutes,
+    clustered_flags: Sequence[bool] | None = None,
 ) -> tuple[list[_ItemDraft], Timeline]:
     """체류시간을 활동 가능 시간에 맞춰 조절하고 시간표를 다시 계산한다. (TP-238)
 
@@ -288,22 +300,27 @@ def _fit_to_time_available(
     (`effective_budget_min()`)으로 배분하되 **판정은 하지 않는다** — 아래
     `classify_budget()` 호출은 `request.conditions.time_available`을 그대로 받으므로
     말하지 않은 턴은 여전히 판정이 None이다.
+
+    **묶인 자리는 더 줄일 수 있다**(TP-243). `clustered_flags`가 참인 자리만 체류
+    최소값이 낮아진다 — 부분 재편성 경로는 이 인자를 주지 않으므로(기본 None)
+    예전과 똑같이 분류 최소값에서 멈춘다.
     """
 
     if not drafts:
         return list(drafts), timeline
 
     category_by_id = {c.place_id: c.category for c in candidates}
+    flags = list(clustered_flags) if clustered_flags is not None else [False] * len(drafts)
     slots = [
         DurationSlot(
             current_min=draft.visit_duration_min,
             policy=(
-                policy_for(category_by_id[draft.place_id])
+                policy_for(category_by_id[draft.place_id], clustered=flag)
                 if draft.place_id in category_by_id
                 else None
             ),
         )
-        for draft in drafts
+        for draft, flag in zip(drafts, flags, strict=True)
     ]
     overhead_min = timeline.total_duration_min - sum(
         draft.visit_duration_min for draft in drafts
@@ -692,6 +709,9 @@ def _rebudget_item_cap(
     (의도된 하한), LLM이 비싼 분류를 고르면 예산을 넘긴다. 근거와 실측은
     `budget.cap_item_count_to_budget()` docstring에 있다.
 
+    **묶음도 여기서 확정된다.** 도보로 이웃과 붙은 자리는 체류 최소값이 낮아져
+    같은 예산에 한 자리가 더 들어갈 수 있다 — 그 한 자리가 상한이다(TP-243).
+
     **상한이 줄면 보관함 판정을 다시 해야 한다.** `over_capacity_place_names`가
     처음 상한으로 계산된 값이면, 줄어든 자리 때문에 못 들어간 보관함 장소가
     아무 안내 없이 사라진다. `_resolve_must_include()`를 다시 부르는 것으로 두
@@ -703,10 +723,14 @@ def _rebudget_item_cap(
     """
 
     category_by_id = {c.place_id: c.category for c in request.candidates}
+    # 방문 순서가 이제 있으므로 묶음을 실제로 잰다(TP-243). 상한을 처음 정할
+    # 때(`derive_item_range()`)는 순서가 없어 낙관적 추정을 썼다.
+    clusters = cluster_ids_in_order(request, [item.place_id for item in items])
     effective = cap_item_count_to_budget(
         request,
         [category_by_id.get(item.place_id) for item in items],
         hard_cap=derived_max,
+        clustered_flags=[cluster_id is not None for cluster_id in clusters],
     )
     if effective < derived_max:
         logger.info(
@@ -883,9 +907,18 @@ async def plan_schedule(
         omitted_names = _names_of(missing, request.candidates)
 
     candidate_by_id = {c.place_id: c for c in resolved_request.candidates}
+    # **최종 순서로 묶음을 다시 잰다**(TP-243). `_rebudget_item_cap()`도 같은
+    # 함수를 쓰지만 그때는 밀려난 보관함 장소를 되돌리기 전이라 순서가 다를 수
+    # 있다 — 체류시간에 쓰는 것은 화면에 나갈 이 순서다.
+    cluster_ids = cluster_ids_in_order(request, [item.place_id for item in llm_items])
+    clustered_flags = [cluster_id is not None for cluster_id in cluster_ids]
     drafts = [
-        _draft_from_llm_item(item, candidate_by_id.get(item.place_id), order)
-        for order, item in enumerate(llm_items, start=1)
+        _draft_from_llm_item(
+            item, candidate_by_id.get(item.place_id), order, clustered=clustered
+        )
+        for order, (item, clustered) in enumerate(
+            zip(llm_items, clustered_flags, strict=True), start=1
+        )
     ]
     travel = await _resolve_travel_minutes(
         resolved_request,
@@ -911,6 +944,7 @@ async def plan_schedule(
         candidates=resolved_request.candidates,
         start_at=schedule_start_at,
         travel_minutes=travel.minutes,
+        clustered_flags=clustered_flags,
     )
 
     items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)

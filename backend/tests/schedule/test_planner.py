@@ -2489,3 +2489,63 @@ class Test일정_항목의_사진:
         # 유지된 두 곳은 후보에 없다 — KeyError 없이 None 이어야 한다.
         assert by_id["place-1"].image_url is None
         assert by_id["place-3"].image_url is None
+
+
+class Test붙어_있는_곳은_짧게_머문다:
+    """TP-243 — 사용자 문의 원문: "5분 거리 이내인 세 장소는 묶어서 1시간 반으로".
+
+    **묶기 요청처럼 보이지만 체류시간 규칙 요청이다.** 골목에 붙어 있는 곳들을
+    각각 한 시간씩 앉아 있게 만들던 것은 분류 최소값 클램프였다. 거리만 다르고
+    나머지가 같은 두 요청을 나란히 두어, 바뀐 것이 거리 하나임을 보인다.
+    """
+
+    @staticmethod
+    def _request(km: float) -> SchedulePlanningRequest:
+        place_ids = [f"place-{i}" for i in range(1, 5)]
+        return SchedulePlanningRequest(
+            candidates=[_candidate(place_id) for place_id in place_ids],
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 9, 5, 14, 0, tzinfo=_KST),
+            pairwise_distances_km={
+                (a, b): km
+                for index, a in enumerate(place_ids)
+                for b in place_ids[index + 1 :]
+            },
+        )
+
+    @staticmethod
+    def _plan() -> ScheduleLLMPlan:
+        return ScheduleLLMPlan(
+            items=[
+                _sample_item(f"place-{i}", i, estimated_duration_min=60)
+                for i in range(1, 5)
+            ],
+            route_summary="테스트 동선 요약",
+        )
+
+    @pytest.mark.asyncio
+    async def test_도보_거리면_네_곳이_짧은_체류로_들어간다(self) -> None:
+        """0.15km는 도보 3분이라 묶이고, 체류 최소값이 45분까지 내려간다."""
+
+        result = await plan_schedule(self._request(0.15), _RecordingLLM(self._plan()))
+
+        assert len(result.items) == 4
+        assert [item.estimated_duration_min for item in result.items] == [45, 45, 45, 45]
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_도보_기준을_넘으면_세_곳으로_줄고_60분에서_멈춘다(self) -> None:
+        """**대조군.** 거리 말고는 위와 모든 입력이 같다.
+
+        0.5km는 도보 8분이라 묶음 기준(5분) 밖이다. **이동시간 차이로는 설명되지
+        않는 대조군이다** — 8분이면 예산에 여유가 있는데도(60x3 + 8x2 = 196분)
+        네 곳이 안 되는 이유는 분류 최소값 60분이 바닥이기 때문이다. 2km처럼 먼
+        값을 쓰면 이동이 커져서 줄어든 것인지 묶이지 않아 줄어든 것인지 갈리지
+        않는다.
+        """
+
+        result = await plan_schedule(self._request(0.5), _RecordingLLM(self._plan()))
+
+        assert len(result.items) == 3
+        assert [item.estimated_duration_min for item in result.items] == [60, 60, 60]
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN

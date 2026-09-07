@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from app.schedule.budget import (
     MAX_SCHEDULE_ITEMS,
+    SCHEDULE_CLUSTER_EXTRA_ITEMS,
     SCHEDULE_DEFAULT_TIME_BUDGET_MIN,
     SCHEDULE_TIME_TOLERANCE_MIN,
     DurationSlot,
+    cap_item_count_to_budget,
     classify_budget,
+    cluster_ids_in_order,
     derive_item_range,
     fit_durations_to_budget,
     required_candidate_count,
@@ -228,9 +231,13 @@ class TestDeriveItemRange:
         """**폴백 15분이 아니라 이번 후보들의 실제 거리를 쓴다는 증거다.**
 
         2km씩 떨어져 있으면 도보 환산 이동이 커져 3시간에 3곳이 안 들어간다.
+
+        가까운 쪽은 TP-243 이후 4곳이다(이 카드 전에는 3곳). 0.15km는 도보 3분이라
+        묶음으로 잡혀 체류 최소값이 45분까지 내려간다. **거리가 상한을 가른다는 이
+        테스트의 주장은 그대로다** — 오히려 두 값의 차이가 벌어졌다.
         """
 
-        assert derive_item_range(_request(180, km=0.15))[1] == 3
+        assert derive_item_range(_request(180, km=0.15))[1] == 4
         assert derive_item_range(_request(180, km=2.0))[1] == 2
 
     def test_후보_수가_상한을_넘지_못한다(self) -> None:
@@ -352,3 +359,149 @@ class TestWalkableClusterSize:
         이 구분까지는 필요하지 않다."""
 
         assert walkable_cluster_size(_request(180), within_min=5) == 0
+
+
+def _request_with(
+    distances: dict[tuple[str, str], float],
+    *,
+    budget: int | None = 180,
+    category: str = "attraction",
+) -> SchedulePlanningRequest:
+    """쌍마다 거리가 다른 요청. 묶음 판정은 어느 쌍이 가까운지가 요점이라 필요하다."""
+
+    place_ids = sorted({place_id for pair in distances for place_id in pair})
+    return SchedulePlanningRequest(
+        candidates=[_candidate(place_id, category) for place_id in place_ids],
+        conditions=UserConditions(time_available=budget),
+        pairwise_distances_km=distances,
+    )
+
+
+class TestClusterIdsInOrder:
+    """TP-243 — 방문 순서에서 **이웃한 구간만** 묶는다."""
+
+    def test_이웃_구간이_도보_기준_안이면_한_묶음이다(self) -> None:
+        """0.15km는 도보 3분이라 기준(5분) 안이다."""
+
+        request = _request_with({("a", "b"): 0.15, ("b", "c"): 0.15, ("a", "c"): 0.3})
+
+        assert cluster_ids_in_order(request, ["a", "b", "c"]) == [1, 1, 1]
+
+    def test_중심에서만_가까운_조합은_묶지_않는다(self) -> None:
+        """**이 카드가 지표용 근사를 그대로 쓰지 않는 이유다.**
+
+        a는 b·c 둘 다에 가깝지만 b와 c는 서로 멀다. `walkable_cluster_size()`는
+        a를 중심에 놓고 3을 돌려주는데(그 함수 주석이 밝힌 과대 계산),
+        방문 순서가 a -> b -> c면 b -> c 구간을 실제로 걸어야 한다.
+        """
+
+        request = _request_with({("a", "b"): 0.15, ("a", "c"): 0.15, ("b", "c"): 1.5})
+
+        assert walkable_cluster_size(request, within_min=5) == 3
+        assert cluster_ids_in_order(request, ["a", "b", "c"]) == [1, 1, None]
+
+    def test_묶음이_둘이면_번호가_다르다(self) -> None:
+        """번호가 같으면 화면이 떨어진 두 묶음을 한 묶음으로 그린다."""
+
+        request = _request_with(
+            {
+                ("a", "b"): 0.15,
+                ("b", "c"): 2.0,
+                ("c", "d"): 0.15,
+                ("a", "c"): 2.0,
+                ("a", "d"): 2.0,
+                ("b", "d"): 2.0,
+            }
+        )
+
+        assert cluster_ids_in_order(request, ["a", "b", "c", "d"]) == [1, 1, 2, 2]
+
+    def test_한_곳짜리는_묶음이_아니다(self) -> None:
+        """혼자 있는 자리에는 "가까이 붙어 있으니 짧게"라는 근거가 없다."""
+
+        request = _request_with({("a", "b"): 2.0})
+
+        assert cluster_ids_in_order(request, ["a", "b"]) == [None, None]
+        assert cluster_ids_in_order(request, ["a"]) == [None]
+
+    def test_거리를_모르는_구간은_묶지_않는다(self) -> None:
+        """좌표를 못 구했다는 뜻이라 "가깝다"의 근거가 없다. 모를 때 묶어주면
+        근거 없이 체류시간을 깎는다."""
+
+        request = _request_with({("a", "b"): 0.15})
+
+        assert cluster_ids_in_order(request, ["a", "b", "c"]) == [1, 1, None]
+
+
+class TestClusteredItemRange:
+    """TP-243 — 묶이면 곳 수가 늘어나되 한 자리까지만."""
+
+    def test_묶이면_같은_예산에_곳_수가_늘어난다(self) -> None:
+        """3시간 요청, 관광지 5곳. 0.15km면 묶여서 45분까지 내려간다."""
+
+        far = derive_item_range(_request(180, km=2.0))[1]
+        near = derive_item_range(_request(180, km=0.15))[1]
+
+        assert far == 2
+        assert near == 4
+
+    def test_묶여도_한_자리보다_더_늘지_않는다(self) -> None:
+        """**이 가드가 없으면 "짧게 머물기"가 "많이 넣기"로 새어나간다.**
+
+        210분 요청에 묶음 최소 45분 + 허용 오차 30분이면 5곳(각 45분 + 이동
+        3분 = 237분)이 산수로는 통과한다. 카드가 미리 지목한 구멍이다.
+        """
+
+        request = _request(210, km=0.15)
+        clustered_max = derive_item_range(request)[1]
+
+        assert clustered_max == 4
+        assert clustered_max < 5
+
+    def test_문화시설은_묶여도_최소값이_안_내려간다(self) -> None:
+        """분류 최소값은 그 장소를 보는 데 필요한 시간이고 근접도와 무관하다 —
+        박물관 옆에 갤러리가 있다고 박물관을 45분에 볼 수 있지는 않다."""
+
+        near = derive_item_range(_request(180, km=0.15, category="cultural_facility"))
+        far = derive_item_range(_request(180, km=2.0, category="cultural_facility"))
+
+        assert near[1] == far[1] == 2
+
+    def test_거리를_모르면_이_카드_이전과_같다(self) -> None:
+        """묶을 후보가 없으면 완화된 목록이 원래 목록과 같아 결과도 같다."""
+
+        assert derive_item_range(_request(180))[1] == 3
+        assert derive_item_range(_request(300))[1] == 4
+
+
+class TestClusteredRebudget:
+    """TP-243 — 응답이 온 뒤에는 실제 순서로 잰다."""
+
+    def test_묶인_자리는_짧은_체류로_다시_잰다(self) -> None:
+        """묶이지 않았다면 3곳에서 잘릴 편성이 묶이면 4곳까지 남는다."""
+
+        request = _request(180, km=0.15)
+        chosen = ["attraction"] * 4
+
+        assert cap_item_count_to_budget(request, chosen, hard_cap=4) == 3
+        assert (
+            cap_item_count_to_budget(
+                request, chosen, hard_cap=4, clustered_flags=[True] * 4
+            )
+            == 4
+        )
+
+    def test_묶여도_한_자리보다_더_늘지_않는다(self) -> None:
+        """상한을 정할 때와 같은 가드가 여기에도 있어야 한다 — 없으면
+        "묶였으니 45분"이 곧 "그러니 한 곳 더"로 이어진다."""
+
+        request = _request(210, km=0.15)
+        chosen = ["attraction"] * 5
+        plain = cap_item_count_to_budget(request, chosen, hard_cap=5)
+
+        capped = cap_item_count_to_budget(
+            request, chosen, hard_cap=5, clustered_flags=[True] * 5
+        )
+
+        assert plain == 3
+        assert capped == plain + SCHEDULE_CLUSTER_EXTRA_ITEMS
