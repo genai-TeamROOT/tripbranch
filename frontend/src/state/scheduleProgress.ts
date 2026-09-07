@@ -35,3 +35,17 @@ export function saveVisitedIndices(scheduleKey: string, indices: number[]): void
     /* 프라이빗 모드 등으로 저장이 막혀도 체크 자체는 계속 동작해야 한다. */
   }
 }
+
+/*
+ * 일정마다 키가 하나씩 생기므로(PREFIX + id) 지울 때는 접두어로 훑는다.
+ * `clearLocalUserData()`가 로그아웃 때 부른다 — 다음 사람 화면에 앞사람이
+ * 체크한 것이 남아 있으면 안 되고, 안 지우면 본 일정마다 키가 영구히 쌓인다.
+ */
+export function clearScheduleProgress(): void {
+  try {
+    const keys = Object.keys(localStorage).filter((key) => key.startsWith(PREFIX));
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    /* 저장소를 못 읽는 환경이면 지울 것도 없다. */
+  }
+}
