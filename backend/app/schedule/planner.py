@@ -27,6 +27,7 @@ from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
 from app.schedule.budget import (
     DurationSlot,
+    cap_item_count_to_budget,
     classify_budget,
     derive_item_range,
     fit_durations_to_budget,
@@ -666,6 +667,42 @@ def _cap_item_count(
     return list(items[:max_items])
 
 
+def _rebudget_item_cap(
+    request: SchedulePlanningRequest,
+    items: Sequence[ScheduleLLMItem],
+    *,
+    derived_max: int,
+) -> tuple[int, list[str], list[str]]:
+    """LLM이 고른 항목의 실제 분류로 상한을 다시 재고 보관함 판정도 함께 고친다.
+
+    `derive_item_range()`의 상한은 후보 중 체류 최소값이 **작은 것부터** 센 값이라
+    (의도된 하한), LLM이 비싼 분류를 고르면 예산을 넘긴다. 근거와 실측은
+    `budget.cap_item_count_to_budget()` docstring에 있다.
+
+    **상한이 줄면 보관함 판정을 다시 해야 한다.** `over_capacity_place_names`가
+    처음 상한으로 계산된 값이면, 줄어든 자리 때문에 못 들어간 보관함 장소가
+    아무 안내 없이 사라진다. `_resolve_must_include()`를 다시 부르는 것으로 두
+    값이 같은 상한을 보게 한다 — 상한이 그대로면 같은 값이 다시 나온다.
+
+    **재시도 프롬프트의 `[반드시 포함]` 목록은 건드리지 않는다.** 이미 LLM을
+    부른 뒤이고, 줄어든 자리에 못 들어간 장소는 `over_capacity_place_names`가
+    안내한다. 시도마다 프롬프트 입력이 달라지면 두 응답을 비교할 근거가 사라진다.
+    """
+
+    category_by_id = {c.place_id: c.category for c in request.candidates}
+    effective = cap_item_count_to_budget(
+        request,
+        [category_by_id.get(item.place_id) for item in items],
+        hard_cap=derived_max,
+    )
+    if effective < derived_max:
+        logger.info(
+            "schedule.item_capacity_rebudgeted from=%d to=%d", derived_max, effective
+        )
+    resolved, dropped = _resolve_must_include(request, effective)
+    return effective, resolved, dropped
+
+
 def _missing_must_include(
     must_include: Sequence[str], items: Sequence[ScheduleLLMItem]
 ) -> set[str]:
@@ -718,6 +755,9 @@ async def plan_schedule(
     # (SCHEDULE-07의 가드를 동적 최솟값으로 확장). 상한은 보관함 개수 충돌
     # 판정에 쓴다(SCHEDULE-12).
     min_items, max_items = derive_item_range(request)
+    # 프롬프트에 넣는 목표값이다. 응답이 온 뒤 실제 분류로 다시 재므로
+    # (`_rebudget_item_cap()`) 원래 값을 따로 들고 있어야 한다.
+    derived_max = max_items
     if len(request.candidates) < min_items:
         return ScheduleResult(
             items=[],
@@ -754,6 +794,9 @@ async def plan_schedule(
 
     plan = (await llm.generate_schedule_plan(resolved_request)).data
     llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+    max_items, must_include, over_capacity_names = _rebudget_item_cap(
+        request, llm_items, derived_max=derived_max
+    )
     llm_items = _cap_item_count(llm_items, max_items)
     missing = _missing_must_include(must_include, llm_items)
     if missing:
@@ -766,6 +809,9 @@ async def plan_schedule(
         )
         plan = (await llm.generate_schedule_plan(resolved_request)).data
         llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+        max_items, must_include, over_capacity_names = _rebudget_item_cap(
+            request, llm_items, derived_max=derived_max
+        )
         llm_items = _cap_item_count(llm_items, max_items)
         missing = _missing_must_include(must_include, llm_items)
 

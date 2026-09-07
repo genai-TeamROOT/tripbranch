@@ -228,6 +228,57 @@ def derive_item_range(
     return min(2, max_items), max_items
 
 
+def cap_item_count_to_budget(
+    request: SchedulePlanningRequest,
+    chosen_categories: Sequence[str | None],
+    *,
+    hard_cap: int,
+) -> int:
+    """LLM이 **실제로 고른** 항목의 분류로 개수 상한을 다시 잰다.
+
+    **왜 다시 재나.** `derive_item_range()`는 후보들의 체류 최소값을 **작은 것부터**
+    n개 써서 상한을 정한다. 의도된 하한 가정이고(그 함수 주석 참고) 상한을 너무
+    깎지 않으려는 것이다. 그런데 후보 풀에 쇼핑(최소 30분)이 섞여 있으면 3시간에
+    3곳이 통과하고, 정작 LLM은 문화시설(최소 90분) 세 곳을 고를 수 있다. 그러면
+    270분 + 이동이 되는데 **되돌릴 곳이 없다** — `fit_durations_to_budget()`은
+    정책 최소값에서 멈추므로 90분을 더 깎지 못한다.
+
+    실측으로 확인된 모양이다(2026-09-07): 3시간 요청에 문화시설 3곳이 나와
+    276분, 초과 96분. 그 민원이 TP-238·239로 닫힌 줄 알았는데 이 경로가 남아
+    있었다.
+
+    **상한 계산을 고치지 않고 다시 재는 이유.** 어느 분류가 뽑힐지는 LLM이 고르기
+    전까지 알 수 없다. 가장 비싼 조합을 가정해 미리 깎으면 대부분의 요청에서
+    곳 수가 실제보다 줄어든다. 그래서 유도값은 프롬프트에 주는 목표로 남기고,
+    응답이 온 뒤 실제 분류로 계약을 확인한다 — 개수 상한을 지시가 아니라
+    자르기로 보장한 TP-239와 같은 철학이다.
+
+    **고른 순서의 앞에서부터 센다.** `_cap_item_count()`가 뒤에서부터 자르므로
+    같은 기준이어야 결과가 일치한다. LLM은 점수가 높은 곳을 앞에 두므로 남는
+    것도 그쪽이다.
+
+    **0을 돌려주지 않는다.** 한 곳도 못 넣는 편성보다 한 곳이 예산을 넘는 편성이
+    낫고, 넘었다는 사실은 `classify_budget()`이 알린다. 시간을 말하지 않았으면
+    잴 예산이 없으므로 `hard_cap`을 그대로 돌려준다.
+    """
+
+    if request.conditions.time_available is None or not chosen_categories:
+        return hard_cap
+
+    minimums = [policy_for(category).minimum_min for category in chosen_categories]
+    travel_min = pairwise_travel_minutes(request)
+    allowance = request.conditions.time_available + SCHEDULE_TIME_TOLERANCE_MIN
+
+    capped = 1
+    for count in range(1, min(hard_cap, len(minimums)) + 1):
+        needed = sum(minimums[:count]) + travel_estimate_minutes(travel_min, count - 1)
+        if needed > allowance:
+            # 체류·이동 모두 count에 대해 단조 증가라 더 큰 count도 넘는다.
+            break
+        capped = count
+    return min(capped, hard_cap)
+
+
 def fit_durations_to_budget(
     slots: Sequence[DurationSlot], *, overhead_min: int, budget_min: int | None
 ) -> list[int]:
@@ -316,6 +367,7 @@ __all__ = [
     "MAX_SCHEDULE_ITEMS",
     "SCHEDULE_TIME_TOLERANCE_MIN",
     "DurationSlot",
+    "cap_item_count_to_budget",
     "classify_budget",
     "derive_item_range",
     "fit_durations_to_budget",

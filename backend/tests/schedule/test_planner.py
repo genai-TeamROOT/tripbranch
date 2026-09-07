@@ -26,6 +26,7 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.providers.contracts import ProviderSource, ProviderStatus, provider_result
 from app.schedule.associations import CoVisitedHint
+from app.schedule.budget import derive_item_range
 from app.schedule.planner import _round_up_start, plan_partial_schedule, plan_schedule
 from app.schedule.schemas import (
     ScheduleLLMItem,
@@ -51,11 +52,12 @@ def _candidate(
     operating_hours_display: str | None = None,
     image_url: str | None = None,
     image_url_fallback: str | None = None,
+    category: str = "attraction",
 ) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
         name=f"장소 {place_id}",
-        category="attraction",
+        category=category,
         distance_km=0.3,
         remaining_minutes=120,
         operating_hours_display=operating_hours_display,
@@ -2053,6 +2055,138 @@ class TestFitDurationsToTimeAvailable:
 
         # 유지한 자리는 60분 그대로, 새로 채운 자리만 최소값까지 줄어든다.
         assert [item.estimated_duration_min for item in result.items] == [60, 60]
+
+
+class Test고른_분류로_상한을_다시_잰다:
+    """실측 재현 — 3시간 요청에 문화시설 3곳이 나와 276분이 됐다. (2026-09-07)
+
+    민원이 TP-238·239로 닫힌 줄 알았는데 이 경로가 남아 있었다. 후보 풀에 값싼
+    분류가 섞여 있으면 `derive_item_range()`가 3곳을 허용하는데, LLM이 최소
+    체류 90분인 문화시설을 고르면 `fit_durations_to_budget()`이 정책 최소값에서
+    멈춰 되돌릴 여유가 0이다.
+    """
+
+    @staticmethod
+    def _mixed_candidates() -> list[RecommendationItem]:
+        """문화시설 3곳 + 쇼핑 2곳. 쇼핑(최소 30분)이 상한 계산을 느슨하게 만든다."""
+
+        return [
+            _candidate("place-1", category="cultural_facility"),
+            _candidate("place-2", category="cultural_facility"),
+            _candidate("place-3", category="cultural_facility"),
+            _candidate("place-4", category="shopping"),
+            _candidate("place-5", category="shopping"),
+        ]
+
+    @staticmethod
+    def _request() -> SchedulePlanningRequest:
+        return SchedulePlanningRequest(
+            candidates=Test고른_분류로_상한을_다시_잰다._mixed_candidates(),
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 9, 5, 14, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+    def test_유도값은_값싼_분류로_계산돼_3곳을_허용한다(self) -> None:
+        """**이것이 문제의 입력이다.** 체류 최소값을 작은 것부터 세면
+        30+30+90 + 이동 30 = 180분이라 3곳이 예산 안으로 보인다."""
+
+        assert derive_item_range(self._request())[1] == 3
+
+    @pytest.mark.asyncio
+    async def test_문화시설_세_곳을_고르면_두_곳으로_줄인다(self) -> None:
+        """**가드를 지우면 이 테스트가 잡는다.** 줄이지 않으면 90x3 + 이동 30 =
+        300분이 되고 180분 요청에 120분 초과다. 두 곳이면 195분으로 허용 오차
+        안에 들어온다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+
+        result = await plan_schedule(self._request(), _RecordingLLM(plan))
+
+        assert [item.place_id for item in result.items] == ["place-1", "place-2"]
+        assert result.item_capacity == 2
+        assert result.total_duration_min == 90 + 90 + 15
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_값싼_분류를_고르면_세_곳_그대로_간다(self) -> None:
+        """**대조군.** 줄이는 것이 목적이 아니라 예산을 지키는 것이 목적이다.
+        쇼핑(최소 30분)을 고르면 세 곳이 그대로 남아야 한다 — 여기서 줄면
+        가드가 예산과 무관하게 곳 수를 깎고 있다는 뜻이다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-4", 1, estimated_duration_min=30),
+                _sample_item("place-5", 2, estimated_duration_min=30),
+                _sample_item("place-1", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+
+        result = await plan_schedule(self._request(), _RecordingLLM(plan))
+
+        assert len(result.items) == 3
+        assert result.item_capacity == 3
+
+    @pytest.mark.asyncio
+    async def test_시간을_말하지_않으면_다시_재지_않는다(self) -> None:
+        """잴 예산이 없다. 여기서 줄이면 근거 없이 곳 수를 깎는 것이다."""
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._mixed_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 9, 5, 14, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+
+        assert len(result.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_줄어든_자리_때문에_빠진_보관함_장소를_안내한다(self) -> None:
+        """**상한이 줄면 보관함 판정도 다시 해야 한다.** 안 하면
+        `over_capacity_place_names`가 처음 상한(3)으로 계산된 값이라, 줄어든
+        자리 때문에 못 들어간 장소가 아무 안내 없이 사라진다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._mixed_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 9, 5, 14, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+
+        assert result.item_capacity == 2
+        assert result.over_capacity_place_names == ["장소 place-3"]
 
 
 class TestDeriveItemCapacity:
