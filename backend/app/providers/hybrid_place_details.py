@@ -7,6 +7,9 @@
   places 캐시 — 장소명·주소·운영시간·휴무일·주차·요금·안내처·편의시설
   detailCommon2 — overview·homepage (+ 축제의 tel)
 
+detailCommon2가 실패하면 그 두 필드만 비우고 저장소 값으로 응답한다(PARTIAL).
+이유는 `_common_details_or_empty()`에 적었다.
+
 호출 수가 3회에서 1회로 준다. RealPlaceProvider.find_details_by_name()은
 searchKeyword2로 이름을 맞추고(1) detailCommon2(2) + detailIntro2(3)를 부른다.
 여기서는 이름 대조와 intro 값이 모두 저장소에 있어 detailCommon2만 남는다.
@@ -19,6 +22,8 @@ question_type 전부를 덮게 됐다. overview/homepage만 detailCommon2에 남
 """
 
 from __future__ import annotations
+
+import logging
 
 from app.domain.models import PlaceCommonDetails, PlaceDetails, StoredPlaceDetail
 from app.domain.operating_hours import resolve_operating_schedule
@@ -34,6 +39,8 @@ from app.repositories.protocols import (
     PlaceDetailsReadRepository,
     PlaceLocationRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 _PROVIDER_NAME = "hybrid_places"
 
@@ -95,13 +102,49 @@ class HybridPlaceDetailsProvider:
                 details={"source": _PROVIDER_NAME},
             )
 
-        common_result = await self._common.get_common_details(content_id)
+        common, status = await self._common_details_or_empty(content_id)
         return provider_result(
-            _to_place_details(row, common_result.data),
+            _to_place_details(row, common),
             source=ProviderSource.TOUR_API_PLACE,
-            status=ProviderStatus.SUCCESS,
+            status=status,
             detail_fetched_at=row.detail_fetched_at,
         )
+
+    async def _common_details_or_empty(
+        self, content_id: str
+    ) -> tuple[PlaceCommonDetails, ProviderStatus]:
+        """detailCommon2가 실패해도 저장소 값만으로 상세를 낸다.
+
+        detailCommon2가 실어 오는 값은 overview·homepage 둘뿐이고, 나머지(장소명·
+        주소·운영시간·주차·요금·편의시설)는 이미 저장소 행에 있다. 그런데 이 호출
+        하나가 실패해 예외가 올라가면 GetPlaceDetailTool이 UNAVAILABLE로 낮추고,
+        routes/chat.py가 이미 만들어 둔 place_card를 응답에 싣지 않고 돌아간다 —
+        일일 한도를 소진한 날 장소명·주소·사진까지 화면에서 통째로 사라지는 경로가
+        이것이다. 받은 값은 내보내고 못 받은 두 필드만 비운다.
+
+        **원인을 가리지 않고 삼킨다.** 일일 한도 소진이든 초당 한도든 타임아웃이든
+        이 요청에서 할 수 있는 일이 같기 때문이다. 인증 실패·활용기간 만료 같은
+        설정 문제는 부팅 검증(validate_provider_config)이 따로 잡는다. 대신 상태를
+        PARTIAL로 낮추고 경고 로그를 남겨, 개요가 빠진 응답이 조용히 정상으로
+        보이지 않게 한다.
+        """
+        try:
+            result = await self._common.get_common_details(content_id)
+        except AppError as exc:
+            logger.warning(
+                "detailCommon2 실패로 개요·홈페이지를 빼고 저장소 값만 응답합니다: "
+                "place_id=%s code=%s",
+                content_id,
+                exc.code,
+            )
+            empty = PlaceCommonDetails(
+                content_id=content_id,
+                overview=None,
+                homepage=None,
+                telephone=None,
+            )
+            return empty, ProviderStatus.PARTIAL
+        return result.data, ProviderStatus.SUCCESS
 
 
 def _to_place_details(

@@ -16,7 +16,8 @@ from app.agent_context.info_schemas import (
     PlaceInfoResult,
 )
 from app.agent_context.service import ContextService, ContextTools
-from app.domain.models import PlaceDetails, PlacePhoto
+from app.domain.models import PlaceDetails, PlacePhoto, StoredPlaceLocation
+from app.errors import ProviderUnavailableError
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
     ProviderResult,
@@ -26,8 +27,10 @@ from app.providers.contracts import (
 )
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
+from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.repositories.fake_places import (
+    FakePlaceDetailsRepository,
     FakePlaceLocationRepository,
     FakePlacePhotoRepository,
 )
@@ -456,3 +459,110 @@ class TestCardBarrierFree:
         assert card is not None
         assert card.baby_carriage == "가능"
         assert card.stroller_rental is None
+
+
+class _FailingCommonProvider:
+    """detailCommon2만 죽은 상태. 일일 한도를 소진한 날이 이 모양이다."""
+
+    async def get_common_details(self, content_id: str):  # noqa: ANN201
+        raise ProviderUnavailableError(
+            "TourAPI", detail="returnReasonCode=22, errMsg=SERVICE ERROR"
+        )
+
+
+def _service_with_failing_common() -> ContextService:
+    """저장소와 사진은 살아 있고 detailCommon2만 실패하는 상태를 실 provider로 조립한다.
+
+    여기서 fake로 두는 것은 저장소와 detailCommon2뿐이고, 상세 조립은
+    HybridPlaceDetailsProvider가 그대로 한다 — 사진이 응답까지 실제로 실리는지
+    보려면 그 경로가 통째로 돌아야 한다.
+    """
+    locations = FakePlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="fake-museum-1",
+                title="테스트 박물관",
+                address="서울 종로구 어딘가",
+                latitude=37.5735,
+                longitude=126.9788,
+                district_code="110",
+            ),
+        )
+    )
+    search_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                place_repository=locations,
+            ),
+            places=NearbyPlaceDetailsTool(search_provider, search_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+            place_detail=GetPlaceDetailTool(
+                HybridPlaceDetailsProvider(
+                    location_repository=locations,
+                    details_repository=FakePlaceDetailsRepository(),
+                    common_provider=_FailingCommonProvider(),
+                )
+            ),
+            place_photos=FakePlacePhotoRepository(),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_detailCommon2가_실패해도_사진은_카드에_남는다() -> None:
+    """사진은 detailCommon2와 출처가 다르다 — 저장소에서 오므로 한도와 무관하다.
+
+    그런데도 안 보이던 이유는 상세 실패가 응답을 조기에 끝내 사진 조회가 한 번도
+    실행되지 않았기 때문이다. 상세를 저장소 값으로 끝까지 조립해야 이 경로가 돈다.
+    """
+    service = _service_with_failing_common()
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="request-info-card-common-fail",
+            place_name="테스트 박물관",
+            place_context="explicit",
+            question_type="parking",
+        )
+    )
+
+    assert response.status == "success"
+    card = _result(response).place_card
+    assert card is not None
+    assert [photo.url for photo in card.photos] == [
+        "https://example.test/fake-museum-1.jpg",
+        "https://example.test/fake-museum-1-2.jpg",
+        "https://example.test/fake-museum-1-3.jpg",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_detailCommon2가_실패해도_저장소_값은_카드에_남는다() -> None:
+    """빠지는 건 개요·홈페이지 둘뿐이다."""
+    service = _service_with_failing_common()
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="request-info-card-common-fail-2",
+            place_name="테스트 박물관",
+            place_context="explicit",
+            question_type="parking",
+        )
+    )
+
+    result = _result(response)
+    assert result.fields["parking"] == "가능 요금 (30분 1,500원)"
+    card = result.place_card
+    assert card is not None
+    assert card.place_name == "테스트 박물관"
+    assert card.operating_hours == "09:00~18:00"
+    assert card.rest_date == "매주 월요일"
+    assert card.thumbnail_url == "https://example.test/fake-museum-1.jpg"
+    assert card.overview is None
+    assert card.homepage is None

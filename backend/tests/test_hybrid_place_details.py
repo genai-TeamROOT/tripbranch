@@ -13,7 +13,7 @@ from app.domain.models import (
     StoredPlaceDetail,
     StoredPlaceLocation,
 )
-from app.errors import AppError
+from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -409,3 +409,95 @@ async def test_무장애_정보가_없는_장소는_키가_생기지_않는다()
     # 기존 편의시설 답변은 그대로다.
     assert fields["restroom"] == "있음"
     assert fields["pet"] == "불가"
+
+
+class _FailingCommon:
+    """detailCommon2 호출이 실패하는 provider.
+
+    일일 한도 소진(returnReasonCode=22)을 본떴지만, 이 provider는 원인을 가리지
+    않고 삼키므로 어떤 AppError를 넣어도 결과가 같아야 한다.
+    """
+
+    def __init__(self, error: AppError | None = None) -> None:
+        self._error = error or ProviderUnavailableError(
+            "TourAPI", detail="returnReasonCode=22, errMsg=SERVICE ERROR"
+        )
+        self.calls: list[str] = []
+
+    async def get_common_details(
+        self, content_id: str
+    ) -> ProviderResult[PlaceCommonDetails]:
+        self.calls.append(content_id)
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_detailCommon2가_실패해도_저장소_값으로_답한다() -> None:
+    """개요 하나 때문에 나머지 전부를 버리지 않는다.
+
+    detailCommon2가 실어 오는 건 overview·homepage 둘뿐이다. 여기서 예외를 올리면
+    상세가 unavailable이 되고, routes/chat.py가 이미 만들어 둔 place_card를 응답에
+    싣지 않아 장소명·주소·사진까지 화면에서 사라진다.
+    """
+    provider, _ = _provider(common=_FailingCommon())
+
+    details = (await provider.find_details_by_name("경복궁")).data
+
+    # 저장소에서 온 값은 그대로 남는다.
+    assert details.title == "경복궁"
+    assert details.address == "서울특별시 종로구 사직로 161"
+    assert details.operating_hours == "09:00~18:00"
+    assert details.parking == "가능 (승용차 240대 / 버스 50대)"
+    assert details.fee == "어른 3,000원"
+    assert details.telephone == "02-3700-3900"
+    assert details.thumbnail_url == "https://example.test/first.jpg"
+    # 못 받은 두 필드만 빈다. 문구를 지어내지 않는다.
+    assert details.overview is None
+    assert details.homepage is None
+
+
+@pytest.mark.asyncio
+async def test_detailCommon2_실패는_PARTIAL로_남는다() -> None:
+    """개요가 빠진 응답이 조용히 정상으로 보이면 안 된다."""
+    provider, _ = _provider(common=_FailingCommon())
+
+    result = await provider.find_details_by_name("경복궁")
+
+    assert result.metadata.status is ProviderStatus.PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_타임아웃도_같은_방식으로_삼킨다() -> None:
+    """원인을 가리지 않는다 — 이 요청에서 할 수 있는 일이 같기 때문이다."""
+    provider, _ = _provider(common=_FailingCommon(ProviderTimeoutError("TourAPI")))
+
+    result = await provider.find_details_by_name("경복궁")
+
+    assert result.metadata.status is ProviderStatus.PARTIAL
+    assert result.data.parking == "가능 (승용차 240대 / 버스 50대)"
+
+
+@pytest.mark.asyncio
+async def test_Tool이_common_실패를_unavailable로_올리지_않는다() -> None:
+    """UNAVAILABLE이 되는 순간 호출부가 카드를 통째로 버린다(routes/chat.py)."""
+    provider, _ = _provider(common=_FailingCommon())
+    tool = GetPlaceDetailTool(provider)
+
+    result = await tool.execute(PlaceDetailQuery(place_name="경복궁"))
+
+    assert result.status is ToolStatus.SUCCESS
+    assert result.details is not None
+    assert result.details.parking == "가능 (승용차 240대 / 버스 50대)"
+
+
+@pytest.mark.asyncio
+async def test_저장소에_없는_장소는_common을_부르지도_않는다() -> None:
+    """404는 그대로 404다 — 삼키는 대상은 detailCommon2 실패뿐이다."""
+    common = _FailingCommon()
+    provider, _ = _provider(matches=(), common=common)
+
+    with pytest.raises(AppError) as exc_info:
+        await provider.find_details_by_name("없는장소")
+
+    assert exc_info.value.status_code == 404
+    assert common.calls == []
