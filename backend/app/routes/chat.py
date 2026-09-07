@@ -56,9 +56,33 @@ router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
+def _log_incoming_location(request: AgentRequest) -> None:
+    """발화가 들어올 때 그 턴이 가진 위치를 한 줄로 남긴다.
+
+    **위치가 화면 설정·발화·기기 좌표 중 어디서 온 것인지 사후에 알 방법이 없었다.**
+    같은 설정으로 물어도 검색 기준이 GPS로 갔다가 검색지로 갔다가 출발지로 가는
+    일이 있는데(2026-09-07 확인), 응답만 봐서는 요청에 무엇이 실려 왔는지 안 보여
+    매번 재현부터 다시 해야 했다.
+
+    **좌표는 찍지 않고 있고/없고만 남긴다.** 서버에 위치를 남기지 않으려는 작업과
+    같은 이유다(docs/location-storage-removal.local.md) — 저장을 지우면서 로그로
+    흘리면 옮겨 담는 것에 지나지 않는다. 장소 이름은 사용자가 화면에서 직접 고른
+    값이고 어느 칸이 비어 결과가 갈렸는지 보려면 이름이 필요해 그대로 남긴다.
+    """
+
+    logger.info(
+        "발화 수신 | 출발지=%s | 검색지=%s | GPS=%s | 세션=%s",
+        request.selected_current_location or "-",
+        request.selected_search_center or "-",
+        "있음" if request.device_location else "없음",
+        request.session_id or "새 세션",
+    )
+
+
 async def _request_for_runtime(request: AgentRequest) -> AgentRequest:
     """영어 입력만 한국어 Agent Runtime 사본으로 변환한다."""
 
+    _log_incoming_location(request)
     if request.language != "en":
         return request
     async with create_external_client() as client:

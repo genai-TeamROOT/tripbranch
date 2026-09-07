@@ -3299,6 +3299,19 @@ async def _run_agent_flow(
     # 고치면 나머지가 따라온다.
     state_response = _override_locations_from_request(state_response, request)
 
+    # 라우트의 "발화 수신"(routes/chat.py)과 짝을 이루는 줄이다. 저쪽은 브라우저가
+    # **보낸** 값이고 이쪽은 서버가 **쓰기로 정한** 값이다. 둘이 다를 수 있다 —
+    # "쌍문동에 갈만한곳"이라고 말하면 화면에 설정된 서대문역을 발화가 이긴다.
+    # 한쪽만 보면 정상 동작을 버그로 읽게 돼 실제로 그렇게 한 번 헤맸다(2026-09-08).
+    # 좌표는 여기서도 남기지 않는다 — 이유는 routes/chat.py의 _log_incoming_location.
+    logger.info(
+        "위치 확정 | 출발지=%s | 검색지=%s | 분류=%s | 세션=%s",
+        state_response.user_conditions.current_location or "-",
+        state_response.user_conditions.search_center or "-",
+        llm_output.intent.value if hasattr(llm_output.intent, "value") else llm_output.intent,
+        state_response.session_id,
+    )
+
     # 이번 턴이 쓸 위치가 여기서 확정된다 — 화면 우상단 위치 칩이 이 값을 보여준다.
     # done까지 기다리면 도구 조회(fetching_context)와 채점(scoring), 답변 스트리밍이
     # 전부 끝난 뒤라, 사용자는 "광화문역 근처"라고 말해 놓고 결과가 다 나올 때까지
