@@ -4,6 +4,10 @@
  * 출력: 파싱된 JSON 응답 또는 표준화된 ApiError.
  * 호출 시점: endpoint별 API 함수가 HTTP 요청을 보낼 때 호출된다.
  * TODO: retry 정책이 필요해지면 이 계층에서 추가한다(TP-240은 끊는 것까지만 했다).
+ *
+ * 오류 문구에 "다시 시도해주세요"를 넣지 않는다(TP-250). 채팅 화면은 실패한 턴에
+ * "다시 시도" 버튼을 함께 그리므로(TP-245) 문구가 그 말을 반복하면 같은 화면에서
+ * 두 번 말하게 된다. 문구는 무슨 일이 일어났는지만 말한다.
  */
 
 import type { ApiErrorBody } from "../types";
@@ -69,7 +73,7 @@ function timeoutMsFor(path: string): number {
 function timeoutError(): ApiError {
   return new ApiError({
     code: "request_timeout",
-    message: "서버가 응답하지 않아 요청을 끊었어요. 다시 시도해주세요.",
+    message: "서버가 응답하지 않아 요청을 끊었어요.",
     retryable: true,
     details: null,
   });
@@ -78,7 +82,7 @@ function timeoutError(): ApiError {
 function connectionError(): ApiError {
   return new ApiError({
     code: "internal_server_error",
-    message: "서버에 연결할 수 없어요.",
+    message: "인터넷 연결을 확인해주세요.",
     retryable: true,
     details: null,
   });
@@ -157,7 +161,7 @@ async function authHeaders(): Promise<Record<string, string>> {
 function authUnavailableError(): ApiError {
   return new ApiError({
     code: "auth_unavailable",
-    message: "로그인 정보를 확인하지 못했어요. 다시 시도해주세요.",
+    message: "로그인 정보를 확인하지 못했어요.",
     retryable: true,
     details: null,
   });
@@ -364,7 +368,7 @@ export async function streamPost<T>(
     if (inactivityTimedOut) {
       throw new ApiError({
         code: "stream_inactive",
-        message: "응답 연결이 45초 동안 멈췄어요. 다시 시도해주세요.",
+        message: "응답이 45초 동안 멈춰서 끊었어요.",
         retryable: true,
         details: null,
       });

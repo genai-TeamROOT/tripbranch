@@ -56,7 +56,7 @@ const STATUS_COMMAND = "/status";
 const CHAT_TEXT = {
   ko: {
     developer: "개발자용 보기",
-    requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
+    requestError: "추천을 불러오지 못했어요.",
     composer: "추가 조건을 입력해 주세요",
     clarificationComposer: "경복궁 근처에서 찾아줘",
     requestMore: "다른 곳 보여줘",
@@ -66,7 +66,7 @@ const CHAT_TEXT = {
   },
   en: {
     developer: "Developer view",
-    requestError: "We couldn’t load recommendations. Please try again.",
+    requestError: "We couldn’t load recommendations.",
     composer: "Add another condition or ask a follow-up",
     clarificationComposer: "Find somewhere near Gyeongbokgung",
     requestMore: "Show more places",
