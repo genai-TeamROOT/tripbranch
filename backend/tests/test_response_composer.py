@@ -739,7 +739,13 @@ class TestComposeScheduleMessage:
 
     def test_uses_actual_duration_when_far_from_requested_time(self) -> None:
         """후보 부족 등으로 실제 편성이 요청과 크게 어긋나면(30분 초과 차이)
-        요청 시간을 그대로 보여주지 않고 실제 계산값을 정직하게 보여준다."""
+        요청 시간을 그대로 보여주지 않고 실제 계산값을 정직하게 보여준다.
+
+        이 입력은 `under` 판정이라 뒤에 부족분 안내가 한 문장 더 붙는다
+        (`Test예산_미달_안내`). 여기서 잠그는 것은 **앞머리 라벨**이다 — 요청한
+        5시간이 아니라 계산값 1시간이 나와야 한다.
+        """
+
         schedule = ScheduleResult(
             items=[_schedule_item()],
             total_duration_min=60,
@@ -750,7 +756,8 @@ class TestComposeScheduleMessage:
 
         message = compose_schedule_message(schedule, time_available_min=300)
 
-        assert message == "1시간 코스를 짜봤어요. 동선 요약입니다."
+        assert message.startswith("1시간 코스를 짜봤어요. 동선 요약입니다.")
+        assert not message.startswith("5시간")
 
     def test_no_time_available_falls_back_to_actual_duration(self) -> None:
         """time_available_min을 안 넘기면(사용자가 시간을 명시하지 않은 요청)
@@ -872,6 +879,99 @@ class Test가용시간_초과_안내:
         message = compose_schedule_message(schedule, time_available_min=120)
 
         assert message == "조건에 맞는 곳을 충분히 찾지 못했어요."
+
+
+class Test예산_미달_안내:
+    """판정이 셋인데 말풍선 문장이 `over`뿐이어서 `under`인 턴이 조용히 짧게 나갔다.
+
+    2026-09-07 브라우저 실측: 3시간 요청에 1곳 120분이 나오면서 화면이
+    "2시간 코스를 짜봤어요"라고만 하고 왜 짧은지 말하지 않았다.
+    """
+
+    @staticmethod
+    def _schedule(total_duration_min: int, *, capacity: int | None) -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=total_duration_min,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+            item_capacity=capacity,
+        )
+
+    def test_허용_오차_경계는_짧다고_말하지_않는다(self) -> None:
+        """딱 30분 모자란 것까지는 지킨 것으로 친다 — `over` 쪽 경계와 대칭이다.
+        여기서 문장이 붙으면 "3시간 코스를 짜봤어요"라고 해놓고 짧다고 말한다."""
+
+        message = compose_schedule_message(
+            self._schedule(150, capacity=1), time_available_min=180
+        )
+
+        assert message == "3시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_한_분_더_짧으면_붙는다(self) -> None:
+        """**화면의 두 수가 정합해야 한다.** 149분은 "2시간 30분"(150)으로
+        표시되므로 부족분도 표시값에서 빼 30분이 된다 — 원본 31분을 올려
+        "40분"이라고 하면 150 + 40 이 180을 넘는다."""
+
+        message = compose_schedule_message(
+            self._schedule(149, capacity=3), time_available_min=180
+        )
+
+        assert message.startswith("2시간 30분 코스를 짜봤어요.")
+        assert "3시간으로 말씀하셨는데 30분쯤 짧아요." in message
+
+    def test_자리를_다_썼으면_더_찾지_못했다고_말한다(self) -> None:
+        """실측 재현. 항목 수가 상한과 같으면 더 넣을 자리가 없었다는 뜻이라
+        그때만 원인을 말할 수 있다."""
+
+        message = compose_schedule_message(
+            self._schedule(120, capacity=1), time_available_min=180
+        )
+
+        assert message == (
+            "2시간 코스를 짜봤어요. 동선 요약입니다. "
+            "3시간으로 말씀하셨는데 1시간쯤 짧아요. 근처에서 넣을 만한 곳을 더 찾지 못했어요."
+        )
+
+    def test_상한이_남아_있으면_원인을_단정하지_않는다(self) -> None:
+        """**말할 것이 없어서 짧은 것과 말하지 않는 것은 다르다.** 자리가 남았는데
+        짧으면 후보가 모자랐다는 근거가 없다 — LLM이 덜 골랐을 수도 있다."""
+
+        message = compose_schedule_message(
+            self._schedule(120, capacity=3), time_available_min=180
+        )
+
+        assert "1시간쯤 짧아요." in message
+        assert "더 찾지 못했어요" not in message
+
+    def test_상한을_모르는_옛_스냅샷은_원인_문장을_붙이지_않는다(self) -> None:
+        """`item_capacity`는 TP-239에서 생긴 필드다. 그전에 저장된 일정에는 없다."""
+
+        message = compose_schedule_message(
+            self._schedule(120, capacity=None), time_available_min=180
+        )
+
+        assert "1시간쯤 짧아요." in message
+        assert "더 찾지 못했어요" not in message
+
+    def test_시간을_말하지_않으면_붙지_않는다(self) -> None:
+        """비교할 예산이 없다. `over` 쪽과 같은 이유로 아무 말도 하지 않는다."""
+
+        message = compose_schedule_message(self._schedule(420, capacity=5))
+
+        assert "짧아요" not in message
+
+    def test_길어진_턴에는_짧다는_문장이_붙지_않는다(self) -> None:
+        """판정은 셋 중 하나라 두 문장이 동시에 붙을 수 없다. 배선이 뒤집히면
+        여기서 잡힌다."""
+
+        message = compose_schedule_message(
+            self._schedule(276, capacity=3), time_available_min=180
+        )
+
+        assert "길어졌어요" in message
+        assert "짧아요" not in message
 
 
 class TestComposeInfoConcentrationMessage:

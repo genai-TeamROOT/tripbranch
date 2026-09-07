@@ -112,10 +112,13 @@
   (`trace_records`에 `metrics jsonb null` 추가 — 일정 편성 품질 지표(TP-242)를 담는
   자리다. 컬럼을 하나씩 늘리지 않고 jsonb 하나로 둔 이유는 Trace 계약이 "호출자가
   해석한 값을 그대로 저장한다"를 원칙으로 세워 뒀기 때문이다. 기존 행과 지표를
-  싣지 않는 단계는 null로 남는다. **아직 미적용 — 적용 방법을 정해야 한다:** CLI
-  `db push` 또는 MCP `apply_migration`을 쓰면 원격 마이그레이션 이력에 남고,
-  Dashboard SQL Editor로 적용하면 남지 않으므로 그때는 이 항목에 그 사실을 적어야
-  한다. `add column if not exists`라 재실행은 안전하다)
+  싣지 않는 단계는 null로 남는다. **적용 확인됨(2026-09-07) — 적용 경로는 미확인이다.**
+  원격에 컬럼이 존재하고 `metrics`가 실린 행도 쌓이고 있다. 아래 한 줄로 확인한다.
+  `select count(*) from information_schema.columns where table_schema='public' and
+  table_name='trace_records' and column_name='metrics';` -> 1.
+  이력에 남지 않았다면 Dashboard SQL Editor로 적용된 것이다(팀 관례는 CLI `db push`
+  또는 MCP `apply_migration`이고 그쪽만 원격 이력에 기록된다). `add column if not
+  exists`라 재실행은 안전하지만, **미적용으로 보고 다시 돌릴 필요는 없다**)
 
 - 장소 보관함 테이블 마이그레이션:
   `202608310001_create_saved_place_lists.sql`
