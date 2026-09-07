@@ -16,13 +16,14 @@ import {
 
 test("출발지를 정하지 않으면 기기 좌표에서 출발한다고 말한다", () => {
   /* 출발지가 "없는" 상태는 없다 — 안 정했으면 기기 좌표가 출발지다. */
-  const model = buildLocationChipModel({ origin: null, center: "광화문역" });
+  const model = buildLocationChipModel({ origin: null, center: "광화문역" }, null, true);
 
   expect(model).toMatchObject({
     kind: "pair",
     origin: "현재 위치",
     center: "광화문역",
     isDeviceLocation: true,
+    isDeviceLocationPending: false,
     description: "현재 위치에서 출발, 광화문역 주변에서 검색",
   });
 });
@@ -55,9 +56,14 @@ test("검색 기준을 비워두면 출발지가 검색 중심이 되어 한 칸
 });
 
 test("아무것도 정하지 않았고 대화도 없으면 현재 위치 한 칸이다", () => {
-  const model = buildLocationChipModel({ origin: null, center: null });
+  const model = buildLocationChipModel({ origin: null, center: null }, null, true);
 
-  expect(model).toMatchObject({ kind: "single", name: "현재 위치", isDeviceLocation: true });
+  expect(model).toMatchObject({
+    kind: "single",
+    name: "현재 위치",
+    isDeviceLocation: true,
+    isDeviceLocationPending: false,
+  });
 });
 
 test("설정이 비어 있을 때만 대화가 해석한 위치로 떨어진다", () => {
@@ -97,4 +103,33 @@ test("이모지가 섞인 이름을 반쪽으로 자르지 않는다", () => {
 
   expect(cut).toBe("🎨".repeat(MAX_CHIP_NAME_LENGTH) + "…");
   expect(cut).not.toContain("�");
+});
+
+/*
+ * 이름이 "현재 위치"인 것과 좌표를 갖고 있는 것은 다른 사실이다.
+ *
+ * 좌표는 발화를 보낼 때만 받고, 새 대화(RESET)는 좌표만 지우고 출발지·검색지는
+ * sessionStorage에 남긴다. 그래서 "현재 위치"라고 적힌 채 좌표가 없는 상태가
+ * 실제로 생긴다 — 그때 초록 점이 깜빡이면 화면이 사실과 다른 말을 한다.
+ */
+test("좌표를 아직 못 받았으면 기기 좌표 자리라도 초록이 아니다", () => {
+  const model = buildLocationChipModel({ origin: null, center: "광화문역" }, null, false);
+
+  expect(model).toMatchObject({
+    kind: "pair",
+    origin: "현재 위치",
+    isDeviceLocation: false,
+    isDeviceLocationPending: true,
+  });
+});
+
+test("사용자가 이름으로 정한 자리는 좌표가 없어도 대기 상태가 아니다", () => {
+  /* 회색 점은 "곧 여기가 될 텐데 아직 모른다"는 뜻이라, 사용자가 고른 장소에는
+     붙으면 안 된다. 그쪽은 지금처럼 아이콘이 붙는다. */
+  const model = buildLocationChipModel({ origin: "안국역", center: "광화문역" }, null, false);
+
+  expect(model).toMatchObject({
+    isDeviceLocation: false,
+    isDeviceLocationPending: false,
+  });
 });

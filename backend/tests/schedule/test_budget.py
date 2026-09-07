@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from app.schedule.budget import (
     MAX_SCHEDULE_ITEMS,
+    SCHEDULE_DEFAULT_TIME_BUDGET_MIN,
     SCHEDULE_TIME_TOLERANCE_MIN,
     DurationSlot,
     classify_budget,
     derive_item_range,
     fit_durations_to_budget,
+    required_candidate_count,
     travel_estimate_minutes,
     walkable_cluster_size,
 )
@@ -244,10 +246,34 @@ class TestDeriveItemRange:
 
         assert derive_item_range(_request(10))[1] == 1
 
-    def test_시간을_말하지_않으면_기존_정책을_쓴다(self) -> None:
-        """유도할 근거가 없다. 프롬프트도 "3~4시간 내외"로 안내한다."""
+    def test_시간을_말하지_않으면_기본_예산으로_유도한다(self) -> None:
+        """**예전에는 상수 `(3, 5)`였다.** 그러면 상한이 예산과 무관해져
+        문화시설 네 곳 360분이 그대로 통과한다 — 실측 258~420분(2026-09-07).
 
-        assert derive_item_range(_request(None)) == (3, MAX_SCHEDULE_ITEMS)
+        기본 예산 240분을 쓰면 관광지(최소 60분)·이동 15분 기준으로 3곳이
+        상한이다(60x3 + 15x2 = 210 <= 240 + 30). 4곳은 285분이라 막힌다.
+
+        기본값 240은 새로 정한 값이 아니다 — 프롬프트가 이미 "3~4시간 내외"로
+        안내하고, D가 "반나절"을 그 폴백에 맞춰 240으로 확정한 이력이 있다
+        (`app/prompts/recommend/HISTORY.md` 2.5.0). 상수 주석에 근거가 있다.
+        """
+
+        assert derive_item_range(_request(None)) == (2, 3)
+        assert SCHEDULE_DEFAULT_TIME_BUDGET_MIN == 240
+
+    def test_시간을_말하지_않아도_후보_3곳_미만이면_부르지_않는다(self) -> None:
+        """**개수 범위의 최솟값과 다른 질문이다.** 범위는 "몇 곳을 넣을 것인가"이고
+        이 값은 "LLM을 부를 가치가 있는가"다. 기본 예산을 넣으면서 상한이 예산에서
+        나오게 됐으니, 한 상수가 둘을 겸하면 프롬프트에 "3개 이상 2개 이하" 같은
+        모순된 범위가 실린다(문화시설 세 곳이 그 경우다).
+
+        옛 동작(SCHEDULE-07)은 그대로 둔다 — 이 가드를 풀면 "후보가 부족해요"
+        대신 1곳짜리 일정이 나가기 시작하고 그건 별개의 제품 판단이다.
+        """
+
+        no_budget = _request(None)
+        assert required_candidate_count(no_budget, min_items=2) == 3
+        assert required_candidate_count(_request(180), min_items=2) == 2
 
     def test_최솟값은_후보_부족_가드용이라_2를_넘지_않는다(self) -> None:
         """예전에는 예산이 길수록 최솟값도 3까지 올라가서, 4시간 요청에 후보가

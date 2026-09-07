@@ -876,17 +876,56 @@ it("상세가 도착하면 길찾기 버튼이 활성화된다", async () => {
   );
 });
 
-/* 현재 위치가 없으면 상세가 와도 버튼은 끝내 안 나온다 — 자리를 잡으면 영영 못
-   누르는 버튼을 보여주게 된다. */
-it("현재 위치가 없으면 로딩 중에도 버튼 자리를 잡지 않는다", async () => {
-  mockedFetch.mockReturnValue(new Promise(() => {}));
+/*
+ * 현재 위치가 없으면 길찾기 대신 위치를 받는 자리로 쓴다.
+ *
+ * 예전에는 자리째 숨겼는데, 그러면 사용자는 버튼이 왜 없는지 알 수 없었다 — 위치
+ * 칩에는 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
+ * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
+ */
+it("현재 위치가 없으면 길찾기 대신 위치 사용을 보여준다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
   render(
     <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
     { wrapper: TripProvider },
   );
 
-  await screen.findByRole("status");
+  expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
+  expect(screen.getByText("지금 계신 곳을 알아야 길을 안내할 수 있어요.")).toBeInTheDocument();
+  /* 좌표가 없으면 길찾기는 열 수 없으므로 그 버튼은 없다. */
   expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
+});
+
+it("현재 위치 사용을 누르면 좌표를 받아 길찾기 버튼으로 바뀐다", async () => {
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((success: PositionCallback) =>
+        success({
+          coords: { latitude: 37.5665, longitude: 126.978 },
+          timestamp: Date.now(),
+        } as GeolocationPosition),
+      ),
+    },
+  });
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await user.click(await screen.findByRole("button", { name: "현재 위치 사용" }));
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  await waitFor(() => expect(button).toBeEnabled());
 });
 
 /*

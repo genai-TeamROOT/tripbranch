@@ -16,6 +16,7 @@ import {
   Clock,
   CreditCard,
   Dog,
+  Crosshair,
   Eye,
   Loader2,
   type LucideIcon,
@@ -32,7 +33,8 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
-import { useTripState } from "../../state/TripContext";
+import { useTripDispatch, useTripState } from "../../state/TripContext";
+import { getBrowserDeviceLocation } from "../../utils/geolocation";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
 import {
@@ -1429,6 +1431,37 @@ export function RecommendationDetailPreviewModal({
   onClose,
 }: RecommendationDetailPreviewModalProps) {
   const { device_location, language } = useTripState();
+  const dispatch = useTripDispatch();
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  /*
+   * 길찾기를 열려고 좌표만 받는다. 위치 설정 화면의 "현재 위치 사용"과 달리
+   * 출발지(locationSettings.origin)는 건드리지 않는다 — 저쪽 버튼의 뜻은 "내 위치는
+   * 기기 좌표다"이지만 이 버튼의 뜻은 "길찾기를 열겠다"뿐이다.
+   */
+  async function handleUseCurrentLocation() {
+    if (isLocating) return;
+    setIsLocating(true);
+    setLocationError(null);
+    try {
+      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true, language });
+      dispatch({
+        type: "SET_DEVICE_LOCATION",
+        payload: { deviceLocation, capturedAt: Date.now() },
+      });
+    } catch (error) {
+      setLocationError(
+        error instanceof Error
+          ? error.message
+          : language === "en"
+            ? "Couldn't get your location."
+            : "위치를 가져오지 못했어요.",
+      );
+    } finally {
+      setIsLocating(false);
+    }
+  }
   const isEn = language === "en";
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
@@ -1480,10 +1513,13 @@ export function RecommendationDetailPreviewModal({
    * 그 전에는 열 지도가 없다. 추천 카드에는 좌표가 없어서(RecommendationItem에
    * 필드 자체가 없다) 미리 채울 수도 없다.
    *
-   * 현재 위치가 없으면 자리도 잡지 않는다. 그 경우 상세가 와도 버튼은 끝내
-   * 나오지 않으므로, 자리를 잡으면 영영 못 누르는 버튼을 보여주게 된다.
+   * 현재 위치가 없으면 길찾기 대신 위치를 받는 자리로 쓴다. 예전에는 자리째
+   * 숨겼는데, 그러면 사용자는 버튼이 왜 없는지 알 방법이 없었다 — 위치 칩에는
+   * 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
+   * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
    */
-  const showRouteFooter = Boolean(device_location) && (canRoute || isLoading);
+  const needsDeviceLocation = !device_location;
+  const showRouteFooter = needsDeviceLocation || canRoute || isLoading;
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
@@ -1810,6 +1846,46 @@ export function RecommendationDetailPreviewModal({
 
         {showRouteFooter && (
           <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
+            {needsDeviceLocation ? (
+              /* 길찾기는 "출발=현재 위치, 도착=이 좌표"라 현재 위치 없이는 열 수 없다.
+                 숨기는 대신 여기서 바로 받게 한다 — 화면을 옮기지 않아도 된다.
+                 위치 설정 화면과 달리 출발지는 건드리지 않는다. 저쪽 버튼의 뜻은
+                 "내 위치는 기기 좌표다"라 출발지를 비우지만, 이 버튼의 뜻은
+                 "길찾기를 열겠다"뿐이라 사용자가 정해둔 출발지를 바꾸면 안 된다. */
+              <div className="flex flex-col gap-2">
+                {/* 왜 필요한지를 말한다. "현재 위치가 필요해요"만 쓰면, 화면 위
+                    칩에는 위치가 떠 있는 터라 "이미 아는 거 아니야?"가 된다.
+                    출발지라는 말은 쓰지 않는다 — 여기서는 개념을 꺼낼 필요 없이
+                    "지금 계신 곳"이 곧바로 읽힌다. */}
+                <p className="text-center text-xs text-muted">
+                  {isEn
+                    ? "We need to know where you are to show directions."
+                    : "지금 계신 곳을 알아야 길을 안내할 수 있어요."}
+                </p>
+                {locationError && (
+                  <p role="alert" className="text-center text-xs text-rust">
+                    {locationError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  disabled={isLocating}
+                  onClick={() => void handleUseCurrentLocation()}
+                  className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep disabled:opacity-50"
+                >
+                  <Crosshair size={18} className={isLocating ? "animate-pulse" : undefined} />
+                  {/* 위치 설정 화면과 같은 말을 쓴다 — 한쪽에서 배운 뜻이 다른
+                      쪽에서도 통해야 한다. */}
+                  {isLocating
+                    ? isEn
+                      ? "Getting your location…"
+                      : "위치를 가져오는 중이에요…"
+                    : isEn
+                      ? "Use my current location"
+                      : "현재 위치 사용"}
+                </button>
+              </div>
+            ) : (
             <button
               type="button"
               disabled={!canRoute}
@@ -1831,6 +1907,7 @@ export function RecommendationDetailPreviewModal({
               <Navigation size={18} />
               {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}
             </button>
+            )}
           </div>
         )}
       </motion.section>

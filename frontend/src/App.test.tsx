@@ -1265,3 +1265,69 @@ test("사진 검색이 실패해도 올린 사진은 대화에 남는다", async
      사진만 지우는 것은 일관되지 않았다. */
   expect(await screen.findByAltText("올린 사진")).toBeInTheDocument();
 });
+
+/*
+ * 위치 칩의 점이 좌표 유무를 따라간다.
+ *
+ * 이름("현재 위치")과 좌표는 따로 논다 — 좌표는 발화를 보낼 때만 받는다. 그래서
+ * 칩을 만드는 곳(HomePage·ChatPage)이 좌표를 넘기지 않으면 좌표 없이도 초록이
+ * 깜빡인다. buildLocationChipModel의 인자에 기본값이 있어 안 넘겨도 컴파일되므로,
+ * **호출부가 실제로 넘기는지를 여기서 잡는다.**
+ */
+test("위치 칩의 점은 좌표를 받기 전과 후가 다르다", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  const { container } = render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+
+  /* 아직 발화를 안 보냈으니 좌표가 없다 — 깜빡이면 안 된다. */
+  expect(container.querySelector(".animate-ping")).toBeNull();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  /* 발화를 보내며 좌표를 받았다. */
+  await waitFor(() => expect(container.querySelector(".animate-ping")).not.toBeNull());
+});
+
+/*
+ * 홈 화면의 칩도 같은 규칙을 따른다.
+ *
+ * 위 테스트는 채팅 화면만 잡는다 — 발화 전에는 좌표가 없어서, 홈이 인자를
+ * 빠뜨려도 결과가 같기 때문이다. 좌표가 **있는** 채로 홈을 그려야 갈린다.
+ * 실제로 생기는 상태다: 좌표를 받은 세션을 새로고침하면 홈이 그 좌표를 들고 뜬다.
+ */
+test("좌표가 있으면 홈 화면 칩도 깜빡인다", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  sessionStorage.setItem(
+    "tripbranch_state",
+    JSON.stringify({
+      version: 6,
+      state: {
+        language: "ko",
+        user_input: "",
+        interpreted_conditions: null,
+        recommendations: [],
+        unverified_recommendations: [],
+        shown_place_ids: [],
+        messages: [],
+        auditTurns: [],
+        phase: "ready",
+        error: null,
+        session_id: null,
+        device_location: "37.5665,126.9780",
+        device_location_captured_at: Date.now(),
+        device_location_snoozed_until: null,
+        awaiting_clarification: false,
+        saved_places: [],
+        agentProgress: null,
+        streamingIntent: null,
+      },
+    }),
+  );
+
+  const { container } = render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+
+  await waitFor(() => expect(container.querySelector(".animate-ping")).not.toBeNull());
+});

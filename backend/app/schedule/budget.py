@@ -53,9 +53,32 @@ SCHEDULE_TIME_TOLERANCE_MIN = 30
 # 같은 수여야 한다 — 유도한 상한이 이 값을 넘으면 LLM 응답이 검증에서 거부된다.
 MAX_SCHEDULE_ITEMS = 5
 
-# 예산이 주어지지 않았을 때 쓰는 목표 개수 범위. 유도할 근거가 없으므로 기존 정책을
-# 그대로 쓴다(프롬프트도 "3~4시간 내외"로 안내한다).
-_ITEM_RANGE_WITHOUT_BUDGET = (3, MAX_SCHEDULE_ITEMS)
+# 활동 가능 시간을 말하지 않은 요청에 가정하는 예산(분).
+#
+# **새로 정한 값이 아니라 이미 있던 암묵적 기본값을 한곳으로 모은 것이다.**
+# 근거가 셋이다.
+#
+# 1. `gemini_prompts.build_schedule_planning_instruction()`이 시간이 없을 때
+#    "3~4시간 내외로 구성하세요"라고 이미 안내한다
+# 2. 여기 있던 상수 `_ITEM_RANGE_WITHOUT_BUDGET = (3, 5)`의 주석이 그 프롬프트
+#    문구를 근거로 만든 값이라고 밝히고 있었다
+# 3. D가 "반나절"을 분으로 환산할 때 **같은 폴백에 맞춰 240으로 확정했다**
+#    (`app/prompts/recommend/HISTORY.md` 2.5.0 항목)
+#
+# **문제는 개수만 그 기본값을 따르고 시간은 아무도 따르지 않았다는 것이다.**
+# 상한이 상수 5로 고정되고 배분도 판정도 건너뛰어져서, 실측에서 258~420분
+# 일정이 아무 안내 없이 나갔다(2026-09-07, 13턴 중 5턴).
+SCHEDULE_DEFAULT_TIME_BUDGET_MIN = 240
+
+# 시간을 말하지 않은 요청이 LLM을 부르기 위해 요구하는 **후보 수**. SCHEDULE-07
+# 동작이라 기본 예산을 도입해도 그대로 둔다 — 이 값을 내리면 "후보가 부족해요"
+# 대신 1곳짜리 일정이 나가기 시작하고, 그건 별개의 제품 판단이다.
+#
+# **개수 범위의 최솟값과 다른 것이다.** 예전에는 한 상수가 둘을 겸했는데, 기본
+# 예산을 넣으면서 겸할 수 없게 됐다 — 상한이 예산에서 나오므로 문화시설 세 곳처럼
+# 비싼 후보에서는 상한이 2가 되고, 그때 범위 최솟값까지 3이면 프롬프트에
+# "3개 이상 2개 이하"라는 모순된 범위가 실린다.
+_REQUIRED_CANDIDATES_WITHOUT_BUDGET = 3
 
 
 @dataclass(frozen=True)
@@ -70,6 +93,24 @@ class DurationSlot:
 
     current_min: int
     policy: VisitDurationPolicy | None = None
+
+
+def effective_budget_min(time_available_min: int | None) -> int:
+    """편성 계산에 쓸 예산(분). 시간을 말하지 않았으면 기본값을 쓴다.
+
+    **판정에는 쓰지 않는다.** `classify_budget()`은 None을 None으로 그대로 둔다 —
+    사용자가 말하지 않은 시간을 "지켰다"·"넘었다"로 판정하면 화면이 하지도 않은
+    약속을 말하게 된다(그 함수 주석의 팀 결정). 그래서 이 기본값은 **개수 상한과
+    체류시간 배분에만** 쓰이고, 말풍선 문구는 시간을 말하지 않은 턴에 여전히
+    아무 말도 하지 않는다.
+
+    가정한 예산으로 되묻지 않는 것이 요점이다. "4시간으로 말씀하셨는데"라고
+    말하면 안 한 말을 한 것으로 만든다.
+    """
+
+    if time_available_min is None:
+        return SCHEDULE_DEFAULT_TIME_BUDGET_MIN
+    return time_available_min
 
 
 def classify_budget(
@@ -200,20 +241,30 @@ def derive_item_range(
     15*2 - 180 = 30) 4시간에 4곳은 45분이 필요해 자동으로 막힌다. 오차를 키우면
     "짧게 머물며 많이 넣기"로 새어나간다.
 
+    **시간을 말하지 않았으면 기본 예산을 쓴다**(`effective_budget_min()`).
+    예전에는 여기서 상수 `(3, 5)`를 돌려줬는데, 그러면 상한이 예산과 무관해져
+    문화시설 네 곳 360분이 그대로 통과했다 — 실측 258~420분(2026-09-07). 기본값을
+    쓰면 상한도 배분도 같은 수를 보게 된다. 판정은 여전히 하지 않는다.
+
+    **후보 부족 가드는 이 함수가 아니라 `required_candidate_count()`가 답한다.**
+    시간을 말하지 않은 요청은 후보 3곳을 요구하는 옛 동작을 그대로 둔다 — 그
+    가드를 함께 풀면 "후보가 부족해요" 대신 1곳짜리 일정이 나가기 시작하고, 그건
+    이 변경의 목적(예산 폭주 막기)과 다른 제품 판단이다.
+
     최솟값은 후보 부족 가드에만 쓰인다("LLM을 부를 가치가 있는가"). 상한이 2곳
     이상이면 2, 아니면 1이다. 예전에는 예산이 길수록 최솟값도 3까지 올라가서
     4시간 요청에 후보가 2곳이면 편성을 아예 포기했는데, 그건 2곳을 보여주는
     것보다 나쁘다 — 이제 부족은 판정이 알리므로 조용히 나쁜 답이 나가지 않는다.
     """
 
-    if request.conditions.time_available is None:
-        return _ITEM_RANGE_WITHOUT_BUDGET
-
     stay_minimums = sorted(
         policy_for(candidate.category).minimum_min for candidate in request.candidates
     )
     travel_min = pairwise_travel_minutes(request)
-    allowance = request.conditions.time_available + SCHEDULE_TIME_TOLERANCE_MIN
+    allowance = (
+        effective_budget_min(request.conditions.time_available)
+        + SCHEDULE_TIME_TOLERANCE_MIN
+    )
 
     max_items = 1
     for count in range(1, hard_cap + 1):
@@ -228,8 +279,104 @@ def derive_item_range(
     return min(2, max_items), max_items
 
 
+def cap_item_count_to_budget(
+    request: SchedulePlanningRequest,
+    chosen_categories: Sequence[str | None],
+    *,
+    hard_cap: int,
+) -> int:
+    """LLM이 **실제로 고른** 항목의 분류로 개수 상한을 다시 잰다.
+
+    **왜 다시 재나.** `derive_item_range()`는 후보들의 체류 최소값을 **작은 것부터**
+    n개 써서 상한을 정한다. 의도된 하한 가정이고(그 함수 주석 참고) 상한을 너무
+    깎지 않으려는 것이다. 그런데 후보 풀에 쇼핑(최소 30분)이 섞여 있으면 3시간에
+    3곳이 통과하고, 정작 LLM은 문화시설(최소 90분) 세 곳을 고를 수 있다. 그러면
+    270분 + 이동이 되는데 **되돌릴 곳이 없다** — `fit_durations_to_budget()`은
+    정책 최소값에서 멈추므로 90분을 더 깎지 못한다.
+
+    실측으로 확인된 모양이다(2026-09-07): 3시간 요청에 문화시설 3곳이 나와
+    276분, 초과 96분. 그 민원이 TP-238·239로 닫힌 줄 알았는데 이 경로가 남아
+    있었다.
+
+    **상한 계산을 고치지 않고 다시 재는 이유.** 어느 분류가 뽑힐지는 LLM이 고르기
+    전까지 알 수 없다. 가장 비싼 조합을 가정해 미리 깎으면 대부분의 요청에서
+    곳 수가 실제보다 줄어든다. 그래서 유도값은 프롬프트에 주는 목표로 남기고,
+    응답이 온 뒤 실제 분류로 계약을 확인한다 — 개수 상한을 지시가 아니라
+    자르기로 보장한 TP-239와 같은 철학이다.
+
+    **고른 순서의 앞에서부터 센다.** `_cap_item_count()`가 뒤에서부터 자르므로
+    같은 기준이어야 결과가 일치한다. LLM은 점수가 높은 곳을 앞에 두므로 남는
+    것도 그쪽이다.
+
+    **0을 돌려주지 않는다.** 한 곳도 못 넣는 편성보다 한 곳이 예산을 넘는 편성이
+    낫고, 넘었다는 사실은 `classify_budget()`이 알린다.
+
+    **고른 것이 전부 예산에 들어가면 `hard_cap`을 그대로 돌려준다.** 실제로 자를
+    것이 없을 때 상한을 고른 개수로 줄이면, 상한을 다시 읽는 곳
+    (`_resolve_must_include()`)이 들어갈 수 있었던 보관함 장소를 "항목 수 상한
+    초과"로 안내한다 — 상한이 줄어든 이유가 예산이 아니라 LLM의 선택이라 거짓
+    안내다.
+
+    **시간을 말하지 않은 요청도 잰다.** 가정한 기본 예산을 쓴다
+    (`effective_budget_min()`) — 예전에는 여기서 그냥 돌아갔고, 그래서 개수 상한이
+    상수이던 시절과 겹쳐 문화시설 네 곳 360분이 통과했다.
+    """
+
+    if not chosen_categories:
+        return hard_cap
+
+    minimums = [policy_for(category).minimum_min for category in chosen_categories]
+    travel_min = pairwise_travel_minutes(request)
+    allowance = (
+        effective_budget_min(request.conditions.time_available)
+        + SCHEDULE_TIME_TOLERANCE_MIN
+    )
+
+    reachable = min(hard_cap, len(minimums))
+    capped = 1
+    for count in range(1, reachable + 1):
+        needed = sum(minimums[:count]) + travel_estimate_minutes(travel_min, count - 1)
+        if needed > allowance:
+            # 체류·이동 모두 count에 대해 단조 증가라 더 큰 count도 넘는다.
+            break
+        capped = count
+
+    if capped >= reachable:
+        # **고른 것이 전부 들어가면 상한을 깎지 않는다.** 이 자리에서 `capped`를
+        # 그대로 돌려주면 LLM이 상한보다 적게 골랐을 때 상한이 그 개수로 줄어든다
+        # — 그러면 `_resolve_must_include()`가 다시 계산될 때 들어갈 수 있었던
+        # 보관함 장소가 "항목 수 상한 초과"로 안내된다. 상한이 줄어든 이유가
+        # 예산이 아니라 LLM의 선택이라 그 안내는 거짓이다.
+        # (관광지 4곳 후보·상한 3에 LLM이 2곳만 준 경우로 회귀 테스트가 잡았다.)
+        return hard_cap
+    return capped
+
+
+def required_candidate_count(
+    request: SchedulePlanningRequest, *, min_items: int
+) -> int:
+    """LLM을 부를 가치가 있는 최소 후보 수.
+
+    **개수 범위의 최솟값과 다른 질문이다.** 범위는 "몇 곳을 넣을 것인가"이고
+    이 값은 "부를 가치가 있는가"다. 시간을 말한 요청은 둘이 같아도 되지만
+    (`min_items`), 말하지 않은 요청은 후보 3곳을 요구한다 — SCHEDULE-07 동작이고
+    회귀 방지 테스트가 잠그고 있다
+    (`test_시간_제한이_없으면_여전히_3개_미만에서_스킵한다`).
+
+    기본 예산을 넣으면서 두 뜻을 한 상수가 겸할 수 없게 됐다 — 상수 주석 참고.
+    """
+
+    if request.conditions.time_available is None:
+        return _REQUIRED_CANDIDATES_WITHOUT_BUDGET
+    return min_items
+
+
 def fit_durations_to_budget(
-    slots: Sequence[DurationSlot], *, overhead_min: int, budget_min: int | None
+    slots: Sequence[DurationSlot],
+    *,
+    overhead_min: int,
+    budget_min: int | None,
+    shrink_only: bool = False,
 ) -> list[int]:
     """체류시간을 활동 가능 시간에 맞춰 조절한 값을 돌려준다.
 
@@ -249,6 +396,12 @@ def fit_durations_to_budget(
     범위 안에 있던 값은 5분 배수로 남는다. 예산과 최대 4분이 어긋나는데, 그
     4분은 허용 오차 안에서 무해하고 판정은 정확값으로 내려진다.
 
+    **`shrink_only`는 가정한 예산에 쓴다.** 사용자가 시간을 말하지 않아
+    기본값을 쓰는 경우(`effective_budget_min()`), 넘치면 줄이지만 **모자라면
+    늘리지 않는다.** 늘리는 것은 "가정한 4시간을 꽉 채워 다니겠다는 뜻"으로 읽는
+    것이고, 말한 시간에 대해서도 팀이 그렇게 합의한 적이 없다(아래 문단) —
+    말하지 않은 시간에 대해서는 예산과 채울 의사를 둘 다 지어내는 셈이다.
+
     **이미 허용 오차 안이면 아무것도 하지 않는다.** 판정이 곧 목표라서, 목표를
     만족한 편성을 굳이 예산에 딱 맞게 늘리거나 줄일 이유가 없다. 그리고 밴드 안에서
     체류를 늘리는 것은 "사용자가 말한 3시간은 꽉 채워 다니겠다는 뜻"이라고 가정하는
@@ -265,6 +418,9 @@ def fit_durations_to_budget(
 
     delta = (budget_min - overhead_min) - sum(current)
     if delta == 0:
+        return current
+    if shrink_only and delta > 0:
+        # 가정한 예산 쪽으로 늘리지 않는다 — 위 docstring 참고.
         return current
 
     if delta < 0:
@@ -314,12 +470,16 @@ def fit_durations_to_budget(
 
 __all__ = [
     "MAX_SCHEDULE_ITEMS",
+    "SCHEDULE_DEFAULT_TIME_BUDGET_MIN",
     "SCHEDULE_TIME_TOLERANCE_MIN",
     "DurationSlot",
+    "cap_item_count_to_budget",
     "classify_budget",
     "derive_item_range",
+    "effective_budget_min",
     "fit_durations_to_budget",
     "pairwise_travel_minutes",
+    "required_candidate_count",
     "travel_estimate_minutes",
     "walkable_cluster_size",
 ]
