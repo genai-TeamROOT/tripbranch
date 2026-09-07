@@ -33,7 +33,7 @@ from app.observability.langfuse_tracing import observe_generation
 from app.prompts.registry import operation_entry_template, operation_prompt_version
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
-from app.schedule.budget import derive_item_range
+from app.schedule.budget import clusterable_slot_count, derive_item_range
 from app.schedule.schemas import (
     ScheduleLLMPlan,
     SchedulePartialFillRequest,
@@ -1075,6 +1075,10 @@ class RealGeminiProvider:
             # 상한을 프롬프트가 직접 계산하지 않는다 — planner가 후보 부족 가드와
             # 보관함 자르기에 쓰는 것과 같은 함수를 부른다(TP-239).
             item_range=derive_item_range(request),
+            # 붙어 있는 후보가 있으면 짧게 제안해 달라고 부탁한다(TP-243).
+            # 계약은 policy_for(clustered=True)와 개수 상한이 이미 걸고 있고,
+            # 이 부탁이 없으면 예산이 넉넉한 요청에서 그 여유를 아무도 안 쓴다.
+            clustered_candidates=clusterable_slot_count(request) >= 2,
         )
         context = gemini_prompts.format_schedule_planning_context(request, start_time)
         # thinking_budget=0 — 일정 편성은 구조화 출력이 무거워(3~5개 항목×6개 필드)

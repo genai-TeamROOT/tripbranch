@@ -75,9 +75,9 @@ def _api_error(status_code: int, status: str) -> genai_errors.APIError:
     return genai_errors.APIError(status_code, {"error": {"message": status, "status": status}})
 
 
-def _recommendation_item() -> RecommendationItem:
+def _recommendation_item(place_id: str = "p1") -> RecommendationItem:
     return RecommendationItem(
-        place_id="p1",
+        place_id=place_id,
         name="테스트 장소",
         category="attraction",
         distance_km=0.4,
@@ -426,6 +426,53 @@ async def test_try_model_applies_thinking_budget_when_given() -> None:
 
     assert captured_config[0].thinking_config is not None
     assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_generate_schedule_plan_tells_the_model_about_clustered_candidates() -> None:
+    """후보가 도보로 붙어 있으면 그 사실이 실제 system instruction까지 간다. (TP-243)
+
+    **배선이 끊겨도 프롬프트 단위 테스트는 통과한다** — 그쪽은 인자를 직접 주기
+    때문이다. 여기서 `clusterable_slot_count()`가 실제로 불리는지를 본다.
+    """
+
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured: list[str] = []
+    plan = ScheduleLLMPlan(
+        items=[
+            {
+                "order": 1,
+                "place_id": "p1",
+                "place_name": "장소 p1",
+                "estimated_arrival": "15:00",
+                "estimated_duration_min": 60,
+                "travel_to_next_min": None,
+                "reason": "테스트 이유",
+            }
+        ],
+        total_duration_min=60,
+        route_summary="테스트 동선",
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured.append(kwargs["config"].system_instruction)
+        return _FakeResponse(plan)
+
+    def _request(km: float) -> SchedulePlanningRequest:
+        return SchedulePlanningRequest(
+            candidates=[_recommendation_item("p1"), _recommendation_item("p2")],
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 8, 13, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={("p1", "p2"): km},
+        )
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.generate_schedule_plan(_request(0.15))
+        await provider.generate_schedule_plan(_request(2.0))
+
+    assert "붙어 있는" in captured[0]
+    # 대조군: 멀면 없는 사실을 말하지 않는다.
+    assert "붙어 있는" not in captured[1]
 
 
 @pytest.mark.asyncio

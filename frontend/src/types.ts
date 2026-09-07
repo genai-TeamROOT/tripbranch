@@ -193,6 +193,15 @@ export interface ScheduleItem {
   travel_to_next_mode?: TravelMode | null;
   travel_to_next_measured?: boolean;
   /*
+   * 도보로 이어지는 묶음 번호 (TP-243). 같은 번호끼리 한 묶음이고, 묶이지 않은
+   * 자리는 null이다. 서버가 방문 순서의 이웃 구간을 재서 정한다
+   * (app/schedule/budget.py cluster_ids_in_order).
+   *
+   * 이 필드 이전에 저장된 일정·세션 복원분과 호환되도록 optional로 둔다
+   * (travel_to_next_mode와 같은 이유). 없으면 묶음 표시가 없을 뿐이다.
+   */
+  cluster_id?: number | null;
+  /*
    * 일정 카드에 그릴 장소 사진. 편성 단계에서 후보(RecommendationItem)의 값을 그대로
    * 옮겨 담은 것이라(app/schedule/planner.py) 화면이 장소별로 다시 조회하지 않는다 —
    * `/chat/place-details`로도 얻을 수 있지만 그 경로는 INFO 전체(이름 재해석 + 외부

@@ -20,6 +20,11 @@
  * 구분해 보려 했지만 시도할 때마다 "칸"처럼 보인다는 되돌림을 받았다 — 정류장
  * 마다 이미 독립된 카드인 이곳이 오히려 자연스럽다. 체크한 것 중 가장 뒤보다
  * 앞이면서 아직 체크 안 한 카드에 "건너뛰었어요"를 띄운다.
+ *
+ * **묶음 표시(TP-243)는 develop에서 이어받았다.** 원래는 히어로를 뺀 나머지
+ * 목록에만 붙었는데(히어로는 카드가 아니라 제외해야 했다), 위계를 접어 모든
+ * 정류장이 같은 카드가 된 지금은 그 예외가 필요 없다 — 묶인 자리면 전부 테두리
+ * 색을 받고, 배지는 묶음이 시작되는 자리에 한 번만 붙는다.
  */
 
 import { useState } from "react";
@@ -27,6 +32,7 @@ import { Check } from "lucide-react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
 import { scheduleTravelLabel } from "../../utils/scheduleTravel";
+import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
 import type { ScheduleItem } from "../../types";
 
 interface ScheduleRouteProps {
@@ -50,6 +56,21 @@ function travelLine(item: ScheduleItem, isEn: boolean): string | null {
   );
 }
 
+/*
+ * 이 자리에 묶음 배지를 붙일지, 붙이면 몇 곳짜리인지. (TP-243)
+ *
+ * **묶음마다 한 번만 그린다** — 구간마다 붙이면 세 곳이 묶였을 때 같은 말이 두 번
+ * 반복된다(ScheduleClusterBadge 주석). 묶음이 시작되는 자리, 즉 그 번호가 처음
+ * 나오는 자리만 배지를 받는다. 혼자 있는 번호(size 1)는 묶음이 아니다.
+ */
+function badgeSize(items: ScheduleItem[], index: number): number | null {
+  const id = items[index].cluster_id;
+  if (id == null) return null;
+  const size = items.filter((item) => item.cluster_id === id).length;
+  if (size < 2) return null;
+  return items.findIndex((item) => item.cluster_id === id) === index ? size : null;
+}
+
 export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: ScheduleRouteProps) {
   const [detailFor, setDetailFor] = useState<ScheduleItem | null>(null);
   const furthestVisited = visited.size > 0 ? Math.max(...visited) : -1;
@@ -61,8 +82,14 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
         const isSkipped = !isVisited && index < furthestVisited;
         const previous = items[index - 1];
         const leg = previous ? travelLine(previous, isEn) : null;
+        const clusterSize = badgeSize(items, index);
         return (
           <div key={item.place_id}>
+            {clusterSize !== null && (
+              <div className="mb-1.5">
+                <ScheduleClusterBadge count={clusterSize} isEn={isEn} />
+              </div>
+            )}
             {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는
                 위의 시간 띠가 대신한다. */}
             {leg && (
@@ -70,8 +97,13 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
                 {leg}
               </p>
             )}
+            {/* 묶인 자리는 테두리에 색을 준다(TP-243) — 배지가 말로 하는 것을
+                테두리가 눈으로 보여준다. */}
             <div
-              className={`relative flex gap-3 rounded-2xl border border-border bg-white p-3 shadow-resting transition-opacity ${isVisited ? "opacity-60" : ""}`}
+              data-cluster-link={item.cluster_id != null ? "true" : undefined}
+              className={`relative flex gap-3 rounded-2xl border bg-white p-3 shadow-resting transition-opacity ${
+                item.cluster_id != null ? "border-brand/40" : "border-border"
+              } ${isVisited ? "opacity-60" : ""}`}
             >
               {/* 이미지 전체가 체크 버튼이다 — 배지만 누르게 하면 손끝 크기에 비해
                   너무 좁다. 체크됐다는 표시(배지)는 눌러도 되는 자리 위에 얹는다. */}

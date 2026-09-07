@@ -1287,6 +1287,51 @@ class TestBuildSchedulePlanningInstructionDynamicCount:
         assert "2개 이상 2개 이하" in museums
         assert "2개 이상 3개 이하" in attractions
 
+    def test_붙어_있는_후보가_있으면_짧게_제안해_달라고_부탁한다(self):
+        """**여는 것만으로는 짧아지지 않는다.** (TP-243)
+
+        `policy_for(clustered=True)`가 최소값을 45분까지 열어두지만, 그 여유를
+        실제로 쓰는 것은 예산이 빡빡할 때의 `fit_durations_to_budget()`뿐이다.
+        시간을 넉넉히 말한 요청에서는 붙어 있는 곳도 90분씩 그대로 나갔다
+        (2026-09-07 실측). 그래서 프롬프트가 부탁한다.
+        """
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4), clustered_candidates=True
+        )
+
+        assert "걸어서 5분 안쪽에 붙어 있는" in instruction
+        assert "45~60분으로 짧게 제안" in instruction
+
+    def test_완화_대상이_아닌_분류는_그대로_잡으라고_함께_말한다(self):
+        """박물관에 45분을 제안해도 `policy_for()`가 90분으로 되돌린다. 안 그러면
+        LLM의 판단만 버려지고 편성은 그대로다."""
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4), clustered_candidates=True
+        )
+
+        assert "문화시설과 식사 자리는 붙어 있어도 원래대로" in instruction
+
+    def test_붙어_있는_후보가_없으면_그_문단이_없다(self):
+        """**대조군.** 늘 붙으면 프롬프트가 없는 사실을 말하게 된다."""
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4)
+        )
+
+        assert "붙어 있는" not in instruction
+
+    def test_시간을_말하지_않은_요청에도_붙는다(self):
+        """가정 예산(240분)으로 도는 턴이야말로 이 부탁이 필요한 자리다 — 예산이
+        넉넉해 아무도 체류를 안 줄이는 쪽이라서다."""
+
+        instruction = build_schedule_planning_instruction(
+            item_range=(3, 5), clustered_candidates=True
+        )
+
+        assert "45~60분으로 짧게 제안" in instruction
+
     def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
         instruction = build_schedule_planning_instruction(
             time_available_min=90, item_range=(1, 1)

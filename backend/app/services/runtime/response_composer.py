@@ -22,7 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
-from app.schedule.budget import classify_budget
+from app.schedule.budget import SCHEDULE_CLUSTER_WALK_MINUTES, classify_budget
 from app.schemas import (
     CompareCriteria,
     ComparisonItem,
@@ -1170,6 +1170,45 @@ def _with_under_budget_note(
     return note
 
 
+def _with_cluster_note(message: str, schedule: ScheduleResult) -> str:
+    """도보로 붙어 있는 자리들이 있으면 그 사실을 한 문장 덧붙인다. (TP-243)
+
+    **왜 필요한가.** 묶인 자리는 체류시간 최소값이 45분까지 내려간다. 사용자
+    입장에서는 아무 설명 없이 "60분씩"이 "45분씩"으로 바뀌는 것이라, 왜 짧게
+    잡혔는지 알 방법이 없다.
+
+    **말하는 것은 근거(붙어 있다)이지 결과(그래서 짧다)가 아니다.** 묶였다고
+    모든 분류의 체류가 줄지는 않는다 — 문화시설과 식당은 최소값이 그대로다
+    (`duration.policy_for()` 주석). 그런데 여기서는 항목의 분류를 알 수 없으므로
+    ("`ScheduleItem`에 category가 없다") "짧게 잡았어요"라고 단정하면 줄지 않은
+    편성에도 그 문장이 붙는다. 그건 상한이 줄어든 이유를 잘못 안내했던
+    `over_capacity_place_names` 사고와 같은 모양이다. 붙어 있다는 사실은 묶음이
+    있으면 언제나 참이고, 사용자가 화면에서 궁금해하는 것에 답한다.
+
+    묶음이 여럿이면 가장 큰 것 하나만 말한다 — 말풍선은 요약이고, 두 묶음을 다
+    설명하면 동선 요약보다 길어진다.
+    """
+
+    sizes: dict[int, int] = {}
+    for item in schedule.items:
+        if item.cluster_id is not None:
+            sizes[item.cluster_id] = sizes.get(item.cluster_id, 0) + 1
+    if not sizes:
+        return message
+    largest = max(sizes.values())
+    if largest < 2:
+        return message
+    subject = (
+        f"{largest}곳 모두"
+        if largest == len(schedule.items)
+        else f"그중 {largest}곳은"
+    )
+    return (
+        f"{message} {subject} 걸어서 {SCHEDULE_CLUSTER_WALK_MINUTES}분 안쪽이라 "
+        "이어서 둘러보도록 붙여 놨어요."
+    )
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -1192,6 +1231,9 @@ def compose_schedule_message(
     덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다. 반대로 허용 오차
     이상으로 짧으면 그 사실도 말한다(`_with_under_budget_note()`) — 판정이
     셋인데 문장이 하나뿐이면 `under`인 턴이 조용히 짧게 나간다.
+
+    도보로 붙어 있는 자리가 있으면 그 사실을 한 문장 덧붙인다
+    (TP-243, `_with_cluster_note()`) — 체류시간이 짧게 잡힌 근거다.
 
     보관함과 편성 결과가 어긋난 부분은 사유별로 문장을 덧붙인다(SCHEDULE-12,
     TP-223, `_with_saved_place_notes()`) — 담아둔 장소를 조용히 빠뜨리거나 담지
@@ -1216,7 +1258,9 @@ def compose_schedule_message(
         schedule,
         time_available_min,
     )
-    return _with_saved_place_notes(with_budget_note, schedule)
+    # 묶음 설명은 예산 판정 뒤, 보관함 사유 앞에 둔다 — 시간에 대한 말을 먼저
+    # 끝내고 동선 이야기를 한 다음, 담아둔 곳 이야기로 넘어가는 순서다.
+    return _with_saved_place_notes(_with_cluster_note(with_budget_note, schedule), schedule)
 
 
 async def compose_chat_message(

@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.schemas import PlaceType
 
@@ -76,13 +76,57 @@ _POLICY_BY_CATEGORY: dict[str, VisitDurationPolicy] = {
 # 살려주는 쪽에 가깝다.
 _DEFAULT_POLICY = VisitDurationPolicy(40, 60, 150)
 
+# 도보로 붙어 있는 자리(묶음)에서 허용하는 체류 최소값(분). (TP-243)
+#
+# 사용자 문의 원문이 근거다 — "5분 거리 이내인 세 장소는 묶어서 1시간 반으로
+# 배치". 90분에서 이동 10분을 빼면 곳당 27분인데, 그건 분류 최소값을 통째로
+# 무시하는 값이라 그대로 받지 않았다. 45분은 **이동 3분 기준으로 3시간에 3곳이
+# 각 58분으로 들어가는 값**이고, 30분까지 내리면 3시간에 5곳이 되어 과하다.
+CLUSTERED_VISIT_MINIMUM_MIN = 45
 
-def policy_for(category: str | None) -> VisitDurationPolicy:
-    """분류에 맞는 체류시간 정책. 모르는 분류는 폴백을 돌려준다."""
+# 묶였다고 해서 최소값을 내려주는 분류. (TP-243)
+#
+# **문화시설(90분)은 넣지 않는다.** 분류 최소값은 "그 장소를 보는 데 필요한
+# 시간"이고 근접도와 무관하다 — 박물관 옆에 갤러리가 있다고 박물관을 45분에
+# 볼 수 있게 되지는 않는다. 식당(60분)도 같은 이유로 뺐다(밥 먹는 시간이다).
+# 쇼핑은 이미 30분이라 내릴 것이 없다.
+#
+# 그래서 규칙은 `min(분류최소, 묶음최소)`가 아니다. 그 식을 쓰면 모든 분류가
+# 45분까지 내려가고, 위 두 분류에서 "짧게 머물러도 되는 근거"가 근거 없이 쓰인다.
+_CLUSTER_RELAXABLE_CATEGORIES = frozenset(
+    {
+        PlaceType.ATTRACTION.value,
+        PlaceType.FESTIVAL.value,
+        PlaceType.LEISURE.value,
+    }
+)
+
+
+def policy_for(category: str | None, *, clustered: bool = False) -> VisitDurationPolicy:
+    """분류에 맞는 체류시간 정책. 모르는 분류는 폴백을 돌려준다.
+
+    `clustered`가 참이면 **최소값만** `CLUSTERED_VISIT_MINIMUM_MIN`까지 내린다
+    (TP-243). 권장값과 최대값은 그대로다 — 묶음은 "짧게 머물러도 된다"는 근거지
+    "짧게 머물러야 한다"는 지시가 아니다. 여유가 있으면 원래대로 오래 머문다.
+
+    완화 대상이 아닌 분류(`_CLUSTER_RELAXABLE_CATEGORIES` 밖)는 `clustered`를
+    참으로 줘도 값이 바뀌지 않는다 — 그 판단은 상수 주석에 있다.
+    """
 
     if category is None:
-        return _DEFAULT_POLICY
-    return _POLICY_BY_CATEGORY.get(category.strip().lower(), _DEFAULT_POLICY)
+        base = _DEFAULT_POLICY
+        key = None
+    else:
+        key = category.strip().lower()
+        base = _POLICY_BY_CATEGORY.get(key, _DEFAULT_POLICY)
+    if not clustered or key not in _CLUSTER_RELAXABLE_CATEGORIES:
+        return base
+    # **낮추는 규칙이지 45분으로 맞추는 규칙이 아니다.** 지금 완화 대상 중에
+    # 45분보다 낮은 분류는 없어서 분기로 적으면 어떤 테스트도 지나가지 않는
+    # 죽은 가지가 된다 — 그래서 `min()`으로 적어 의도가 식에 남게 했다.
+    return replace(
+        base, minimum_min=min(base.minimum_min, CLUSTERED_VISIT_MINIMUM_MIN)
+    )
 
 
 def resolve_visit_duration(
@@ -91,6 +135,7 @@ def resolve_visit_duration(
     proposed_min: int | None = None,
     stored_min: int | None = None,
     user_specified_min: int | None = None,
+    clustered: bool = False,
 ) -> int:
     """이 장소에 실제로 배정할 체류시간(분)을 확정한다.
 
@@ -107,9 +152,14 @@ def resolve_visit_duration(
     안내하지만 그건 부탁이고, 지키지 않은 값을 막을 곳이 여기 말고 없다 —
     LLM이 67분을 주면 화면에 "67분"이 그대로 뜬다. 범위로 자르는 것과 같은
     이유이고 같은 자리다.
+
+    **`clustered`는 최소값만 낮춘다.** (TP-243) 도보로 붙어 있는 자리에서는
+    LLM이 준 45분을 60분으로 끌어올리지 않는다 — 인사동 골목 세 곳을 각각 한
+    시간씩 앉아 있게 만드는 것이 그 클램프였다. 어느 분류가 완화되는지는
+    `policy_for()` 주석에 있다.
     """
 
-    policy = policy_for(category)
+    policy = policy_for(category, clustered=clustered)
     for proposal in (user_specified_min, stored_min, proposed_min):
         if proposal is not None and proposal > 0:
             return policy.clamp(snap_to_step(proposal))
@@ -117,6 +167,7 @@ def resolve_visit_duration(
 
 
 __all__ = [
+    "CLUSTERED_VISIT_MINIMUM_MIN",
     "VISIT_DURATION_STEP_MIN",
     "VisitDurationPolicy",
     "policy_for",

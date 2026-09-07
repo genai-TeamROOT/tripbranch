@@ -29,8 +29,10 @@ import { useEffect, useState } from "react";
 import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
+import { clusterStartSize, isSameCluster } from "../../utils/scheduleTravel";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
 import { ScheduleCard } from "../ScheduleCard";
+import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
 
 function formatDuration(milliseconds: number | undefined) {
@@ -185,13 +187,26 @@ export function ScheduleResultMessage({
 
           <ul className="flex flex-col">
             {schedule.items.flatMap((item, index) => {
+              const next = schedule.items[index + 1];
+              const linkedToNext = next !== undefined && isSameCluster(item, next);
+              /* 묶음이 시작하는 자리에서 한 번만 알린다(TP-243) — 구간마다
+                 붙이면 세 곳이 묶였을 때 같은 말이 두 번 반복된다. */
+              const clusterSize = clusterStartSize(schedule.items, index);
               const nodes = [
                 <ScheduleCard
                   key={item.place_id}
                   item={item}
                   isLast={index === schedule.items.length - 1}
+                  linkedToNext={linkedToNext}
                 />,
               ];
+              if (clusterSize !== null) {
+                nodes.unshift(
+                  <li key={`${item.place_id}-cluster`} className="mb-1.5 pl-10">
+                    <ScheduleClusterBadge count={clusterSize} />
+                  </li>,
+                );
+              }
               if (item.travel_to_next_min !== null) {
                 nodes.push(
                   <ScheduleTravelSegment
@@ -199,6 +214,9 @@ export function ScheduleResultMessage({
                     minutes={item.travel_to_next_min}
                     mode={item.travel_to_next_mode}
                     measured={item.travel_to_next_measured}
+                    /* 묶음은 구간에 표시한다 — 붙어 있다는 건 두 곳 사이의
+                       이야기라 카드 하나에 얹으면 어느 쪽 이야기인지 흐려진다. */
+                    clustered={linkedToNext}
                   />,
                 );
               }

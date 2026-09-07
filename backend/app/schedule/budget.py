@@ -33,7 +33,7 @@ from app.schedule.duration import (
     VisitDurationPolicy,
     policy_for,
 )
-from app.schedule.schemas import SchedulePlanningRequest
+from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schedule.timeline import (
     FALLBACK_TRAVEL_MINUTES,
     estimated_travel_minutes,
@@ -79,6 +79,25 @@ SCHEDULE_DEFAULT_TIME_BUDGET_MIN = 240
 # 비싼 후보에서는 상한이 2가 되고, 그때 범위 최솟값까지 3이면 프롬프트에
 # "3개 이상 2개 이하"라는 모순된 범위가 실린다.
 _REQUIRED_CANDIDATES_WITHOUT_BUDGET = 3
+
+# 묶음 기준 — 이웃한 두 자리를 도보로 잇는 시간의 상한(분). (TP-243)
+#
+# 사용자 문의 원문("5분 거리 이내인 세 장소")에서 온 값이다. 도보 속도는
+# `place_search_policy.WALKING_SPEED_KM_PER_MINUTE`를 쓴다 — 실제 이동수단이
+# 대중교통으로 잡히더라도 **묶음 판정은 걸어서 얼마인가**로 한다. "가까이 붙어
+# 있으니 가볍게 둘러보는 코스"라는 근거가 도보 거리에서 나오기 때문이다.
+SCHEDULE_CLUSTER_WALK_MINUTES = 5
+
+# 묶음이 늘려줄 수 있는 항목 수의 상한(곳). (TP-243)
+#
+# **이 가드가 없으면 "짧게 머물기"가 "많이 넣기"로 새어나간다.** 묶음 최소
+# 45분 + 허용 오차 30분이면 210분 요청에 5곳(각 45분 + 이동 3분)이 통과한다.
+# 묶음의 목적은 골목 세 곳에 60분씩 앉히지 않는 것이지 곳 수를 채우는 것이
+# 아니므로, 묶이지 않았을 때의 상한보다 한 자리만 더 준다.
+SCHEDULE_CLUSTER_EXTRA_ITEMS = 1
+
+# 묶음으로 인정하는 최소 자리 수. 한 곳짜리는 묶음이 아니다.
+_MIN_CLUSTER_SIZE = 2
 
 
 @dataclass(frozen=True)
@@ -218,6 +237,141 @@ def walkable_cluster_size(request: SchedulePlanningRequest, *, within_min: int) 
     return best
 
 
+def cluster_ids_in_order(
+    request: SchedulePlanningRequest | SchedulePartialFillRequest,
+    place_ids: Sequence[str],
+    *,
+    within_min: int = SCHEDULE_CLUSTER_WALK_MINUTES,
+) -> list[int | None]:
+    """방문 순서대로 받은 자리들을 묶음으로 갈라 묶음 번호를 매긴다. (TP-243)
+
+    묶이지 않은 자리는 None이다. 번호는 1부터, 앞에서 나온 묶음이 작은 번호다.
+
+    **이웃한 구간만 본다 — 클리크를 풀지 않는다.** 일정은 순서가 있으므로
+    "서로 모두 가까운 최대 집합"을 구할 필요가 없다. 지표용
+    `walkable_cluster_size()`는 한 후보를 중심에 놓고 반경 안을 세는 근사라
+    **중심에서는 가깝지만 서로는 먼 조합을 묶어버린다**(그 함수 주석이 스스로
+    적어뒀고, 실제 묶음 규칙은 이 카드가 다시 정한다고 넘겨놨다). A-B 3분,
+    A-C 3분, B-C 15분인 셋을 한 묶음으로 보면 사용자는 걷다 지친다. 여기서는
+    실제로 걸어서 이어지는 구간만 묶으므로 그 조합에서 A-B만 묶인다.
+
+    **거리를 모르는 구간은 묶지 않는다.** 좌표를 못 구했다는 뜻이라 "가깝다"의
+    근거가 없다 — 모를 때 묶어주면 근거 없이 체류시간을 깎게 된다.
+    """
+
+    ids: list[int | None] = [None] * len(place_ids)
+    if len(place_ids) < _MIN_CLUSTER_SIZE or not request.pairwise_distances_km:
+        return ids
+
+    resolve = estimated_travel_minutes(
+        request.pairwise_distances_km, speed_km_per_minute=WALKING_SPEED_KM_PER_MINUTE
+    )
+    next_id = 1
+    run_start = 0
+    for index in range(1, len(place_ids) + 1):
+        walk = (
+            None
+            if index == len(place_ids)
+            else resolve(place_ids[index - 1], place_ids[index])
+        )
+        if walk is not None and walk <= within_min:
+            continue
+        if index - run_start >= _MIN_CLUSTER_SIZE:
+            for position in range(run_start, index):
+                ids[position] = next_id
+            next_id += 1
+        run_start = index
+    return ids
+
+
+def clusterable_slot_count(
+    request: SchedulePlanningRequest, *, within_min: int = SCHEDULE_CLUSTER_WALK_MINUTES
+) -> int:
+    """LLM을 부르기 전에 **몇 자리까지 묶일 수 있는지**의 낙관적 추정. (TP-243)
+
+    상한을 정하는 시점에는 방문 순서가 아직 없어서 `cluster_ids_in_order()`를
+    쓸 수 없다. 대신 도보 기준 안에 드는 후보 쌍의 수 `k`를 세고 `k + 1`을
+    돌려준다 — 그 쌍들이 한 줄로 이어질 때의 자리 수다.
+
+    **낙관적인 값이라는 것을 알고 쓴다.** 쌍이 흩어져 있으면 실제로는 그만큼
+    이어지지 않는다. `travel_estimate_minutes()`가 짧은 구간부터 세는 것과 같은
+    방향이고 이유도 같다 — 상한을 보수적으로 깎으면 되돌릴 곳이 없다. 새어나가는
+    쪽은 `SCHEDULE_CLUSTER_EXTRA_ITEMS` 가드와, 응답이 온 뒤 실제 순서로 다시
+    재는 `cap_item_count_to_budget()`이 막는다.
+    """
+
+    distances = request.pairwise_distances_km
+    if not distances:
+        return 0
+    resolve = estimated_travel_minutes(
+        distances, speed_km_per_minute=WALKING_SPEED_KM_PER_MINUTE
+    )
+    walkable_pairs = sum(
+        1
+        for from_id, to_id in distances
+        if (minutes := resolve(from_id, to_id)) is not None and minutes <= within_min
+    )
+    if walkable_pairs == 0:
+        return 0
+    # 자리 수라서 후보 수를 넘을 수 없다. 쌍의 수는 후보가 늘면 제곱으로 늘어난다.
+    return min(walkable_pairs + 1, len(request.candidates))
+
+
+def _max_items_within(
+    stay_minimums: Sequence[int],
+    travel_min: Sequence[int],
+    *,
+    allowance: int,
+    hard_cap: int,
+) -> int:
+    """`stay_minimums`를 앞에서부터 쌓아 예산에 들어가는 최대 자리 수.
+
+    체류·이동 모두 개수에 대해 단조 증가라 한 번 넘으면 더 큰 개수도 넘는다.
+    0을 돌려주지 않는다 — 한 곳도 못 넣는 편성보다 한 곳이 넘는 편성이 낫고,
+    넘었다는 사실은 `classify_budget()`이 알린다.
+    """
+
+    reachable = min(hard_cap, len(stay_minimums))
+    best = 1
+    for count in range(1, reachable + 1):
+        needed = sum(stay_minimums[:count]) + travel_estimate_minutes(travel_min, count - 1)
+        if needed > allowance:
+            break
+        best = count
+    return best
+
+
+def _stay_minimums(
+    categories: Sequence[str | None], *, clustered_slots: int, ascending: bool
+) -> list[int]:
+    """체류 최소값 목록. 묶일 수 있는 자리 수만큼 완화된 값을 쓴다. (TP-243)
+
+    **줄어드는 폭이 큰 자리부터 완화한다.** 어느 자리가 실제로 묶일지는 아직
+    모르므로, 이동 추정이 짧은 구간부터 세는 것과 같은 낙관적 방향을 쓴다.
+    완화 대상이 아닌 분류(문화시설·식당)는 `policy_for(clustered=True)`가 값을
+    그대로 돌려주므로 폭이 0이고, 자연히 뒤로 밀린다.
+
+    `ascending`이 참이면 오름차순으로 돌려준다 — 후보 풀에서 "값싼 것부터"
+    세는 `derive_item_range()`용이다. 거짓이면 **받은 순서를 지킨다** — LLM이
+    고른 항목을 앞에서부터 세는 `cap_item_count_to_budget()`용이고, 그쪽은
+    `_cap_item_count()`가 뒤에서부터 자르는 것과 기준이 같아야 한다.
+    """
+
+    plain = [policy_for(category).minimum_min for category in categories]
+    relaxed = [
+        policy_for(category, clustered=True).minimum_min for category in categories
+    ]
+    reductions = sorted(
+        range(len(plain)), key=lambda i: (plain[i] - relaxed[i], -i), reverse=True
+    )
+    eased = set(reductions[: max(0, clustered_slots)])
+    minimums = [
+        relaxed[index] if index in eased else plain[index]
+        for index in range(len(plain))
+    ]
+    return sorted(minimums) if ascending else minimums
+
+
 def derive_item_range(
     request: SchedulePlanningRequest, *, hard_cap: int = MAX_SCHEDULE_ITEMS
 ) -> tuple[int, int]:
@@ -255,26 +409,38 @@ def derive_item_range(
     이상이면 2, 아니면 1이다. 예전에는 예산이 길수록 최솟값도 3까지 올라가서
     4시간 요청에 후보가 2곳이면 편성을 아예 포기했는데, 그건 2곳을 보여주는
     것보다 나쁘다 — 이제 부족은 판정이 알리므로 조용히 나쁜 답이 나가지 않는다.
+
+    **도보로 붙어 있는 자리는 체류 최소값을 낮게 잡는다**(TP-243). 몇 자리까지
+    그럴 수 있는지는 `clusterable_slot_count()`의 낙관적 추정이고, 늘어나는 곳
+    수는 `SCHEDULE_CLUSTER_EXTRA_ITEMS`(한 자리)로 막는다 — 그 가드가 없으면
+    210분 요청에 45분짜리 5곳이 통과해서 "짧게 머물기"가 "많이 넣기"로
+    새어나간다. 묶을 후보가 없으면 완화된 목록이 원래 목록과 같아 결과도 같다.
     """
 
-    stay_minimums = sorted(
-        policy_for(candidate.category).minimum_min for candidate in request.candidates
-    )
+    categories = [candidate.category for candidate in request.candidates]
     travel_min = pairwise_travel_minutes(request)
     allowance = (
         effective_budget_min(request.conditions.time_available)
         + SCHEDULE_TIME_TOLERANCE_MIN
     )
 
-    max_items = 1
-    for count in range(1, hard_cap + 1):
-        if count > len(stay_minimums):
-            break
-        needed = sum(stay_minimums[:count]) + travel_estimate_minutes(travel_min, count - 1)
-        if needed > allowance:
-            # 체류·이동 모두 n에 대해 단조 증가라 더 큰 n도 넘는다.
-            break
-        max_items = count
+    plain_max = _max_items_within(
+        _stay_minimums(categories, clustered_slots=0, ascending=True),
+        travel_min,
+        allowance=allowance,
+        hard_cap=hard_cap,
+    )
+    clustered_max = _max_items_within(
+        _stay_minimums(
+            categories,
+            clustered_slots=clusterable_slot_count(request),
+            ascending=True,
+        ),
+        travel_min,
+        allowance=allowance,
+        hard_cap=hard_cap,
+    )
+    max_items = min(clustered_max, plain_max + SCHEDULE_CLUSTER_EXTRA_ITEMS, hard_cap)
 
     return min(2, max_items), max_items
 
@@ -284,6 +450,7 @@ def cap_item_count_to_budget(
     chosen_categories: Sequence[str | None],
     *,
     hard_cap: int,
+    clustered_flags: Sequence[bool] | None = None,
 ) -> int:
     """LLM이 **실제로 고른** 항목의 분류로 개수 상한을 다시 잰다.
 
@@ -320,26 +487,40 @@ def cap_item_count_to_budget(
     **시간을 말하지 않은 요청도 잰다.** 가정한 기본 예산을 쓴다
     (`effective_budget_min()`) — 예전에는 여기서 그냥 돌아갔고, 그래서 개수 상한이
     상수이던 시절과 겹쳐 문화시설 네 곳 360분이 통과했다.
+
+    **`clustered_flags`는 실제 방문 순서에서 나온 묶음이다**(TP-243). 상한을 정할
+    때(`derive_item_range()`)는 순서가 없어 낙관적 추정을 썼지만, 여기서는
+    `cluster_ids_in_order()`가 이웃 구간을 실제로 재서 준다. 묶인 자리만 최소값이
+    낮아지고, 그렇게 늘어나는 곳 수는 여기서도 한 자리로 막는다.
     """
 
     if not chosen_categories:
         return hard_cap
 
-    minimums = [policy_for(category).minimum_min for category in chosen_categories]
+    plain = [policy_for(category).minimum_min for category in chosen_categories]
+    if clustered_flags is None:
+        eased = plain
+    else:
+        eased = [
+            policy_for(category, clustered=flag).minimum_min
+            for category, flag in zip(chosen_categories, clustered_flags, strict=True)
+        ]
     travel_min = pairwise_travel_minutes(request)
     allowance = (
         effective_budget_min(request.conditions.time_available)
         + SCHEDULE_TIME_TOLERANCE_MIN
     )
 
-    reachable = min(hard_cap, len(minimums))
-    capped = 1
-    for count in range(1, reachable + 1):
-        needed = sum(minimums[:count]) + travel_estimate_minutes(travel_min, count - 1)
-        if needed > allowance:
-            # 체류·이동 모두 count에 대해 단조 증가라 더 큰 count도 넘는다.
-            break
-        capped = count
+    reachable = min(hard_cap, len(plain))
+    plain_cap = _max_items_within(
+        plain, travel_min, allowance=allowance, hard_cap=hard_cap
+    )
+    eased_cap = _max_items_within(
+        eased, travel_min, allowance=allowance, hard_cap=hard_cap
+    )
+    # 묶음은 묶이지 않았을 때보다 한 자리만 더 준다 — 여기서도 같은 가드를 건다.
+    # 이 자리에서 빼면 "묶였으니 45분"이 곧 "그러니 한 곳 더"로 이어진다.
+    capped = min(eased_cap, plain_cap + SCHEDULE_CLUSTER_EXTRA_ITEMS)
 
     if capped >= reachable:
         # **고른 것이 전부 들어가면 상한을 깎지 않는다.** 이 자리에서 `capped`를
@@ -470,10 +651,14 @@ def fit_durations_to_budget(
 
 __all__ = [
     "MAX_SCHEDULE_ITEMS",
+    "SCHEDULE_CLUSTER_EXTRA_ITEMS",
+    "SCHEDULE_CLUSTER_WALK_MINUTES",
     "SCHEDULE_DEFAULT_TIME_BUDGET_MIN",
     "SCHEDULE_TIME_TOLERANCE_MIN",
     "DurationSlot",
     "cap_item_count_to_budget",
+    "cluster_ids_in_order",
+    "clusterable_slot_count",
     "classify_budget",
     "derive_item_range",
     "effective_budget_min",
