@@ -3,6 +3,7 @@
 여기 쓰는 항목은 2026-08-07 실측 응답에서 필드 이름·값 형식을 그대로 가져왔다.
 """
 
+import logging
 from datetime import date
 
 import httpx
@@ -224,3 +225,107 @@ class TestRequest:
 
         assert "SECRET-KEY" not in str(exc_info.value)
         assert "SECRET-KEY" not in repr(exc_info.value.details)
+
+
+class TestFullFetch:
+    """100건에서 잘리던 것을 막는다(TP-253).
+
+    전에는 `numOfRows=100`으로 한 번만 불러, 서울 전체가 100건을 넘긴 뒤로는
+    나머지가 조용히 사라졌다. 2026-09-07 실측에서 전체 189건 중 진행 중 19건
+    가운데 12건이 응답에 들어오지 않았다 — 거리순 정렬이라 실제로 가장 가까운
+    행사가 후보에서 빠졌다.
+    """
+
+    def _many(self, count: int, *, start: int = 0) -> list[dict]:
+        return [
+            {**REAL_ITEM, "contentid": f"festival-{start + index}"} for index in range(count)
+        ]
+
+    def _paged(self, items: list[dict], total: int) -> dict:
+        return {
+            "response": {
+                "header": {"resultCode": "0000", "resultMsg": "OK"},
+                "body": {"items": {"item": items}, "totalCount": total},
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_한_번에_100건보다_많이_요청한다(self) -> None:
+        """TourAPI는 numOfRows에 100 상한을 걸지 않는다(2026-09-07 실측).
+
+        넉넉히 요청하면 전량을 한 번에 주므로 평시 호출은 1회 그대로다.
+        """
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(dict(request.url.params))
+            return httpx.Response(200, json=_payload([REAL_ITEM]))
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = RealFestivalProvider("KEY", client, timeout_seconds=5.0)
+            await provider.search_festivals("11", None, date(2026, 8, 7))
+
+        assert int(str(captured["numOfRows"])) > 100
+
+    @pytest.mark.asyncio
+    async def test_totalCount만큼_받을_때까지_이어받는다(self) -> None:
+        """한 장에 다 못 담길 만큼 커지면 다음 장을 받는다.
+
+        평시에는 타지 않는 안전장치다 — 지금은 첫 장에서 끝난다.
+        """
+        pages: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = int(str(dict(request.url.params)["pageNo"]))
+            pages.append(page)
+            # 전체 900건을 500건씩 나눠 준다.
+            items = self._many(500) if page == 1 else self._many(400, start=500)
+            return httpx.Response(200, json=self._paged(items, 900))
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = RealFestivalProvider("KEY", client, timeout_seconds=5.0)
+            result = await provider.search_festivals("11", None, date(2026, 8, 7))
+
+        assert pages == [1, 2]
+        assert len(result.data) == 900
+
+    @pytest.mark.asyncio
+    async def test_상한에_걸리면_경고를_남긴다(self, caplog) -> None:
+        """지금 문제가 정확히 "잘렸는데 아무도 모른다"였다.
+
+        상한을 두더라도 넘었을 때 조용하면 같은 일이 되풀이된다.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = int(str(dict(request.url.params)["pageNo"]))
+            return httpx.Response(
+                200, json=self._paged(self._many(500, start=(page - 1) * 500), 99_999)
+            )
+
+        transport = httpx.MockTransport(handler)
+        with caplog.at_level(logging.WARNING):
+            async with httpx.AsyncClient(transport=transport) as client:
+                provider = RealFestivalProvider("KEY", client, timeout_seconds=5.0)
+                await provider.search_festivals("11", None, date(2026, 8, 7))
+
+        assert "상한에서 잘렸습니다" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_한_장으로_끝나면_한_번만_부른다(self) -> None:
+        """D-025가 호출 수를 이유로 구 단위 호출을 기각했다. 그 전제를 지킨다."""
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json=self._paged(self._many(189), 189))
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = RealFestivalProvider("KEY", client, timeout_seconds=5.0)
+            result = await provider.search_festivals("11", None, date(2026, 8, 7))
+
+        assert calls == 1
+        assert len(result.data) == 189

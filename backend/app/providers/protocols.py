@@ -614,7 +614,6 @@ class FestivalProvider(Protocol):
         region_code: str,
         district_code: str | None,
         reference_date: date,
-        limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
         """법정동 코드 기준 지역의 행사 목록을 반환한다.
 
