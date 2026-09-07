@@ -30,7 +30,9 @@ from app.schedule.budget import (
     cap_item_count_to_budget,
     classify_budget,
     derive_item_range,
+    effective_budget_min,
     fit_durations_to_budget,
+    required_candidate_count,
 )
 from app.schedule.duration import policy_for, resolve_visit_duration
 from app.schedule.schemas import (
@@ -280,9 +282,15 @@ def _fit_to_time_available(
     **후보 목록에 없는 항목은 조절하지 않는다.** 그건 부분 재편성에서 사용자가
     유지하기로 한 자리(pinned)다 — `_compose_items()`가 운영시간 경고를 건너뛸 때
     쓰는 것과 같은 불변식이고, 근거는 `_draft_from_schedule_item()` 주석에 있다.
+
+    **시간을 말하지 않은 턴에도 조절한다.** 예전에는 여기서 그냥 돌아갔고, 그래서
+    개수 상한이 상수이던 시절과 겹쳐 420분 일정이 그대로 나갔다. 가정한 예산
+    (`effective_budget_min()`)으로 배분하되 **판정은 하지 않는다** — 아래
+    `classify_budget()` 호출은 `request.conditions.time_available`을 그대로 받으므로
+    말하지 않은 턴은 여전히 판정이 None이다.
     """
 
-    if time_available_min is None or not drafts:
+    if not drafts:
         return list(drafts), timeline
 
     category_by_id = {c.place_id: c.category for c in candidates}
@@ -301,7 +309,12 @@ def _fit_to_time_available(
         draft.visit_duration_min for draft in drafts
     )
     fitted = fit_durations_to_budget(
-        slots, overhead_min=overhead_min, budget_min=time_available_min
+        slots,
+        overhead_min=overhead_min,
+        budget_min=effective_budget_min(time_available_min),
+        # 가정한 예산이면 넘칠 때만 줄인다 — 말하지 않은 시간을 꽉 채우려고
+        # 체류를 늘리는 것은 예산과 채울 의사를 둘 다 지어내는 것이다.
+        shrink_only=time_available_min is None,
     )
     if fitted == [draft.visit_duration_min for draft in drafts]:
         return list(drafts), timeline
@@ -755,10 +768,13 @@ async def plan_schedule(
     # (SCHEDULE-07의 가드를 동적 최솟값으로 확장). 상한은 보관함 개수 충돌
     # 판정에 쓴다(SCHEDULE-12).
     min_items, max_items = derive_item_range(request)
+    # 후보 부족 가드는 개수 범위의 최솟값이 아니라 이 함수가 답한다 — 시간을
+    # 말하지 않은 요청은 후보 3곳을 요구하는 옛 동작을 유지한다(SCHEDULE-07).
+    required_candidates = required_candidate_count(request, min_items=min_items)
     # 프롬프트에 넣는 목표값이다. 응답이 온 뒤 실제 분류로 다시 재므로
     # (`_rebudget_item_cap()`) 원래 값을 따로 들고 있어야 한다.
     derived_max = max_items
-    if len(request.candidates) < min_items:
+    if len(request.candidates) < required_candidates:
         return ScheduleResult(
             items=[],
             total_duration_min=0,
