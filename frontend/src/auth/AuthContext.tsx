@@ -67,6 +67,8 @@ interface AuthContextValue {
   sendPasswordReset: (email: string) => Promise<void>;
   /** 재설정 링크로 세션이 선 상태에서 새 비밀번호를 저장한다. */
   updatePassword: (password: string) => Promise<void>;
+  /** 계정 표시 이름을 바꾼다(user_metadata.name). 이메일과 달리 확인 절차 없이 바로 반영된다. */
+  updateNickname: (name: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -252,6 +254,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data.user) setSession((current) => (current ? { ...current, user: data.user } : current));
   }, []);
 
+  /*
+   * 닉네임만 바꾼다(email·password는 건드리지 않는다). Supabase는 이메일·전화번호
+   * 변경만 확인 절차를 거치고 user_metadata는 곧바로 반영한다 — updatePassword와
+   * 달리 별도의 정리(clearPasswordRecovery) 없이 세션만 갈아 끼우면 된다.
+   */
+  const updateNickname = useCallback(async (name: string) => {
+    const client = getSupabaseClient();
+    const { data, error: updateError } = await client.auth.updateUser({ data: { name } });
+    if (updateError) throw new Error(authErrorMessage(updateError));
+    if (data.user) setSession((current) => (current ? { ...current, user: data.user } : current));
+  }, []);
+
   /* 게스트에게 이 동작은 "나갔다 다시 들어오기"가 아니다 — 다시 로그인할 수단이
      없어 그 uid로 돌아갈 길이 사라진다. 호출부에서 확인을 받고 부른다. */
   const signOut = useCallback(async () => {
@@ -275,6 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       linkError,
       sendPasswordReset,
       updatePassword,
+      updateNickname,
       signOut,
     }),
     [
@@ -288,6 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       linkError,
       sendPasswordReset,
       updatePassword,
+      updateNickname,
       signOut,
     ],
   );

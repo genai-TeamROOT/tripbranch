@@ -152,10 +152,16 @@ export function createMockSupabaseClient(): SupabaseClient {
         return { data: { session: account, user: account.user }, error: null };
       },
       /*
-       * 두 곳이 쓴다 — 비밀번호 재설정(password만)과 게스트 승계(email·password·data).
-       * 승계 쪽은 이메일 확인이 켜져 있어 **여기서 is_anonymous가 바로 false가 되지
-       * 않는다.** 링크를 눌러야 바뀐다. 그걸 흉내 내지 않고 세션을 바로 승격시키면
-       * "가입하자마자 계정이 됨"이라는 존재하지 않는 흐름을 테스트가 통과시킨다.
+       * 세 곳이 쓴다 — 비밀번호 재설정(password만), 게스트 승계(email·password·data),
+       * 닉네임 변경(data만). 승계 쪽은 이메일 확인이 켜져 있어 **여기서
+       * is_anonymous가 바로 false가 되지 않는다.** 링크를 눌러야 바뀐다. 그걸
+       * 흉내 내지 않고 세션을 바로 승격시키면 "가입하자마자 계정이 됨"이라는
+       * 존재하지 않는 흐름을 테스트가 통과시킨다.
+       *
+       * **email·password 없이 data만 오면 그 자리에서 바로 반영한다** — 실제
+       * Supabase도 user_metadata 변경은 확인 절차 없이 즉시 적용한다(이메일·
+       * 전화번호 변경만 확인이 필요하다). 여기서 세션을 안 바꾸면 닉네임을
+       * 바꿔도 화면에 있는 이름이 그대로 남는 거짓 통과가 나온다.
        */
       updateUser: async (
         input: { email?: string; password?: string; data?: { name?: string } },
@@ -170,6 +176,16 @@ export function createMockSupabaseClient(): SupabaseClient {
           userId: currentSession?.user?.id,
         });
         if (emailAuthError) return { data: { user: null }, error: emailAuthError };
+        if (input.data && !input.email && !input.password && currentSession) {
+          currentSession = {
+            ...currentSession,
+            user: {
+              ...currentSession.user,
+              user_metadata: { ...currentSession.user.user_metadata, ...input.data },
+            },
+          } as Session;
+          listeners.forEach((listener) => listener("USER_UPDATED", currentSession));
+        }
         return { data: { user: currentSession?.user ?? null }, error: null };
       },
       resetPasswordForEmail: async (email: string, options?: { redirectTo?: string }) => {

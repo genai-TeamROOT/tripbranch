@@ -32,11 +32,17 @@
  * 팝업에 "프로필"·"설정"·"도움말" 줄은 만들지 않는다. 그 화면이 없다 — 라우트는
  * /, /chat, /preferences, /location, /schedule 뿐이다. 없는 화면 이름을 메뉴에
  * 만들면 눌러도 아무 일이 일어나지 않는다.
+ *
+ * **닉네임 변경만은 예외다**(2026-09-07). 화면으로 가지 않고 팝업 안에서 신원
+ * 헤더 자리를 입력칸으로 바꿔치기해 끝낸다 — 갈 화면이 없어도 되는 이유는 이동이
+ * 필요 없는 한 줄짜리 동작이기 때문이다(SavedScheduleList의 이름 바꾸기와 같은
+ * 모양). 게스트는 이 팝업 자체가 없어 대상이 아니다 — 게스트의 이름("게스트")은
+ * `identityDisplay`가 메타데이터를 보지 않고 고정으로 낸다.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { LogIn, LogOut } from "lucide-react";
+import { LogIn, LogOut, Pencil } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { identityDisplay, isGuestSession, type IdentityDisplay } from "../../auth/identityLabel";
 import { clearLocalUserData } from "../../state/localUserData";
@@ -114,8 +120,20 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
   const location = useLocation();
   const dispatch = useTripDispatch();
   const isEn = useTripState().language === "en";
-  const { session, status, signOut } = useAuth();
+  const { session, status, signOut, updateNickname } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  /* 닉네임 입력 상태. 팝업이 닫히면(바깥 클릭 등) 함께 접는다 — 다음에 열었을 때
+     지난 초안이 남아 있으면 안 된다. */
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  /* SavedScheduleList의 이름 바꾸기와 같은 동작이다 — 입력칸이 뜨면 바로 입력할
+     수 있어야 한다. */
+  useEffect(() => {
+    if (renaming) nameInputRef.current?.focus();
+  }, [renaming]);
 
   if (status !== "ready" || !session) return null;
 
@@ -123,6 +141,42 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
   const identity = identityDisplay(session, isEn ? "en" : "ko");
   const signInLabel = isEn ? "Sign in" : "로그인";
   const railName = `${identity.name} ${identity.subtitle}`;
+
+  function closeMenu() {
+    setMenuOpen(false);
+    setRenaming(false);
+    setNicknameError(null);
+  }
+
+  function startRenaming() {
+    setNameDraft(identity.name);
+    setNicknameError(null);
+    setRenaming(true);
+  }
+
+  async function commitNickname() {
+    const trimmed = nameDraft.trim();
+    if (!trimmed) {
+      setNicknameError(isEn ? "Enter a nickname." : "닉네임을 입력해 주세요.");
+      return;
+    }
+    if (trimmed === identity.name) {
+      setRenaming(false);
+      return;
+    }
+    try {
+      await updateNickname(trimmed);
+      closeMenu();
+    } catch (nicknameUpdateError) {
+      setNicknameError(
+        nicknameUpdateError instanceof Error
+          ? nicknameUpdateError.message
+          : isEn
+            ? "Couldn't update nickname."
+            : "닉네임을 바꾸지 못했어요.",
+      );
+    }
+  }
 
   async function handleSignOut() {
     try {
@@ -134,7 +188,7 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
       /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 게스트 신원을
          새로 발급해 같은 자리에서 앱이 계속 열려 있다. */
     } finally {
-      setMenuOpen(false);
+      closeMenu();
       onNavigate?.();
     }
   }
@@ -173,7 +227,7 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
           <button
             type="button"
             aria-label={isEn ? "Close account menu" : "계정 메뉴 닫기"}
-            onClick={() => setMenuOpen(false)}
+            onClick={closeMenu}
             className="fixed inset-0 z-20 cursor-default"
           />
           {/*
@@ -186,24 +240,77 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
               compact ? "left-0 w-60" : "left-0 right-0"
             }`}
           >
-            {/* 어느 계정의 메뉴인지 팝업 안에서도 보인다 — 팝업이 계정 버튼을 덮는
-                자리에 뜨기 때문이다. 누를 수는 없다(계정 화면이 없다). */}
-            <div className="flex items-center gap-2.5 px-2 py-2">
-              <IdentityRow identity={identity} />
-            </div>
-            <div className="mx-2 my-1 h-px bg-border" />
-            {/* role="menu" 는 menuitem 만 감싼다 — 위의 신원 헤더는 menuitem 이 아니다. */}
-            <div role="menu" aria-label={isEn ? "Account" : "계정"} className="flex flex-col">
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => void handleSignOut()}
-                className={`${MENU_ITEM_CLASS} text-rust hover:bg-chip`}
-              >
-                <LogOut size={15} aria-hidden />
-                {isEn ? "Sign out" : "로그아웃"}
-              </button>
-            </div>
+            {renaming ? (
+              /* 신원 헤더 자리를 입력칸으로 바꿔치기한다 — 새 팝업을 만들지 않고
+                 같은 자리에서 끝낸다(SavedScheduleList 이름 바꾸기와 같은 방식). */
+              <div className="flex flex-col gap-2 p-2">
+                <label
+                  htmlFor="sidebar-nickname-input"
+                  className="text-xs font-semibold text-muted"
+                >
+                  {isEn ? "Nickname" : "닉네임"}
+                </label>
+                <input
+                  ref={nameInputRef}
+                  id="sidebar-nickname-input"
+                  value={nameDraft}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void commitNickname();
+                    if (event.key === "Escape") setRenaming(false);
+                  }}
+                  maxLength={30}
+                  className="rounded-xl border border-border px-3 py-2 text-sm text-ink outline-none focus:border-brand"
+                />
+                {nicknameError && <p className="px-0.5 text-xs text-rust">{nicknameError}</p>}
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setRenaming(false)}
+                    className="rounded-xl px-3 py-1.5 text-xs font-semibold text-muted hover:bg-chip"
+                  >
+                    {isEn ? "Cancel" : "취소"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void commitNickname()}
+                    className="rounded-xl bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-deep"
+                  >
+                    {isEn ? "Save" : "저장"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* 어느 계정의 메뉴인지 팝업 안에서도 보인다 — 팝업이 계정 버튼을 덮는
+                    자리에 뜨기 때문이다. 누를 수는 없다(계정 화면이 없다). */}
+                <div className="flex items-center gap-2.5 px-2 py-2">
+                  <IdentityRow identity={identity} />
+                </div>
+                <div className="mx-2 my-1 h-px bg-border" />
+                {/* role="menu" 는 menuitem 만 감싼다 — 위의 신원 헤더는 menuitem 이 아니다. */}
+                <div role="menu" aria-label={isEn ? "Account" : "계정"} className="flex flex-col">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={startRenaming}
+                    className={`${MENU_ITEM_CLASS} text-ink hover:bg-chip`}
+                  >
+                    <Pencil size={15} aria-hidden />
+                    {isEn ? "Change nickname" : "닉네임 변경"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleSignOut()}
+                    className={`${MENU_ITEM_CLASS} text-rust hover:bg-chip`}
+                  >
+                    <LogOut size={15} aria-hidden />
+                    {isEn ? "Sign out" : "로그아웃"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
@@ -223,7 +330,7 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
         aria-expanded={menuOpen}
         title={compact ? railName : undefined}
         aria-label={compact ? railName : undefined}
-        onClick={() => setMenuOpen((open) => !open)}
+        onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
         className={
           compact
             ? RAIL_BUTTON_CLASS

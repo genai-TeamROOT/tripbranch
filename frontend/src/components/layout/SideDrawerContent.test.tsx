@@ -1056,8 +1056,60 @@ test("레일 계정 팝업도 펼친 쪽과 같은 내용을 낸다", async () =
   await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
   await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
 
-  /* 신원 헤더 + 로그아웃. 그 밖의 줄은 만들지 않는다(갈 화면이 없다). */
+  /* 신원 헤더 + 닉네임 변경 + 로그아웃. 그 밖의 줄은 만들지 않는다(갈 화면이 없다). */
   expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
-  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(1);
+  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(2);
+  expect(within(sidebar()).getByRole("menuitem", { name: /닉네임 변경/ })).toBeInTheDocument();
   expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+});
+
+/*
+ * 닉네임 변경. 화면 이동 없이 팝업 안에서 끝난다 — 신원 헤더 자리가 입력칸으로
+ * 바뀌었다가, 저장하면 팝업이 닫히고 계정 버튼에 새 이름이 바로 남는다.
+ */
+test("닉네임을 바꾸면 계정 버튼에 새 이름이 반영된다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await openAccountMenu(user);
+  await user.click(within(sidebar()).getByRole("menuitem", { name: "닉네임 변경" }));
+
+  const input = within(sidebar()).getByLabelText("닉네임");
+  await user.clear(input);
+  await user.type(input, "나종원");
+  await user.click(within(sidebar()).getByRole("button", { name: "저장" }));
+
+  /* 저장하면 팝업이 닫힌다 — 로그아웃 메뉴가 다시 안 보이는 것으로 확인한다. */
+  await waitFor(() =>
+    expect(within(sidebar()).queryByRole("menuitem", { name: /로그아웃/ })).not.toBeInTheDocument(),
+  );
+  expect(within(accountButton()).getByText("나종원")).toBeInTheDocument();
+});
+
+test("닉네임을 비우고 저장하면 오류를 보여주고 입력칸이 그대로 남는다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await openAccountMenu(user);
+  await user.click(within(sidebar()).getByRole("menuitem", { name: "닉네임 변경" }));
+  await user.clear(within(sidebar()).getByLabelText("닉네임"));
+  await user.click(within(sidebar()).getByRole("button", { name: "저장" }));
+
+  expect(within(sidebar()).getByText("닉네임을 입력해 주세요.")).toBeInTheDocument();
+  expect(within(sidebar()).getByLabelText("닉네임")).toBeInTheDocument();
+});
+
+test("닉네임 변경 중 취소를 누르면 저장 없이 원래 메뉴로 돌아간다", async () => {
+  const user = userEvent.setup();
+  await renderAppAsAccount();
+
+  await openAccountMenu(user);
+  await user.click(within(sidebar()).getByRole("menuitem", { name: "닉네임 변경" }));
+  const input = within(sidebar()).getByLabelText("닉네임");
+  await user.clear(input);
+  await user.type(input, "안 쓸 이름");
+  await user.click(within(sidebar()).getByRole("button", { name: "취소" }));
+
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+  expect(within(sidebar()).queryByText("안 쓸 이름")).not.toBeInTheDocument();
 });
