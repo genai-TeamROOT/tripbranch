@@ -213,7 +213,7 @@ from app.state.service import (
     update_api_context,
 )
 from app.state.session import new_trace_id
-from app.state.store import StateStore
+from app.state.store import StateStore, get_store
 from app.tools.mode_judge import LlmModeJudge, narrow_accessibility_needs
 from app.tools.schedule_travel import (
     JUDGE_SKIPPED_TRANSPORTS,
@@ -1340,9 +1340,16 @@ def _saved_taste_query(
     조회 실패는 추천을 막지 않는다. 취향은 순위를 다듬는 축이지 후보를 만드는
     축이 아니라서, 못 읽으면 저장값 없이 채점하는 편이 낫다 — 취향 근거 검색
     실패를 삼키는 것과 같은 이유다(`real_recommendation_provider`).
+
+    **store가 없으면 전역 저장소로 대신한다**(2026-09-07). `/api/chat`·
+    `/api/chat/stream`이 `run_agent()`를 부를 때 store를 안 넘겨 여기까지
+    쭉 None으로 흘러왔다 — `get_session_context()`(state/service.py)와 같은
+    `store or get_store()` 패턴이 없어서, 세션·GPS는 멀쩡한데 저장된 취향만
+    프로덕션에서 한 번도 채점에 실리지 못했다(실사용 재현, 2026-09-07).
     """
-    if principal is None or store is None:
+    if principal is None:
         return None
+    store = store or get_store()
     try:
         chips = state_preferences.get_items(store, principal.user_id)
     except Exception:  # noqa: BLE001
