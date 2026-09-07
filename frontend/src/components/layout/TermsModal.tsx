@@ -80,8 +80,10 @@ export function TermsModal({ onClose }: TermsModalProps) {
           </button>
         </div>
 
-        {/* 본문 — Figma 64:47. 길어지면 이 안에서만 스크롤한다. */}
-        <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        {/* 본문 — Figma 64:47. 길어지면 이 안에서만 스크롤한다.
+            overscroll-contain이 "이 안에서만"을 실제로 지킨다 — 없으면 끝에 닿았을 때
+            스크롤이 뒤 화면으로 넘어간다(RecommendationDetailPreviewModal과 같은 이유). */}
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <p className="rounded-xl bg-sky-light px-3.5 py-2.5 text-xs leading-relaxed text-brand-deep">
             약관 전문은 아직 준비 중이에요. 아래 항목이 들어올 예정이에요.
           </p>

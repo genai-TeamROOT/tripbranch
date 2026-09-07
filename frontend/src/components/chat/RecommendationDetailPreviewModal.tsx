@@ -1567,7 +1567,11 @@ export function RecommendationDetailPreviewModal({
           </button>
         </div>
 
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
+        {/* overscroll-contain: 여기가 끝에 닿아도 스크롤을 바깥으로 넘기지 않는다.
+            없으면 상세를 맨 위까지 올린 뒤 더 올릴 때 뒤의 채팅이 함께 밀린다 —
+            이 모달은 document.body로 포털되고 #root는 min-height라, 대화가 길면
+            문서 자체가 스크롤되기 때문이다. */}
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5">
           {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
               PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
               화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
