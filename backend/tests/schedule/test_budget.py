@@ -98,14 +98,17 @@ class TestFitDurationsToBudget:
     def test_여유에_비례해_나눠_상대_크기가_유지된다(self) -> None:
         """균등하게 깎으면 "이 곳은 더 오래"라는 판단이 사라진다.
 
-        120/90/60은 줄일 여유가 60/30/0이다. 50분을 줄여야 하므로 여유 비율대로
-        34/16/0을 걷는다(정수 나눗셈에서 남는 1분은 여유가 가장 큰 자리로).
-        여유가 없는 셋째 자리는 안 줄어들고, 순서는 그대로 남는다.
+        120/90/60은 줄일 여유가 60/30/0이다. 50분을 줄여야 하므로 5분씩 10칸을
+        여유 비율대로 7칸/3칸/0칸으로 걷는다(정수 나눗셈에서 남는 1칸은 여유가
+        가장 큰 자리로). 여유가 없는 셋째 자리는 안 줄어들고, 순서는 그대로다.
+
+        **5분 단위 배분 이전에는 86/74/60이었다.** (TP-244) 화면에 그대로 뜨는
+        값이라 배정값 자체를 5분 배수로 둔다.
         """
 
         fitted = fit_durations_to_budget(_slots(120, 90, 60), overhead_min=30, budget_min=250)
 
-        assert fitted == [86, 74, 60]
+        assert fitted == [85, 75, 60]
         assert fitted[0] > fitted[1] > fitted[2]
         assert sum(fitted) + 30 == 250
 
@@ -252,6 +255,51 @@ class TestDeriveItemRange:
 
         assert derive_item_range(_request(360))[0] == 2
         assert derive_item_range(_request(90))[0] == 1
+
+
+class Test5분_단위_배분:
+    """TP-244 완료 조건 — 배정값 자체가 5분 배수라 저장값·표시값·항목 합이 같다."""
+
+    def test_배분_결과가_전부_5분_배수다(self) -> None:
+        """**돌연변이가 잡히는 입력이다.** 5분 단위 이전에는 이 입력이
+        86/74/60을 냈다 — 화면에 "86분"이 그대로 뜬다. 평범한 입력
+        (90/90/90 -> 60/60/60)은 1분 단위로 나눠도 5분 배수가 나와서
+        단위를 지워도 통과한다.
+        """
+
+        fitted = fit_durations_to_budget(_slots(120, 90, 60), overhead_min=30, budget_min=250)
+
+        assert all(minutes % 5 == 0 for minutes in fitted)
+
+    def test_여유가_5분에_못_미치는_자리는_건드리지_않는다(self) -> None:
+        """한 칸(5분)을 못 채우는 여유는 안 쓴다. 반내림해서 쓰면 정책 최소값
+        아래로 내려간다 — 63분짜리 자리의 여유는 3분뿐이다."""
+
+        slots = [
+            DurationSlot(current_min=63, policy=_ATTRACTION),
+            DurationSlot(current_min=90, policy=_ATTRACTION),
+        ]
+
+        fitted = fit_durations_to_budget(slots, overhead_min=30, budget_min=100)
+
+        assert fitted[0] == 63
+        assert all(minutes >= _ATTRACTION.minimum_min for minutes in fitted)
+
+    def test_5분_단위로_옮겨도_판정이_뒤집히지_않는다(self) -> None:
+        """**내림 때문에 예산과 최대 4분이 남는다.** 그 4분이 허용 오차 30분을
+        넘겨 WITHIN을 OVER로 뒤집으면 안 된다.
+
+        여기서 남는 4분은 여유가 모자라서가 아니라 34분을 5로 나눈 나머지다.
+        여유가 부족한 경우는 5분 단위와 무관하게 같은 자리에서 멈추므로(정책
+        경계값이 전부 5분 배수다) 차이가 생기지 않는다.
+        """
+
+        fitted = fit_durations_to_budget(_slots(90, 90), overhead_min=30, budget_min=176)
+        total = sum(fitted) + 30
+
+        assert all(minutes % 5 == 0 for minutes in fitted)
+        assert 0 <= total - 176 <= 4
+        assert classify_budget(total, 176) is ScheduleBudgetStatus.WITHIN
 
 
 class TestWalkableClusterSize:
