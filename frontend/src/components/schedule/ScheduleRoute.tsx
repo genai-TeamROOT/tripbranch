@@ -15,7 +15,12 @@
 import { useState } from "react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
-import { scheduleTravelLabel } from "../../utils/scheduleTravel";
+import {
+  SCHEDULE_CLUSTER_NOTE,
+  SCHEDULE_CLUSTER_NOTE_EN,
+  isSameCluster,
+  scheduleTravelLabel,
+} from "../../utils/scheduleTravel";
 import type { ScheduleItem } from "../../types";
 
 interface ScheduleRouteProps {
@@ -27,16 +32,19 @@ interface ScheduleRouteProps {
   minutesLeftHere: number | null;
 }
 
-function travelLine(item: ScheduleItem, isEn: boolean): string | null {
+function travelLine(item: ScheduleItem, next: ScheduleItem | undefined, isEn: boolean): string | null {
   if (item.travel_to_next_min === null) return null;
-  if (isEn) {
-    return `${item.travel_to_next_min} min to next stop`;
-  }
-  return scheduleTravelLabel(
-    item.travel_to_next_min,
-    item.travel_to_next_mode,
-    item.travel_to_next_measured,
-  );
+  /* 묶인 구간이면 한마디 덧붙인다 (TP-243) — 체류가 짧게 잡힌 근거가 여기 있다. */
+  const clustered = next !== undefined && isSameCluster(item, next);
+  const base = isEn
+    ? `${item.travel_to_next_min} min to next stop`
+    : scheduleTravelLabel(
+        item.travel_to_next_min,
+        item.travel_to_next_mode,
+        item.travel_to_next_measured,
+      );
+  if (!clustered) return base;
+  return `${base} · ${isEn ? SCHEDULE_CLUSTER_NOTE_EN : SCHEDULE_CLUSTER_NOTE}`;
 }
 
 export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: ScheduleRouteProps) {
@@ -94,7 +102,7 @@ export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: Schedu
           {items.map((item, index) => {
             if (index === heroIndex) return null;
             const previous = items[index - 1];
-            const leg = previous ? travelLine(previous, isEn) : null;
+            const leg = previous ? travelLine(previous, item, isEn) : null;
             return (
               <div key={item.place_id}>
                 {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는

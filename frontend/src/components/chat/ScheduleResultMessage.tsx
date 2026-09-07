@@ -29,6 +29,7 @@ import { useEffect, useState } from "react";
 import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
+import { isSameCluster } from "../../utils/scheduleTravel";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
 import { ScheduleCard } from "../ScheduleCard";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
@@ -192,6 +193,7 @@ export function ScheduleResultMessage({
                   isLast={index === schedule.items.length - 1}
                 />,
               ];
+              const next = schedule.items[index + 1];
               if (item.travel_to_next_min !== null) {
                 nodes.push(
                   <ScheduleTravelSegment
@@ -199,6 +201,9 @@ export function ScheduleResultMessage({
                     minutes={item.travel_to_next_min}
                     mode={item.travel_to_next_mode}
                     measured={item.travel_to_next_measured}
+                    /* 묶음은 구간에 표시한다 — 붙어 있다는 건 두 곳 사이의
+                       이야기라 카드 하나에 얹으면 어느 쪽 이야기인지 흐려진다. */
+                    clustered={next !== undefined && isSameCluster(item, next)}
                   />,
                 );
               }

@@ -163,3 +163,62 @@ test("저장하면 목록을 다시 받아온다", async () => {
   await waitFor(() => expect(seen).toHaveLength(1));
   unsubscribe();
 });
+
+test("묶인 구간에만 이어서 둘러보라는 말이 붙는다", () => {
+  /*
+   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다(utils/scheduleTravel
+   * isSameCluster). 두 화면이 따로 판정하면 같은 일정이 다르게 보인다.
+   */
+  const schedule = {
+    items: [
+      {
+        order: 1,
+        place_id: "p1",
+        place_name: "국립현대미술관 서울",
+        estimated_arrival: "14:00",
+        estimated_duration_min: 45,
+        reason: "가까워요",
+        travel_to_next_min: 3,
+        travel_to_next_mode: "walking",
+        travel_to_next_measured: true,
+        cluster_id: 1,
+        warnings: [],
+      },
+      {
+        order: 2,
+        place_id: "p2",
+        place_name: "국제갤러리",
+        estimated_arrival: "14:48",
+        estimated_duration_min: 45,
+        reason: "붙어 있어요",
+        travel_to_next_min: 21,
+        travel_to_next_mode: "transit",
+        travel_to_next_measured: true,
+        cluster_id: 1,
+        warnings: [],
+      },
+      {
+        order: 3,
+        place_id: "p3",
+        place_name: "광장시장",
+        estimated_arrival: "15:54",
+        estimated_duration_min: 60,
+        reason: "멀지만 들를 만해요",
+        travel_to_next_min: null,
+        travel_to_next_mode: null,
+        travel_to_next_measured: false,
+        cluster_id: null,
+        warnings: [],
+      },
+    ],
+    total_duration_min: 174,
+    route_summary: "동선 요약입니다.",
+    basis_note: "기준 시각 안내",
+  } as unknown as ScheduleResult;
+
+  render(<ScheduleResultMessage schedule={schedule} />);
+
+  expect(screen.getByText("도보 이동 3분 · 이어서 둘러보기")).toBeInTheDocument();
+  /* 두 번째 구간은 묶음 밖으로 나가는 길이라 그냥 이동 줄이다. */
+  expect(screen.getByText("대중교통 이동 21분")).toBeInTheDocument();
+});

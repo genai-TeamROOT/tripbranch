@@ -43,3 +43,29 @@ test("추정 구간에만 설명 툴팁이 붙는다", () => {
   );
   expect(screen.getByText("대중교통 이동 20분")).not.toHaveAttribute("title");
 });
+
+test("묶인 구간에는 이어서 둘러보라는 말이 붙는다", () => {
+  /*
+   * TP-243 — 체류가 45분으로 짧게 잡힌 근거가 이 줄에 있다. 묶음은 두 곳
+   * 사이의 이야기라 카드가 아니라 구간에 표시한다.
+   */
+  render(
+    <ul>
+      <ScheduleTravelSegment minutes={3} mode="walking" measured clustered />
+    </ul>,
+  );
+
+  expect(screen.getByText("도보 이동 3분 · 이어서 둘러보기")).toBeInTheDocument();
+});
+
+test("묶이지 않은 구간에는 안 붙는다", () => {
+  // 대조군. 늘 붙으면 붙어 있다는 말이 정보가 아니게 된다.
+  render(
+    <ul>
+      <ScheduleTravelSegment minutes={21} mode="transit" measured />
+    </ul>,
+  );
+
+  expect(screen.getByText("대중교통 이동 21분")).toBeInTheDocument();
+  expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
+});

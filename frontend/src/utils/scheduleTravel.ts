@@ -1,4 +1,4 @@
-import type { TravelMode } from "../types";
+import type { ScheduleItem, TravelMode } from "../types";
 
 const MODE_LABEL: Record<TravelMode, string> = {
   walking: "도보 이동",
@@ -40,3 +40,21 @@ export function scheduleTravelLabel(
  */
 export const SCHEDULE_TRAVEL_ESTIMATE_HINT =
   "실제 경로를 못 불러와서 직선거리로 어림한 시간이에요.";
+
+/**
+ * 두 정류장이 같은 묶음인가. (TP-243)
+ *
+ * **묶음은 자리가 아니라 구간의 성질이라 여기서 판정한다.** "가까이 붙어 있다"는
+ * 두 곳 사이의 이야기이고, 화면에서도 카드가 아니라 카드 사이 이동 줄에 붙는다.
+ * 채팅 타임라인과 일정 화면이 같은 규칙을 쓰게 하려고 한 곳에 둔다.
+ *
+ * 번호가 없는 옛 스냅샷은 항상 false다 — 묶음 표시가 없을 뿐 화면은 그대로다.
+ */
+export function isSameCluster(from: ScheduleItem, to: ScheduleItem): boolean {
+  const id = from.cluster_id;
+  return id !== null && id !== undefined && id === to.cluster_id;
+}
+
+/** 묶인 구간의 이동 줄에 덧붙이는 말. 앞의 이동 표기에 " · "로 잇는다. */
+export const SCHEDULE_CLUSTER_NOTE = "이어서 둘러보기";
+export const SCHEDULE_CLUSTER_NOTE_EN = "nearby stop";

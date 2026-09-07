@@ -10,16 +10,27 @@
  * 내보내면 fast refresh가 깨진다(react-refresh/only-export-components).
  */
 
-import { scheduleTravelLabel, SCHEDULE_TRAVEL_ESTIMATE_HINT } from "../utils/scheduleTravel";
+import {
+  SCHEDULE_CLUSTER_NOTE,
+  SCHEDULE_TRAVEL_ESTIMATE_HINT,
+  scheduleTravelLabel,
+} from "../utils/scheduleTravel";
 import type { TravelMode } from "../types";
 
 interface ScheduleTravelSegmentProps {
   minutes: number;
   mode?: TravelMode | null;
   measured?: boolean;
+  /** 앞뒤 정류장이 같은 묶음인가 (TP-243). 맞으면 이동 줄에 한마디 덧붙인다. */
+  clustered?: boolean;
 }
 
-export function ScheduleTravelSegment({ minutes, mode, measured }: ScheduleTravelSegmentProps) {
+export function ScheduleTravelSegment({
+  minutes,
+  mode,
+  measured,
+  clustered = false,
+}: ScheduleTravelSegmentProps) {
   return (
     <li className="flex gap-3">
       <div className="flex w-7 shrink-0 justify-center">
@@ -30,6 +41,7 @@ export function ScheduleTravelSegment({ minutes, mode, measured }: ScheduleTrave
         title={measured ? undefined : SCHEDULE_TRAVEL_ESTIMATE_HINT}
       >
         {scheduleTravelLabel(minutes, mode, measured)}
+        {clustered && ` · ${SCHEDULE_CLUSTER_NOTE}`}
       </p>
     </li>
   );

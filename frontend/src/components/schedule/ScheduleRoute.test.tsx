@@ -118,3 +118,43 @@ test("마지막 정류장 뒤에는 이동 줄이 없다", () => {
   expect(screen.queryByText(/이동 약/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/이동/).length).toBe(2);
 });
+
+test("묶인 구간은 한국어와 영어 둘 다 이어서 둘러보라고 말한다", () => {
+  /*
+   * TP-243 — 화면이 묶음을 보여주는 자리다. 이중언어 화면이라(PR #367) 두
+   * 언어를 함께 잠근다: 한쪽만 고치면 다른 언어에서 조용히 사라진다.
+   */
+  const clustered = [
+    stop("국립현대미술관 서울", { cluster_id: 1, travel_to_next_min: 3 }),
+    stop("국제갤러리", { cluster_id: 1, travel_to_next_min: 21, travel_to_next_mode: "transit" }),
+    stop("광장시장", { cluster_id: null, travel_to_next_min: null, travel_to_next_mode: null }),
+  ];
+
+  const { unmount } = render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("도보 이동 3분 · 이어서 둘러보기")).toBeInTheDocument();
+  /* 두 번째 구간은 묶음 밖이라 그냥 이동 줄이다. */
+  expect(screen.getByText("대중교통 이동 21분")).toBeInTheDocument();
+  unmount();
+
+  render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("3 min to next stop · nearby stop")).toBeInTheDocument();
+});
+
+test("묶음 번호가 없는 옛 일정은 그대로 그린다", () => {
+  // 저장해 둔 일정에는 이 필드가 없다. 없으면 묶음 표시만 없어야 한다.
+  render(
+    <MemoryRouter>
+      <ScheduleRoute items={ITEMS} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+
+  expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
+});
