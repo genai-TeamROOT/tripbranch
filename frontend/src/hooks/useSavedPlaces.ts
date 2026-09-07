@@ -77,8 +77,8 @@ export function useSavedPlaces() {
       } catch (error) {
         dispatch({ type: "SET_SAVED_PLACES", payload: { items: previous } });
         dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof ApiError ? error.message : FAILURE_TEXT[language],
+          type: "FAIL_TURN",
+          payload: { message: error instanceof ApiError ? error.message : FAILURE_TEXT[language] },
         });
       }
     },

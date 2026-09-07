@@ -255,3 +255,42 @@ test("restores a session that contains follow-up suggestions", () => {
 
   expect(loadState()).toEqual(stateWithFollowUps);
 });
+
+test("restores a session that contains a turn_error message", () => {
+  // 위 photo_similar_result와 같은 회귀다 — isChatMessage()가 이 타입을 모르면
+  // 요청이 한 번이라도 실패한 대화가 새로고침에서 통째로 사라진다(TP-245).
+  const stateWithTurnError: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-turn-error",
+        type: "turn_error",
+        text: "서버가 응답하지 않아 요청을 끊었어요. 다시 시도해주세요.",
+        retryInput: "비 피할 곳",
+      },
+    ],
+  };
+
+  saveState(stateWithTurnError);
+
+  const restored = loadState();
+  expect(restored).not.toBeNull();
+  expect(restored?.messages.at(-1)).toMatchObject({ type: "turn_error" });
+});
+
+/* retryInput은 위치 갱신 실패처럼 다시 보낼 발화가 없는 경우에 안 실린다.
+   선택 필드를 필수로 검사하면 그 대화가 통째로 버려진다. */
+test("restores a turn_error message that has no retryInput", () => {
+  const stateWithTurnError: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      { id: "message-turn-error", type: "turn_error", text: "현재 위치를 가져오지 못했어요." },
+    ],
+  };
+
+  saveState(stateWithTurnError);
+
+  expect(loadState()?.messages.at(-1)).toMatchObject({ type: "turn_error" });
+});
