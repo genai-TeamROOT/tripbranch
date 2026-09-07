@@ -16,6 +16,8 @@ from datetime import date
 from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.prompts.loader import active_variant, load_text, render_text
 from app.schedule.associations import CoVisitedHint
+from app.schedule.budget import SCHEDULE_CLUSTER_WALK_MINUTES
+from app.schedule.duration import CLUSTERED_VISIT_MINIMUM_MIN
 from app.schedule.schemas import (
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
@@ -36,7 +38,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.29"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.30"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -589,7 +591,10 @@ def _schedule_candidate_line(candidate: RecommendationItem) -> str:
 
 
 def build_schedule_planning_instruction(
-    time_available_min: int | None = None, *, item_range: tuple[int, int]
+    time_available_min: int | None = None,
+    *,
+    item_range: tuple[int, int],
+    clustered_candidates: bool = False,
 ) -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
@@ -612,6 +617,17 @@ def build_schedule_planning_instruction(
     `budget.fit_durations_to_budget()`이 체류시간을 조절해 맞춘다. 여기서 "넉넉히
     잡아 시간을 다 쓰라"고 시키면 **그 조절과 정면으로 싸운다** — LLM이 길게 잡고
     엔진이 다시 줄이므로, 남는 것은 LLM이 장소마다 매긴 상대적 판단이 뭉개지는 것뿐이다.
+
+    **`clustered_candidates`는 부탁이고 코드가 계약이다.** (TP-243) 도보로 붙어
+    있는 자리는 `duration.policy_for(clustered=True)`가 체류 최소값을 45분까지
+    열어두는데, **여는 것만으로는 짧아지지 않는다** — 실제로 그 여유를 쓰는 것은
+    예산이 빡빡할 때의 `fit_durations_to_budget()`뿐이라, 시간을 넉넉히 말한
+    요청에서는 붙어 있는 곳도 90분씩 그대로 나갔다(2026-09-07 실측). 그래서
+    "짧게 제안해 달라"를 여기서 부탁한다. 지키지 않아도 계약(최소값·개수 상한)이
+    막아주므로 이 문장은 결과를 흔들지 않는다.
+
+    **완화 대상이 아닌 분류까지 짧게 잡지 말라고 함께 말한다.** 박물관에 45분을
+    제안해도 `policy_for()`가 90분으로 되돌리므로, 안 그러면 LLM의 판단만 버려진다.
     """
 
     min_items, max_items = item_range
@@ -630,6 +646,15 @@ def build_schedule_planning_instruction(
             "체류시간은 장소 성격에 맞는 값을 제안하면 됩니다. 총 소요 시간이 활동 "
             "가능 시간에 맞도록 시스템이 카테고리별 범위 안에서 조정하므로, 시간을 "
             "다 쓰려고 체류시간을 늘려 잡지 마세요."
+        )
+
+    if clustered_candidates:
+        duration_rule += (
+            f" 후보 중에는 서로 걸어서 {SCHEDULE_CLUSTER_WALK_MINUTES}분 안쪽에 붙어 "
+            "있는 곳들이 있습니다. 그런 곳들을 함께 고를 때는 관광지·체험·축제처럼 "
+            f"가볍게 둘러보는 자리의 체류시간을 {CLUSTERED_VISIT_MINIMUM_MIN}~60분으로 "
+            "짧게 제안하세요 — 이어서 둘러보는 코스가 됩니다. 박물관·미술관 같은 "
+            "문화시설과 식사 자리는 붙어 있어도 원래대로 잡으세요."
         )
 
     return render_text(

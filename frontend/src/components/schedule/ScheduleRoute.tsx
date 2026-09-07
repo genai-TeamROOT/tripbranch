@@ -16,6 +16,7 @@ import { useState } from "react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
 import { scheduleTravelLabel } from "../../utils/scheduleTravel";
+import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
 import type { ScheduleItem } from "../../types";
 
 interface ScheduleRouteProps {
@@ -38,6 +39,18 @@ function travelLine(item: ScheduleItem, isEn: boolean): string | null {
     item.travel_to_next_measured,
   );
 }
+
+function badgeSize(items: ScheduleItem[], index: number, heroIndex: number): number | null {
+  const id = items[index].cluster_id;
+  if (id == null) return null;
+  const size = items.filter((item) => item.cluster_id === id).length;
+  if (size < 2) return null;
+  const firstShown = items.findIndex(
+    (item, position) => item.cluster_id === id && position !== heroIndex,
+  );
+  return firstShown === index ? size : null;
+}
+
 
 export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: ScheduleRouteProps) {
   const [detailFor, setDetailFor] = useState<ScheduleItem | null>(null);
@@ -95,8 +108,17 @@ export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: Schedu
             if (index === heroIndex) return null;
             const previous = items[index - 1];
             const leg = previous ? travelLine(previous, isEn) : null;
+            /* 묶음 배지는 그 묶음이 **이 목록에** 처음 나오는 자리에 한 번 그린다
+               (TP-243). 묶음의 첫 자리가 위쪽 히어로면 여기 두 번째 자리가 받는다 —
+               목록에 한 번도 안 나오는 배지가 생기지 않게 한다. */
+            const clusterSize = badgeSize(items, index, heroIndex);
             return (
               <div key={item.place_id}>
+                {clusterSize !== null && (
+                  <div className="mb-1.5">
+                    <ScheduleClusterBadge count={clusterSize} isEn={isEn} />
+                  </div>
+                )}
                 {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는
                     위의 시간 띠가 대신한다. */}
                 {leg && (
@@ -104,7 +126,14 @@ export function ScheduleRoute({ items, isEn, nowIndex, minutesLeftHere }: Schedu
                     {leg}
                   </p>
                 )}
-                <div className="flex gap-3 rounded-2xl border border-border p-3">
+                {/* 묶인 자리는 테두리에 색을 준다 (TP-243) — 이동 줄의 "이어서
+                    둘러보기"가 말로 하는 것을 테두리가 눈으로 보여준다. */}
+                <div
+                  data-cluster-link={item.cluster_id != null ? "true" : undefined}
+                  className={`flex gap-3 rounded-2xl border p-3 ${
+                    item.cluster_id != null ? "border-brand/40" : "border-border"
+                  }`}
+                >
                   <PlaceThumbnail
                     src={item.image_url}
                     fallbackSrc={item.image_url_fallback}

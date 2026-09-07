@@ -10,20 +10,32 @@
  * 내보내면 fast refresh가 깨진다(react-refresh/only-export-components).
  */
 
-import { scheduleTravelLabel, SCHEDULE_TRAVEL_ESTIMATE_HINT } from "../utils/scheduleTravel";
+import { SCHEDULE_TRAVEL_ESTIMATE_HINT, scheduleTravelLabel } from "../utils/scheduleTravel";
 import type { TravelMode } from "../types";
 
 interface ScheduleTravelSegmentProps {
   minutes: number;
   mode?: TravelMode | null;
   measured?: boolean;
+  /** 앞뒤 정류장이 같은 묶음인가 (TP-243). 맞으면 세로선이 묶음 색으로 이어진다.
+   *  묶음 설명은 이 줄이 아니라 묶음 머리의 배지가 한 번만 한다. */
+  clustered?: boolean;
 }
 
-export function ScheduleTravelSegment({ minutes, mode, measured }: ScheduleTravelSegmentProps) {
+export function ScheduleTravelSegment({
+  minutes,
+  mode,
+  measured,
+  clustered = false,
+}: ScheduleTravelSegmentProps) {
   return (
     <li className="flex gap-3">
       <div className="flex w-7 shrink-0 justify-center">
-        <span className="h-4 w-px bg-border" />
+        {/* 카드 쪽 연결선과 색이 이어져야 한 묶음으로 보인다 (TP-243). */}
+        <span
+          data-cluster-link={clustered ? "true" : undefined}
+          className={`h-4 ${clustered ? "w-0.5 bg-brand/40" : "w-px bg-border"}`}
+        />
       </div>
       <p
         className="flex flex-1 items-center pb-2 text-[11px] text-muted"

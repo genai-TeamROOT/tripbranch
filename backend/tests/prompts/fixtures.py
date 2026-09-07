@@ -231,6 +231,11 @@ SCHEDULE_PLAN_CASES: list[tuple[str, dict[str, object]]] = [
     ("schedule_plan__no_limit", {"item_range": (3, 5)}),
     # 240분·관광지 후보 5곳·이동 15분이면 budget.derive_item_range()가 (2, 3)을 준다.
     ("schedule_plan__with_time_available", {"time_available_min": 240, "item_range": (2, 3)}),
+    # 도보로 붙어 있는 후보가 있으면 짧게 제안해 달라는 부탁이 한 문단 붙는다(TP-243).
+    (
+        "schedule_plan__clustered_candidates",
+        {"time_available_min": 180, "item_range": (2, 4), "clustered_candidates": True},
+    ),
 ]
 
 GENERAL_ANSWER_TOPICS = [

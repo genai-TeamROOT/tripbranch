@@ -163,3 +163,92 @@ test("저장하면 목록을 다시 받아온다", async () => {
   await waitFor(() => expect(seen).toHaveLength(1));
   unsubscribe();
 });
+
+/* 앞 두 자리가 한 묶음, 세 번째는 묶음 밖. 묶음 테스트 둘이 같이 쓴다. */
+const CLUSTERED_SCHEDULE = (() => {
+  const schedule = {
+    items: [
+      {
+        order: 1,
+        place_id: "p1",
+        place_name: "국립현대미술관 서울",
+        estimated_arrival: "14:00",
+        estimated_duration_min: 45,
+        reason: "가까워요",
+        travel_to_next_min: 3,
+        travel_to_next_mode: "walking",
+        travel_to_next_measured: true,
+        cluster_id: 1,
+        warnings: [],
+      },
+      {
+        order: 2,
+        place_id: "p2",
+        place_name: "국제갤러리",
+        estimated_arrival: "14:48",
+        estimated_duration_min: 45,
+        reason: "붙어 있어요",
+        travel_to_next_min: 21,
+        travel_to_next_mode: "transit",
+        travel_to_next_measured: true,
+        cluster_id: 1,
+        warnings: [],
+      },
+      {
+        order: 3,
+        place_id: "p3",
+        place_name: "광장시장",
+        estimated_arrival: "15:54",
+        estimated_duration_min: 60,
+        reason: "멀지만 들를 만해요",
+        travel_to_next_min: null,
+        travel_to_next_mode: null,
+        travel_to_next_measured: false,
+        cluster_id: null,
+        warnings: [],
+      },
+    ],
+    total_duration_min: 174,
+    route_summary: "동선 요약입니다.",
+    basis_note: "기준 시각 안내",
+  } as unknown as ScheduleResult;
+  return schedule;
+})();
+
+test("묶음은 배지 하나로 알리고 이동 줄은 이동만 말한다", () => {
+  /*
+   * TP-243 — 채팅 타임라인도 일정 화면과 같은 규칙을 쓴다. 예전에는 이동 줄에
+   * "· 이어서 둘러보기"를 덧붙였는데, 이동 표기와 층위가 달라 한 줄에서
+   * 부딪혔고 세 곳이 묶이면 줄마다 반복됐다.
+   */
+  render(<ScheduleResultMessage schedule={CLUSTERED_SCHEDULE} />);
+
+  expect(screen.getByText("걸어서 5분 안쪽인 2곳")).toBeInTheDocument();
+  expect(screen.getByText("걸어서 3분")).toBeInTheDocument();
+  /* 묶음 밖으로 나가는 길은 그냥 이동 줄이다. */
+  expect(screen.getByText("대중교통으로 21분")).toBeInTheDocument();
+  expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
+});
+
+test("묶음 배지는 묶음마다 한 번만 뜬다", () => {
+  /* 세 곳이 한 묶음이어도 배지는 하나다 — 구간마다 붙이면 같은 말이 두 번 나온다. */
+  const everything = {
+    ...CLUSTERED_SCHEDULE,
+    items: CLUSTERED_SCHEDULE.items.map((item) => ({ ...item, cluster_id: 1 })),
+  } as unknown as ScheduleResult;
+
+  render(<ScheduleResultMessage schedule={everything} />);
+
+  expect(screen.getAllByText("걸어서 5분 안쪽인 3곳")).toHaveLength(1);
+});
+
+test("묶인 두 자리를 잇는 선에만 색이 붙는다", () => {
+  /*
+   * TP-243 — 말로만 알리면 타임라인을 훑는 눈에는 안 걸린다. 첫 카드와 그
+   * 사이 이동 줄, 둘의 세로선이 이어져 한 묶음으로 보인다. 세 번째 자리는
+   * 묶음 밖이라 색이 없다.
+   */
+  const { container } = render(<ScheduleResultMessage schedule={CLUSTERED_SCHEDULE} />);
+
+  expect(container.querySelectorAll("[data-cluster-link]")).toHaveLength(2);
+});

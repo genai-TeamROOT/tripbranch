@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import ModifyPayload, ModifyType, UserConditions
+from app.schemas import ModifyPayload, ModifyType, ScheduleItem, UserConditions
 
 
 def test_fields_outside_changed_fields_are_cleared_even_when_populated() -> None:
@@ -106,3 +106,28 @@ def test_negative_time_fields_still_rejected(field: str) -> None:
     """0은 조용히 정규화되지만 음수는 여전히 ValidationError로 막힌다."""
     with pytest.raises(ValidationError):
         UserConditions(**{field: -5})
+
+
+def test_cluster_id가_없는_옛_스냅샷도_그대로_읽힌다() -> None:
+    """TP-243 — `saved_schedules.payload`와 `session_messages`에 이 필드가 없는
+    스냅샷이 이미 쌓여 있다.
+
+    **항목 배열을 그룹 구조로 바꾸지 않고 번호만 얹은 이유가 이것이다.** 저장된
+    일정을 다시 여는 경로가 두 모양을 다 읽어야 하는데, 기본값 None이면 옛
+    스냅샷은 "묶음 없음"으로 그대로 읽힌다.
+    """
+
+    old_snapshot = {
+        "order": 1,
+        "place_id": "p1",
+        "place_name": "장소 p1",
+        "estimated_arrival": "15:00",
+        "estimated_duration_min": 60,
+        "travel_to_next_min": 12,
+        "reason": "테스트 이유",
+    }
+
+    item = ScheduleItem.model_validate(old_snapshot)
+
+    assert item.cluster_id is None
+    assert item.estimated_duration_min == 60

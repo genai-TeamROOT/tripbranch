@@ -2093,3 +2093,91 @@ class TestScheduleTimeBudgetStatus:
 
         assert message.startswith("4시간 30분 코스를 짜봤어요")
         assert "1시간 30분쯤 길어졌어요" in message
+
+
+def _clustered_item(place_id: str, order: int, cluster_id: int | None) -> ScheduleItem:
+    return ScheduleItem(
+        order=order,
+        place_id=place_id,
+        place_name=f"장소 {place_id}",
+        estimated_arrival="15:00",
+        estimated_duration_min=45,
+        travel_to_next_min=3,
+        reason="테스트 이유",
+        cluster_id=cluster_id,
+    )
+
+
+class Test묶음_설명:
+    """TP-243 — 체류시간이 짧게 잡힌 근거를 말풍선이 말한다."""
+
+    @staticmethod
+    def _schedule(cluster_ids: list[int | None]) -> ScheduleResult:
+        return ScheduleResult(
+            items=[
+                _clustered_item(f"p{index}", index, cluster_id)
+                for index, cluster_id in enumerate(cluster_ids, start=1)
+            ],
+            total_duration_min=180,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+    def test_붙어_있는_곳이_있으면_그_사실을_말한다(self) -> None:
+        """말하는 것은 근거(붙어 있다)지 결과(그래서 짧다)가 아니다 — 묶였다고
+        모든 분류의 체류가 줄지는 않는데 항목에는 분류가 없다."""
+
+        message = compose_schedule_message(self._schedule([1, 1, None]))
+
+        assert "그중 2곳은 걸어서 5분 안쪽이라 이어서 둘러보도록 붙여 놨어요." in message
+
+    def test_전부_묶였으면_모두라고_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule([1, 1, 1]))
+
+        assert "3곳 모두 걸어서 5분 안쪽이라" in message
+        assert "그중" not in message
+
+    def test_묶음이_없으면_붙지_않는다(self) -> None:
+        """**대조군.** 이 문장이 조용해야 묶음이 있을 때의 문장이 정보가 된다."""
+
+        message = compose_schedule_message(self._schedule([None, None, None]))
+
+        assert "걸어서" not in message
+
+    def test_혼자_남은_번호에는_붙지_않는다(self) -> None:
+        """편성이 만든 결과에는 한 곳짜리 묶음이 없지만(`cluster_ids_in_order()`가
+        두 곳부터 번호를 매긴다) **저장한 일정에서 항목을 지우면 번호 하나가
+        혼자 남을 수 있다.** 그때 "1곳 모두 걸어서 5분 안쪽"은 말이 안 된다.
+        """
+
+        message = compose_schedule_message(self._schedule([1, None, None]))
+
+        assert "걸어서" not in message
+
+    def test_묶음이_여럿이면_가장_큰_것_하나만_말한다(self) -> None:
+        """말풍선은 요약이다 — 두 묶음을 다 설명하면 동선 요약보다 길어진다."""
+
+        message = compose_schedule_message(self._schedule([1, 1, 1, 2, 2]))
+
+        assert "그중 3곳은" in message
+        assert message.count("걸어서") == 1
+
+    def test_예산_문장_뒤에_붙는다(self) -> None:
+        """시간 이야기를 먼저 끝내고 동선 이야기로 넘어간다."""
+
+        schedule = ScheduleResult(
+            items=[
+                _clustered_item("p1", 1, 1),
+                _clustered_item("p2", 2, 1),
+            ],
+            total_duration_min=300,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            time_budget_status=ScheduleBudgetStatus.OVER,
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.index("길어졌어요") < message.index("걸어서")

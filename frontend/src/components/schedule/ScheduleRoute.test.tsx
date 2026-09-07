@@ -106,15 +106,74 @@ test("지금이 일정 밖이면 첫 곳을 크게 그리되 지금 여기는 �
 test("이동 한 줄이 앞 정류장 기준으로 붙는다", () => {
   renderRoute(null);
 
-  expect(screen.getByText("도보 이동 6분")).toBeInTheDocument();
-  /* 대중교통 구간은 실측 표시가 없으므로 "· 추정"이 붙는다. */
-  expect(screen.getByText("대중교통 이동 21분 · 추정")).toBeInTheDocument();
+  expect(screen.getByText("걸어서 6분")).toBeInTheDocument();
+  /* 대중교통 구간은 실측 표시가 없으므로 "약"이 붙는다. */
+  expect(screen.getByText("대중교통으로 약 21분")).toBeInTheDocument();
 });
 
 test("마지막 정류장 뒤에는 이동 줄이 없다", () => {
   renderRoute(null);
 
   /* 광장시장의 travel_to_next_min 은 null 이다. */
-  expect(screen.queryByText(/이동 약/)).not.toBeInTheDocument();
-  expect(screen.getAllByText(/이동/).length).toBe(2);
+  expect(screen.queryByText(/^이동 약/)).not.toBeInTheDocument();
+  expect(screen.getAllByText(/걸어서|대중교통으로|차로/).length).toBe(2);
+});
+
+test("묶음은 배지 하나로 한국어와 영어 둘 다 알린다", () => {
+  /*
+   * TP-243 — 묶음은 구간마다 반복하지 않고 묶음이 시작되는 자리에서 한 번만
+   * 말한다. 이중언어 화면이라(PR #367) 두 언어를 함께 잠근다 — 한쪽만 고치면
+   * 다른 언어에서 조용히 사라진다.
+   */
+  const clustered = [
+    stop("국립현대미술관 서울", { cluster_id: 1, travel_to_next_min: 3 }),
+    stop("국제갤러리", { cluster_id: 1, travel_to_next_min: 21, travel_to_next_mode: "transit" }),
+    stop("광장시장", { cluster_id: null, travel_to_next_min: null, travel_to_next_mode: null }),
+  ];
+
+  const { unmount } = render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("걸어서 5분 안쪽인 2곳")).toBeInTheDocument();
+  /* 이동 줄은 이동 이야기만 한다(이 픽스처는 실측이라 "약"이 없다). */
+  expect(screen.getByText("대중교통으로 21분")).toBeInTheDocument();
+  unmount();
+
+  render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("2 stops within a 5-min walk")).toBeInTheDocument();
+});
+
+test("묶음 번호가 없는 옛 일정은 그대로 그린다", () => {
+  // 저장해 둔 일정에는 이 필드가 없다. 없으면 묶음 표시만 없어야 한다.
+  render(
+    <MemoryRouter>
+      <ScheduleRoute items={ITEMS} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+
+  expect(screen.queryByText(/이어서 둘러보기/)).not.toBeInTheDocument();
+});
+
+test("묶인 정류장 카드에만 테두리 색이 붙는다", () => {
+  /* TP-243 — 일정 화면에서도 묶음이 눈에 보여야 한다. 히어로(첫 정류장)를 뺀
+     나머지 목록에서 묶인 자리만 색을 받는다. */
+  const clustered = [
+    stop("국립현대미술관 서울", { cluster_id: 1, travel_to_next_min: 3 }),
+    stop("국제갤러리", { cluster_id: 1, travel_to_next_min: 21 }),
+    stop("광장시장", { cluster_id: null, travel_to_next_min: null }),
+  ];
+
+  const { container } = render(
+    <MemoryRouter>
+      <ScheduleRoute items={clustered} isEn={false} nowIndex={0} minutesLeftHere={null} />
+    </MemoryRouter>,
+  );
+
+  expect(container.querySelectorAll("[data-cluster-link]")).toHaveLength(1);
 });

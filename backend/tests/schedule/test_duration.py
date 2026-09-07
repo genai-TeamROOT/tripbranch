@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.schedule.duration import policy_for, resolve_visit_duration
+from app.schedule.duration import (
+    CLUSTERED_VISIT_MINIMUM_MIN,
+    policy_for,
+    resolve_visit_duration,
+)
 from app.schemas import PlaceType
 
 
@@ -121,3 +125,64 @@ def test_분류_권장값은_이미_5분_배수다() -> None:
         assert policy.minimum_min % 5 == 0
         assert policy.preferred_min % 5 == 0
         assert policy.maximum_min % 5 == 0
+
+
+def test_묶이면_관광지_최소값이_45분까지_내려간다() -> None:
+    """TP-243 — 사용자 문의 원문("5분 거리 세 곳을 1시간 반")이 이 값의 근거다."""
+
+    assert policy_for(PlaceType.ATTRACTION.value).minimum_min == 60
+    assert (
+        policy_for(PlaceType.ATTRACTION.value, clustered=True).minimum_min
+        == CLUSTERED_VISIT_MINIMUM_MIN
+    )
+
+
+def test_문화시설과_식당은_묶여도_그대로다() -> None:
+    """분류 최소값은 그 장소를 보는(먹는) 데 필요한 시간이라 근접도와 무관하다.
+
+    `min(분류최소, 묶음최소)`를 쓰면 이 둘까지 45분으로 내려간다 — 그래서 그
+    식을 쓰지 않는다.
+    """
+
+    for category in (PlaceType.CULTURAL_FACILITY.value, PlaceType.RESTAURANT.value):
+        assert (
+            policy_for(category, clustered=True).minimum_min
+            == policy_for(category).minimum_min
+        )
+
+
+def test_묶음은_권장값과_최대값을_안_건드린다() -> None:
+    """묶음은 "짧게 머물러도 된다"는 근거지 "짧게 머물러야 한다"는 지시가 아니다.
+
+    여유가 있으면 원래대로 오래 머문다 — 최대값을 함께 내리면 그 길이 막힌다.
+    """
+
+    plain = policy_for(PlaceType.ATTRACTION.value)
+    clustered = policy_for(PlaceType.ATTRACTION.value, clustered=True)
+
+    assert (clustered.preferred_min, clustered.maximum_min) == (
+        plain.preferred_min,
+        plain.maximum_min,
+    )
+    assert resolve_visit_duration(category=PlaceType.ATTRACTION.value, clustered=True) == 90
+
+
+def test_묶이면_LLM이_준_45분을_끌어올리지_않는다() -> None:
+    """묶이지 않은 자리에서는 60분으로 올린다 — 그 클램프가 골목 세 곳을 각각
+    한 시간씩 앉아 있게 만들던 자리다."""
+
+    attraction = PlaceType.ATTRACTION.value
+
+    assert resolve_visit_duration(category=attraction, proposed_min=45) == 60
+    assert resolve_visit_duration(category=attraction, proposed_min=45, clustered=True) == 45
+
+
+def test_묶여도_45분_아래로는_안_내려간다() -> None:
+    """완화는 최소값을 바꾸는 것이지 없애는 것이 아니다."""
+
+    assert (
+        resolve_visit_duration(
+            category=PlaceType.ATTRACTION.value, proposed_min=20, clustered=True
+        )
+        == CLUSTERED_VISIT_MINIMUM_MIN
+    )
