@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://apis.data.go.kr/B551011/KorService2"
 _SEARCH_FESTIVAL_PATH = "/searchFestival2"
+
+# 한 번에 요청할 행 수. TourAPI는 numOfRows에 100 상한을 걸지 않는다 — 넉넉히
+# 요청하면 전량을 한 번에 주고 응답의 numOfRows가 실제 건수로 잘려 온다
+# (2026-09-07 실측: 200·500·1000 요청 모두 189건을 한 번에 돌려줬다).
+#
+# 그래서 평시 호출 수는 1회 그대로다. D-025가 "지원 구마다 호출해 병합"을 호출
+# 수를 이유로 기각했는데, 그 결정을 지키면서 잘림만 없앤다.
+_ROWS_PER_REQUEST = 500
+
+# totalCount가 한 번에 못 받을 만큼 커졌을 때만 타는 안전장치. 서울 전체 행사는
+# 2026-08-24에 51건, 2026-09-07에 189건이었다 — 2주에 3.7배라 상한을 두되
+# 넘으면 조용하지 않게 한다.
+_MAX_PAGES = 4
 # 조회 시작일. 진행 중 판정은 응답의 기간으로 다시 하므로 넉넉히 잡는다 —
 # 장기 행사(예: 20260101~20261231)가 시작일 필터에서 빠지지 않게 해야 한다.
 _SEARCH_START_DATE_OFFSET_YEARS = 2
@@ -86,6 +99,18 @@ def _parse_coordinate(value: object) -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+def _total_count(payload: Mapping[str, object]) -> int:
+    """응답이 말하는 전체 건수. 이 값을 안 읽어서 잘림이 드러나지 않았다."""
+    response = payload.get("response")
+    body = response.get("body") if isinstance(response, Mapping) else None
+    raw = body.get("totalCount") if isinstance(body, Mapping) else None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return 0
 
 
 def _items(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
@@ -163,28 +188,52 @@ class RealFestivalProvider:
         region_code: str,
         district_code: str | None,
         reference_date: date,
-        limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
+        """지역의 행사를 **전량** 받아 지원 구만 남긴다.
+
+        전에는 `numOfRows=100`으로 한 번만 불러 100건을 넘는 만큼이 조용히
+        사라졌다. 2026-09-07 실측에서 서울 전체가 189건이었고, 그중 진행 중인
+        19건 가운데 12건이 응답에 아예 들어오지 않았다 — 거리순 정렬인데 모집단이
+        3분의 1이라 실제로 가장 가까운 행사가 후보에서 빠졌다.
+        """
         start_date = reference_date.replace(
             year=reference_date.year - _SEARCH_START_DATE_OFFSET_YEARS
         )
-        params: dict[str, object] = {
-            "MobileOS": "ETC",
-            "MobileApp": "TripBranch",
-            "_type": "json",
-            "eventStartDate": start_date.strftime("%Y%m%d"),
-            "lDongRegnCd": region_code,
-            "numOfRows": max(1, min(limit, 100)),
-        }
-        # 구를 지정하면 그 구 행사만 온다. 지원 구가 여럿이면 구마다 호출해야 하므로
-        # 시도까지만 좁히고 지원 구 판정은 응답으로 한다(D-025). 서울 전체 행사는
-        # 2026-08-24 실측 51건이라 numOfRows 100 안에 들어온다.
-        if district_code:
-            params["lDongSignguCd"] = district_code
-        payload = await self._request_json(_SEARCH_FESTIVAL_PATH, params)
-        events = map_festival_items(
-            _items(payload), allowed_district_codes=SUPPORTED_DISTRICT_CODES
-        )
+        raw_items: list[Mapping[str, object]] = []
+        total_count = 0
+        for page in range(1, _MAX_PAGES + 1):
+            params: dict[str, object] = {
+                "MobileOS": "ETC",
+                "MobileApp": "TripBranch",
+                "_type": "json",
+                "eventStartDate": start_date.strftime("%Y%m%d"),
+                "lDongRegnCd": region_code,
+                "numOfRows": _ROWS_PER_REQUEST,
+                "pageNo": page,
+            }
+            # 구를 지정하면 그 구 행사만 온다. 지원 구가 여럿이면 구마다 호출해야
+            # 하므로 시도까지만 좁히고 지원 구 판정은 응답으로 한다(D-025).
+            if district_code:
+                params["lDongSignguCd"] = district_code
+            payload = await self._request_json(_SEARCH_FESTIVAL_PATH, params)
+            page_items = _items(payload)
+            total_count = _total_count(payload) or total_count
+            raw_items.extend(page_items)
+            # 평시에는 첫 장에서 끝난다. 아래 두 줄은 totalCount가 한 번에 못 받을
+            # 만큼 커졌을 때만 도는 자리다.
+            if not page_items or len(raw_items) >= total_count:
+                break
+        else:
+            # for가 break 없이 끝났다 = 상한에 걸렸다. 지금 문제가 정확히 "잘렸는데
+            # 아무도 모른다"였으므로 조용히 지나가지 않는다.
+            logger.warning(
+                "행사 조회가 상한에서 잘렸습니다 (받은 수=%d, totalCount=%d, 최대 %d장)",
+                len(raw_items),
+                total_count,
+                _MAX_PAGES,
+            )
+
+        events = map_festival_items(raw_items, allowed_district_codes=SUPPORTED_DISTRICT_CODES)
         return provider_result(
             events,
             source=ProviderSource.TOUR_API_FESTIVAL,
@@ -261,7 +310,6 @@ class FakeFestivalProvider:
         region_code: str,
         district_code: str | None,
         reference_date: date,
-        limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
         from datetime import timedelta
 
@@ -312,7 +360,7 @@ class FakeFestivalProvider:
             ),
         ]
         return provider_result(
-            events[:limit],
+            events,
             source=ProviderSource.FAKE_FESTIVAL,
             status=ProviderStatus.SUCCESS,
         )
