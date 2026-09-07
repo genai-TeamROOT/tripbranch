@@ -13,7 +13,7 @@
 
 import { ChevronRight, MapPin, Navigation } from "lucide-react";
 import type { ComparisonItem, ComparisonResult } from "../../types";
-import { openNaverDirections } from "../../utils/naverDirections";
+import { useNaverDirections } from "../../hooks/useNaverDirections";
 
 interface CompareResultCardsProps {
   comparison: ComparisonResult;
@@ -54,13 +54,14 @@ function CompareTravelCard({
     minutes: item[field],
   })).filter((entry): entry is { label: string; minutes: number } => entry.minutes !== null);
 
-  // RECOMMEND 상세 카드의 canRoute 가드와 같은 조건이다 — 좌표와 출발점이 둘 다 있어야 연다.
-  const canRoute = item.latitude != null && item.longitude != null && Boolean(deviceLocation);
+  /* 출발점은 훅이 정한다(위치 설정의 출발지 → 기기 좌표). 여기서는 이 카드가 목적지
+     좌표를 갖고 있는지만 본다 — 그건 카드마다 다른 사실이다. */
+  const directions = useNaverDirections(deviceLocation);
+  const canRoute = item.latitude != null && item.longitude != null && directions.canRoute;
 
   const openDirections = () => {
-    if (!canRoute || item.latitude == null || item.longitude == null || !deviceLocation) return;
-    openNaverDirections({
-      deviceLocation,
+    if (!canRoute || item.latitude == null || item.longitude == null) return;
+    void directions.openDirections({
       destLat: item.latitude,
       destLng: item.longitude,
       destName: item.place_name,

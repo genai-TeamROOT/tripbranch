@@ -8,7 +8,8 @@
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
 import { useTripState } from "../../state/TripContext";
-import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
+import { useNaverDirections } from "../../hooks/useNaverDirections";
+import { openNaverMapSearch } from "../../utils/naverDirections";
 import {
   groupSubwayArrivals,
   parseSubwayArrival,
@@ -179,12 +180,14 @@ function PublicToiletSummary({
   const accessible = item.details["장애인화장실"];
 
   const hasCoordinates = item.latitude != null && item.longitude != null;
-  const canRoute = (hasCoordinates && Boolean(deviceLocation)) || Boolean(address);
+  /* 출발점은 훅이 정한다(위치 설정의 출발지 → 기기 좌표). 주소만 있는 항목은 길찾기
+     대신 장소 검색으로 여는 기존 경로가 그대로 남는다. */
+  const directions = useNaverDirections(deviceLocation);
+  const canRoute = (hasCoordinates && directions.canRoute) || Boolean(address);
 
   const openDirections = () => {
-    if (hasCoordinates && deviceLocation) {
-      openNaverDirections({
-        deviceLocation,
+    if (hasCoordinates && directions.canRoute) {
+      void directions.openDirections({
         destLat: item.latitude as number,
         destLng: item.longitude as number,
         destName: item.title,
