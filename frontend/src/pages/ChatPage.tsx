@@ -21,6 +21,7 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
+import { useVisualViewportHeight } from "../hooks/useVisualViewportHeight";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
@@ -92,6 +93,9 @@ export function ChatPage() {
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  /* 입력창에 포커스가 가서 모바일 키보드가 뜨면 이 값이 채워진다 — 헤더까지
+     함께 스크롤되어 밀려 올라가는 대신, 아래에서 <main> 자체의 높이를 줄인다. */
+  const visualViewportHeight = useVisualViewportHeight();
   useAutoScrollToBottom(messagesContainerRef, isLoading);
   const { isNearTop, isScrollable, scrollToTop, scrollToBottom } =
     useScrollEdgeButton(messagesContainerRef);
@@ -415,7 +419,10 @@ export function ChatPage() {
   );
 
   return (
-    <main className="flex h-full flex-col overflow-y-auto">
+    <main
+      className="flex h-full flex-col overflow-y-auto"
+      style={visualViewportHeight != null ? { height: visualViewportHeight } : undefined}
+    >
       <AppHeader location={locationChip} />
 
       <div
