@@ -715,7 +715,10 @@ test("developer audit turn cards remain selectable after multiple turns", async 
   expect(firstTurnCard.className).toContain("border-emerald-500");
 });
 
-test("location permission denial stays on home and shows guidance", async () => {
+test("위치 권한을 거부해도 대화는 좌표 없이 시작된다", async () => {
+  /* 예전에는 홈에 머무르며 "위치 권한이 필요해요"만 띄우고 요청을 아예 안 보냈다.
+     거절한 사용자는 거기서 할 수 있는 게 없었다 — 좌표를 안 보내면 백엔드가 어디서
+     찾을지 되묻고(location_required), 사용자는 그 되묻기에 답해서 계속 갈 수 있다. */
   vi.stubGlobal("navigator", {
     geolocation: {
       getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
@@ -734,11 +737,27 @@ test("location permission denial stays on home and shows guidance", async () => 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText(/위치 권한이 필요해요/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
-  /* 위치 권한이 거부되면 추천 요청 자체가 나가지 않는다. 사이드바 히스토리
-     같은 부수 요청은 이 판단과 무관하므로 채팅 호출만 본다. */
-  expect(chatCalls()).toHaveLength(0);
+  await waitFor(() => expect(chatCalls().length).toBeGreaterThan(0));
+  const requestBody = JSON.parse(String(chatCalls()[0]?.[1]?.body));
+  expect(requestBody.device_location).toBeNull();
+});
+
+test("출발지를 정해 뒀으면 위치 권한을 묻지 않는다", async () => {
+  /* 서버가 이동시간을 재는 출발점은 그 이름이고(D-067) 이름을 좌표로 바꾸는 일은
+     백엔드가 한다. 그러니 기기 좌표는 필요 없다 — 필요도 없는 권한 팝업을 띄우고,
+     거절하면 아무것도 못 하게 만들던 자리였다(TP-256). */
+  const getCurrentPosition = vi.fn();
+  vi.stubGlobal("navigator", { geolocation: { getCurrentPosition } });
+  setLocationOrigin("안국역");
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  await waitFor(() => expect(chatCalls().length).toBeGreaterThan(0));
+  expect(getCurrentPosition).not.toHaveBeenCalled();
+  const requestBody = JSON.parse(String(chatCalls()[0]?.[1]?.body));
+  expect(requestBody.selected_current_location).toBe("안국역");
 });
 
 test("requesting more places sends a follow-up chat turn with the session id", async () => {
