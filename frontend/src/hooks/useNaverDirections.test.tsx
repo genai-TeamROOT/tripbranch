@@ -27,6 +27,7 @@ const destination = { destLat: 37.5796, destLng: 126.977, destName: "경복궁" 
 function mockSearchResult(latitude: number, longitude: number, name = "안국역") {
   vi.mocked(searchPlaces).mockResolvedValue({
     places: [{ name, address: null, road_address: null, category: null, latitude, longitude }],
+    outside_service_area_count: 0,
   });
 }
 
@@ -70,7 +71,7 @@ describe("useNaverDirections", () => {
 
   it("이름을 못 풀면 기기 좌표로 내려간다", async () => {
     setLocationOrigin("있을 리 없는 장소");
-    vi.mocked(searchPlaces).mockResolvedValue({ places: [] });
+    vi.mocked(searchPlaces).mockResolvedValue({ places: [], outside_service_area_count: 0 });
 
     const { result } = renderHook(() => useNaverDirections("37.4979,127.0276"));
     await result.current.openDirections(destination);
