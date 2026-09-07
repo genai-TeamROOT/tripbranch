@@ -57,8 +57,10 @@ export type LocationChipModel =
       kind: "single";
       /* 잘린 이름. 화면에 그대로 그린다. */
       name: string;
-      /* 이 자리가 기기 좌표인가 — 깜빡이는 점을 붙일지 정한다. */
+      /* 이 자리가 기기 좌표이고 그 좌표를 실제로 갖고 있는가 — 깜빡이는 점을 붙일지 정한다. */
       isDeviceLocation: boolean;
+      /* 기기 좌표를 쓸 자리인데 아직 못 받았는가. 깜빡이지 않는 회색 점이 붙는다. */
+      isDeviceLocationPending: boolean;
       /* 낭독용 문구. 자르지 않은 원래 이름이 들어간다. */
       description: string;
     }
@@ -67,6 +69,7 @@ export type LocationChipModel =
       origin: string;
       center: string;
       isDeviceLocation: boolean;
+      isDeviceLocationPending: boolean;
       description: string;
     };
 
@@ -87,10 +90,16 @@ function describe(origin: string, center: string): string {
  * @param settings 지금 정해져 있는 출발지·검색 기준.
  * @param fallbackCenter 둘 다 비어 있을 때 검색 기준 자리에 쓸 이름. 대화가 이미
  *   해석해 둔 위치가 있으면 그것을 넘긴다(없으면 기기 좌표를 쓴다는 뜻이라 null).
+ * @param hasDeviceLocation 기기 좌표를 실제로 갖고 있는가(TripState.device_location).
+ *   **이름과 좌표는 따로 논다** — 출발지를 안 정하면 이 자리는 "현재 위치"라고 말하지만,
+ *   좌표는 발화를 보낼 때만 받는다. 그래서 이름만 보고 초록 점을 붙이면 좌표가 없는데도
+ *   "지금 GPS를 쓰는 중"이라고 말하게 된다. 실제로 그런 상태가 생긴다 — 새 대화(RESET)는
+ *   좌표를 지우지만 출발지·검색지는 sessionStorage에 남기 때문이다.
  */
 export function buildLocationChipModel(
   settings: LocationSettings,
   fallbackCenter: string | null = null,
+  hasDeviceLocation = false,
 ): LocationChipModel {
   const origin = settings.origin;
   /* 검색 기준을 비워두면 출발지가 검색 중심이 되고, 그것도 없으면 대화가 해석한
@@ -99,7 +108,12 @@ export function buildLocationChipModel(
 
   const originLabel = origin ?? DEVICE_LOCATION_LABEL;
   const centerLabel = center ?? DEVICE_LOCATION_LABEL;
-  const isDeviceLocation = origin === null;
+  /* 이 자리에 기기 좌표를 쓸 자리인가(이름 기준)와, 그 좌표를 실제로 갖고 있는가는
+     다른 질문이다. 셋으로 갈라야 화면이 사실과 어긋나지 않는다 — 쓰는 중(초록),
+     쓸 예정인데 아직 없음(회색), 사용자가 이름으로 정함(아이콘). */
+  const usesDeviceLocation = origin === null;
+  const isDeviceLocation = usesDeviceLocation && hasDeviceLocation;
+  const isDeviceLocationPending = usesDeviceLocation && !hasDeviceLocation;
 
   /* 둘이 같은 곳을 가리키면 한 칸으로 접는다. 출발지를 정하지 않았는데 검색
      기준도 없는 경우(둘 다 기기 좌표)도 여기로 온다. */
@@ -108,6 +122,7 @@ export function buildLocationChipModel(
       kind: "single",
       name: truncateName(centerLabel),
       isDeviceLocation,
+      isDeviceLocationPending,
       description: describe(originLabel, centerLabel),
     };
   }
@@ -117,6 +132,7 @@ export function buildLocationChipModel(
     origin: truncateName(originLabel),
     center: truncateName(centerLabel),
     isDeviceLocation,
+    isDeviceLocationPending,
     description: describe(originLabel, centerLabel),
   };
 }
