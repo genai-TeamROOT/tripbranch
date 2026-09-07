@@ -1,20 +1,29 @@
 /*
  * 역할: 서울시 실시간 도시데이터의 인구·상권 요약을 카드 공통 블록으로 보여준다.
  * 입력: InfoPlaceCard.seoul_realtime_summary(+ 현재 단계·기준 시각은 population_* 필드).
- * 출력: "실시간 인구"와 "실시간 상권" 두 구획. 값이 없는 구획은 통째로 감춘다.
+ * 출력: "실시간 인구"와 "실시간 인기 상권" 두 구획. 값이 없는 구획은 통째로 감춘다.
  * 호출 시점: 실시간 혼잡도(concentration)·실시간 상권(realtime_commercial) 카드에서만 —
  *   이 두 유형만 서울시 citydata를 이미 호출하므로 추가 호출 없이 채울 수 있다.
+ *   단, "실시간 인기 상권" 구획은 realtime_commercial 카드에만 싣는다 — 같은
+ *   응답에 상권 값이 실려 와도 concentration(혼잡도) 질문에는 보여주지 않는다.
  */
 
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
-import {
-  formatPaymentAmountRange,
-  formatPopulationRangeCompact,
-} from "../../utils/seoulRealtimeDisplay";
+import { formatPopulationRangeCompact } from "../../utils/seoulRealtimeDisplay";
 import { CongestionLevelChip } from "./CongestionForecastBars";
 
 /** 이 블록을 싣는 질문 유형. 나머지 INFO는 서울시 데이터를 조회하지 않는다. */
 const SUPPORTED_QUESTION_TYPES = new Set(["concentration", "realtime_commercial"]);
+
+/**
+ * "대분류 · 소분류" 원문(예: "음식·음료 · 한식")에서 소분류만 남긴다. 상권 활동
+ * 단계 칩과 Top 3를 한 줄에 같이 넣어야 해서, 뜻이 크게 안 달라지는 대분류 접두어를
+ * 뺀다 — 서울시 앱 원본도 "한식"처럼 소분류만 보여준다. 구분자가 없으면 원문 그대로.
+ */
+function shortCategoryLabel(label: string) {
+  const idx = label.lastIndexOf(" · ");
+  return idx === -1 ? label : label.slice(idx + 3);
+}
 
 /*
  * 값 아래 보조 정보는 두 종류다 — 혼잡도·상권 "단계"는 색 칩으로(옅은 회색 글씨로
@@ -47,20 +56,6 @@ function SummaryTile({
   );
 }
 
-/** 결제 금액 순위 뱃지. 1위만 채워 강조하고 나머지는 같은 계열의 옅은 배경을 쓴다. */
-function RankBadge({ rank }: { rank: number }) {
-  return (
-    <span
-      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-        rank === 1 ? "bg-brand text-white" : "bg-sky-light text-brand-deep"
-      }`}
-      aria-label={`${rank}위`}
-    >
-      {rank}
-    </span>
-  );
-}
-
 export function SeoulRealtimeSummarySection({ card }: { card: InfoPlaceCardData }) {
   if (!SUPPORTED_QUESTION_TYPES.has(card.question_type)) return null;
   const summary = card.seoul_realtime_summary;
@@ -70,13 +65,25 @@ export function SeoulRealtimeSummarySection({ card }: { card: InfoPlaceCardData 
     summary.population_min,
     summary.population_max,
   );
-  const paymentRange = formatPaymentAmountRange(summary.payment_amount_min, summary.payment_amount_max);
   const topCategories = summary.top_payment_categories ?? [];
+  // 서울시 원문(AREA_CMRCL_LVL)은 "한산한"처럼 접미사 없이 오는 경우와 이미
+  // "한산한 시간대"로 오는 경우가 둘 다 있어(관광공사 앱 표기 기준) 중복으로
+  // 안 붙게 방어한다.
+  const commercialLevelLabel = summary.commercial_level
+    ? summary.commercial_level.endsWith("시간대")
+      ? summary.commercial_level
+      : `${summary.commercial_level} 시간대`
+    : null;
 
   const hasPopulation = Boolean(
     populationRange || summary.peak_forecast_hour_label || summary.top_age_label,
   );
-  const hasCommercial = Boolean(summary.commercial_level || paymentRange || topCategories.length);
+  // 실시간 혼잡도(concentration) 질문에는 상권 값이 같은 citydata 응답에 실려
+  // 와도 보여주지 않는다 — 물어본 것은 인구 혼잡도이지 상권이 아니다. 반대로
+  // 실시간 상권 질문의 카드에는 인구 값을 계속 함께 싣는다(그쪽은 요청 범위 밖).
+  const hasCommercial =
+    card.question_type === "realtime_commercial" &&
+    Boolean(commercialLevelLabel || topCategories.length);
   if (!hasPopulation && !hasCommercial) return null;
 
   return (
@@ -121,62 +128,35 @@ export function SeoulRealtimeSummarySection({ card }: { card: InfoPlaceCardData 
       {hasCommercial && (
         <section className="border-t border-border px-4 py-3">
           <div className="flex items-baseline justify-between gap-2">
-            <h3 className="text-sm font-bold text-ink">실시간 상권</h3>
+            <h3 className="text-sm font-bold text-ink">실시간 인기 상권</h3>
             {summary.commercial_observed_at && (
               <span className="text-[10px] text-muted">{summary.commercial_observed_at} 기준</span>
             )}
           </div>
-          <p className="mt-0.5 text-[11px] text-muted">신한카드 내국인 결제 기준 · 서울시 제공</p>
-          <div className="mt-2 flex gap-2">
-            {paymentRange && (
-              <SummaryTile
-                label="최근 10분 매출 총액"
-                value={paymentRange}
-                caption={
-                  summary.payment_count != null ? `${summary.payment_count}건` : null
-                }
-              />
-            )}
-            {summary.commercial_level && (
-              <div className="min-w-0 flex-1 rounded-xl border border-border/70 bg-chip px-3 py-2.5">
-                <p className="text-[11px] font-medium text-muted">상권 활동</p>
-                <CongestionLevelChip
-                  level={summary.commercial_level}
-                  size="md"
-                  className="mt-1.5"
-                />
-              </div>
-            )}
-          </div>
-          {topCategories.length > 0 && (
-            <div className="mt-2">
-              <p className="text-[11px] font-medium text-muted">
-                최근 10분 매출 Top {topCategories.length} 업종
-              </p>
-              <ol className="mt-1.5 space-y-1.5">
-                {topCategories.map((category, index) => {
-                  const amount = formatPaymentAmountRange(
-                    category.payment_amount_min,
-                    category.payment_amount_max,
-                  );
-                  return (
+          {(commercialLevelLabel || topCategories.length > 0) && (
+            // 상권 활동 단계와 Top 3를 두 줄로 나누지 않고 한 줄에 같이 둔다 —
+            // 칩은 폭 고정(shrink-0), Top 3는 남는 폭을 균등히 나눠(flex-1)
+            // 길면 그 칸 안에서만 말줄임하고 전체 업종명은 title 툴팁으로 남긴다.
+            <div className="mt-2 flex items-center gap-2 overflow-hidden">
+              {commercialLevelLabel && (
+                <CongestionLevelChip level={commercialLevelLabel} className="shrink-0" />
+              )}
+              {topCategories.length > 0 && (
+                <ol className="flex min-w-0 flex-1 items-center gap-x-2 text-[11px]">
+                  {topCategories.map((category, index) => (
                     <li
                       key={category.label}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-chip px-2.5 py-1.5 text-xs"
+                      className={`min-w-0 flex-1 truncate ${
+                        index > 0 ? "border-l border-border pl-2" : ""
+                      }`}
+                      title={category.label}
                     >
-                      <span className="flex min-w-0 items-center gap-2">
-                        <RankBadge rank={index + 1} />
-                        <span className="truncate font-semibold text-ink">{category.label}</span>
-                      </span>
-                      {amount ? (
-                        <span className="shrink-0 font-bold text-label">{amount}</span>
-                      ) : (
-                        <CongestionLevelChip level={category.activity_level} />
-                      )}
+                      <span className="font-bold text-ink">{index + 1}위</span>{" "}
+                      <span className="text-muted">{shortCategoryLabel(category.label)}</span>
                     </li>
-                  );
-                })}
-              </ol>
+                  ))}
+                </ol>
+              )}
             </div>
           )}
         </section>
