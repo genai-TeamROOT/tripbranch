@@ -315,7 +315,18 @@ export function ChatMessageList({
 
           if (message.type === "user_text") {
             return (
-              <div key={message.id} className="flex justify-end">
+              /*
+               * **묻고 나서 한 번 쉰다.** 목록의 공통 간격(24px) 위에 16px을 더해
+               * 사용자 발화와 그 답변 사이만 40px로 벌린다(2026-09-07).
+               *
+               * 나머지 사이를 다 같이 넓히는 것으로는 이 자리가 해결되지 않았다 —
+               * 한 턴은 "질문 하나 + 답변·피드백·후속 질문"이라, 간격이 균일하면
+               * 어디서 턴이 갈리는지가 사라져 대화가 한 줄기로 흐른다. 여기가
+               * 턴의 경계이므로 여기만 더 받는다.
+               *
+               * 값은 32·40px을 실제로 렌더해 보고 골랐다.
+               */
+              <div key={message.id} className="flex justify-end pb-4">
                 <p className="max-w-[80%] rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm text-white">
                   {message.text}
                 </p>
