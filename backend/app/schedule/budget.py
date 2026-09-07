@@ -33,7 +33,7 @@ from app.schedule.duration import (
     VisitDurationPolicy,
     policy_for,
 )
-from app.schedule.schemas import SchedulePlanningRequest
+from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schedule.timeline import (
     FALLBACK_TRAVEL_MINUTES,
     estimated_travel_minutes,
@@ -238,7 +238,7 @@ def walkable_cluster_size(request: SchedulePlanningRequest, *, within_min: int) 
 
 
 def cluster_ids_in_order(
-    request: SchedulePlanningRequest,
+    request: SchedulePlanningRequest | SchedulePartialFillRequest,
     place_ids: Sequence[str],
     *,
     within_min: int = SCHEDULE_CLUSTER_WALK_MINUTES,

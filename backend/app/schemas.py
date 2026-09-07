@@ -249,6 +249,16 @@ class ScheduleItem(BaseModel):
     # image_url이 404일 때 대신 그릴 주소. 추천 카드와 같은 규칙이다
     # (RecommendationItem.image_url_fallback 주석 참고).
     image_url_fallback: str | None = None
+    # 도보로 이어지는 묶음 번호. 같은 번호끼리 한 묶음으로 그린다. (TP-243)
+    #
+    # **항목 배열 모양은 그대로 두고 번호만 얹는다.** saved_schedules.payload와
+    # session_messages에 옛 모양 스냅샷이 쌓여 있어서 복원 경로가 두 모양을 다
+    # 읽어야 하기 때문이다 — 그룹 구조로 바꾸지 않기로 이미 결정했다. 기본값이
+    # None이라 이 필드가 없는 옛 스냅샷도 그대로 읽힌다.
+    #
+    # 묶음 판정은 `budget.cluster_ids_in_order()`가 방문 순서의 이웃 구간만 보고
+    # 한다. 묶이지 않은 자리는 None이다.
+    cluster_id: int | None = None
     travel_to_next_mode: TravelMode | None = None
     # 그 값이 경로 API 실측인지(True) 직선거리 추정인지(False).
     #

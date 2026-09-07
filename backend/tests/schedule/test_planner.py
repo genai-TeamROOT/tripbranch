@@ -2549,3 +2549,55 @@ class Test붙어_있는_곳은_짧게_머문다:
         assert len(result.items) == 3
         assert [item.estimated_duration_min for item in result.items] == [60, 60, 60]
         assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_묶음_번호가_항목에_실린다(self) -> None:
+        """화면이 한 묶음으로 그리려면 번호가 항목에 있어야 한다(TP-243).
+
+        배열 모양은 그대로 두고 번호만 얹는다 — 저장된 옛 스냅샷을 읽는 경로가
+        두 모양을 다 읽지 않아도 되게 하려는 것이다.
+        """
+
+        result = await plan_schedule(self._request(0.15), _RecordingLLM(self._plan()))
+
+        assert [item.cluster_id for item in result.items] == [1, 1, 1, 1]
+
+    @pytest.mark.asyncio
+    async def test_묶이지_않으면_번호가_없다(self) -> None:
+        """**대조군.** 번호가 늘 실리면 화면이 안 붙은 곳까지 묶어서 그린다."""
+
+        result = await plan_schedule(self._request(0.5), _RecordingLLM(self._plan()))
+
+        assert [item.cluster_id for item in result.items] == [None, None, None]
+
+    @pytest.mark.asyncio
+    async def test_부분_재편성에도_번호가_실린다(self) -> None:
+        """같은 일정을 어떤 턴에서 보느냐에 따라 화면이 다르게 그리면 안 된다.
+
+        **체류시간은 여전히 안 건드린다** — 유지하기로 한 자리의 60분이 그대로다
+        (`_draft_from_schedule_item()`의 "그대로 뒀다는 약속"). 이 턴에서 바뀌는
+        것은 표시용 묶음 번호뿐이다.
+        """
+
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        llm = _RecordingFillLLM(
+            SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)])
+        )
+        place_ids = ["place-1", "place-2", "place-3"]
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={
+                (a, b): 0.15
+                for index, a in enumerate(place_ids)
+                for b in place_ids[index + 1 :]
+            },
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.cluster_id for item in result.items] == [1, 1, 1]
+        assert [item.estimated_duration_min for item in result.items] == [60, 60, 60]

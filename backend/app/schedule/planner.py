@@ -353,6 +353,7 @@ def _compose_items(
     timeline: Timeline,
     candidates: Iterable[RecommendationItem],
     travel_edges: Sequence[ScheduleTravelEdge] = (),
+    cluster_ids: Sequence[int | None] | None = None,
 ) -> list[ScheduleItem]:
     """초안 + 시간표를 화면에 실리는 ScheduleItem으로 합친다.
 
@@ -370,9 +371,14 @@ def _compose_items(
 
     candidates에 없는 place_id(부분 재편성의 pinned 항목)는 운영시간 정보 자체가
     없으므로 검사하지 않고 그대로 둔다 — 기존 동작과 같다.
+
+    묶음 번호(`cluster_ids`)는 **화면이 한 묶음으로 그리기 위한 표시값이다**
+    (TP-243). 체류시간 완화와 자리 수 계산은 이미 앞에서 끝났고 여기서는 그
+    결과를 실어 보내기만 한다.
     """
 
     display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
+    clusters = list(cluster_ids) if cluster_ids is not None else [None] * len(drafts)
     # 후보가 이미 들고 있는 사진을 그대로 옮긴다. 운영시간 표기와 같은 방식이라
     # 후보에 없는 pinned 항목은 자연히 None이 된다.
     image_by_place = {c.place_id: (c.image_url, c.image_url_fallback) for c in candidates}
@@ -402,6 +408,7 @@ def _compose_items(
                 image_url_fallback=image_url_fallback,
                 travel_to_next_mode=None if edge is None else edge.mode,
                 travel_to_next_measured=edge is not None and is_measured(edge),
+                cluster_id=clusters[index],
             )
         )
     return items
@@ -947,7 +954,13 @@ async def plan_schedule(
         clustered_flags=clustered_flags,
     )
 
-    items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)
+    items = _compose_items(
+        drafts,
+        timeline,
+        resolved_request.candidates,
+        travel.edges,
+        cluster_ids=cluster_ids,
+    )
     return ScheduleResult(
         items=items,
         total_duration_min=timeline.total_duration_min,
@@ -1028,7 +1041,18 @@ async def _pinned_only_result(
         candidates=request.candidates,
     )
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, request.candidates, travel.edges),
+        # 유지만 하는 턴에도 묶음 번호는 실어 보낸다(TP-243) — 화면이 같은 일정을
+        # 어떤 턴에서 보느냐에 따라 다르게 그리면 안 된다. **체류시간은 여전히
+        # 건드리지 않는다**(`_draft_from_schedule_item()`의 "그대로 뒀다는 약속").
+        items=_compose_items(
+            drafts,
+            timeline,
+            request.candidates,
+            travel.edges,
+            cluster_ids=cluster_ids_in_order(
+                request, [draft.place_id for draft in drafts]
+            ),
+        ),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
@@ -1226,7 +1250,15 @@ async def plan_partial_schedule(
     route_summary = f"{kept}곳은 그대로 두고 {replaced}곳만 다른 곳으로 바꿨어요."
 
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),
+        items=_compose_items(
+            drafts,
+            timeline,
+            resolved_request.candidates,
+            travel.edges,
+            cluster_ids=cluster_ids_in_order(
+                request, [draft.place_id for draft in drafts]
+            ),
+        ),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
