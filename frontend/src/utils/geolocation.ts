@@ -48,10 +48,12 @@ function testDeviceLocation(): string | null {
 
 function locationErrorMessage(error: GeolocationPositionError, isEn: boolean) {
   if (error.code === error.TIMEOUT) {
+    /* 전에는 macOS 설정 경로를 그대로 적었는데, 안드로이드·윈도우·iOS 사용자에게는
+       존재하지 않는 경로다(TP-250). 어디서 켜는지는 기기마다 다르므로 무엇을
+       확인해야 하는지만 말한다. */
     return isEn
-      ? "The location request timed out. Please check that browser location permission is on in macOS Settings > Privacy & Security > Location Services."
-      : "위치 조회 시간이 초과됐어요. macOS 설정 > 개인정보 보호 및 보안 > 위치 서비스에서 " +
-          "브라우저 권한이 켜져 있는지 확인해주세요.";
+      ? "We couldn't get your location. Please check the location permission in your browser."
+      : "위치를 확인하지 못했어요. 브라우저의 위치 권한을 확인해주세요.";
   }
   if (error.code === error.PERMISSION_DENIED) {
     return isEn
