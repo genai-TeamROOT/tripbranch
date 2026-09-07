@@ -337,6 +337,33 @@ test("sends the search center picked on the location screen with the chat reques
   expect(requestBody.selected_search_center).toBe("안국역");
 });
 
+test("개발자 채팅도 위치 설정을 요청에 싣는다", async () => {
+  /* 두 화면은 같은 session_id를 쓴다. 개발자 화면만 위치를 안 실어 보내면, 그 화면에서
+     한 턴을 돌릴 때 서버에 쌓인 위치 조건이 바뀌고 사용자 화면으로 돌아가면 다시
+     채워지는 일이 반복된다 — 같은 설정으로 물어도 검색 기준이 GPS·검색지·출발지로
+     갈려 보이던 원인이었다(2026-09-08, 원인 추적에 몇 시간이 들었다).
+
+     구조를 합치는 것은 TP-255에서 하고, 여기서는 두 화면이 같은 값을 보내는지만
+     못 박는다. 이 테스트가 없으면 한쪽만 고쳐도 아무것도 깨지지 않는다. */
+  setLocationOrigin("화곡역");
+  setLocationCenter("서대문역");
+  window.history.pushState({}, "", "/dev-chat");
+
+  render(<App />);
+  const composer = await screen.findByPlaceholderText("추가 조건을 입력해 주세요");
+  await userEvent.type(composer, "카페 추천해줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/chat"))).toBe(true),
+  );
+  const chatCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/chat"));
+  const requestBody = JSON.parse(String(chatCall?.[1]?.body));
+  expect(requestBody.selected_current_location).toBe("화곡역");
+  expect(requestBody.selected_search_center).toBe("서대문역");
+});
+
 /*
  * 발화가 정한 위치를 응답에서 되돌려 받는 흐름. 배선이 한쪽뿐이던 시절에는 위치
  * 설정 화면에서 고른 값만 발화에 실려 나가고, 발화가 그 위치를 바꿔도 저장소는

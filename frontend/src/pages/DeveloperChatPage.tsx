@@ -25,10 +25,16 @@ import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
+import { useLocationSettings } from "../hooks/useLocationSettings";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
+import {
+  loadLocationSettings,
+  syncLocationSettingsFromConditions,
+} from "../state/locationSettings";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
+import { buildLocationChipModel } from "../utils/locationChip";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 import {
@@ -81,6 +87,7 @@ interface PendingLocationRefresh {
 export function DeveloperChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
+  const locationSettings = useLocationSettings();
   const handlePhotoSelect = usePhotoSimilarSearch();
   const navigate = useNavigate();
   const text = DEV_CHAT_TEXT[state.language];
@@ -228,6 +235,14 @@ export function DeveloperChatPage() {
             language: state.language,
             session_id: state.session_id,
             device_location: deviceLocation,
+            /* 사용자 화면과 같은 값을 싣는다. 예전에는 기기 좌표만 보냈는데, 두
+               화면이 같은 session_id를 쓰기 때문에 여기서 한 턴을 돌리면 서버에
+               쌓인 위치 조건이 이 화면 기준으로 바뀌고 사용자 화면으로 돌아가면
+               다시 채워지는 일이 반복됐다. 같은 설정으로 물어도 검색 기준이
+               GPS·검색지·출발지로 갈려 보이던 원인의 상당 부분이 이것이었다
+               (2026-09-08). 구조를 합치는 것은 TP-255에서 한다. */
+            selected_search_center: loadLocationSettings().center,
+            selected_current_location: loadLocationSettings().origin,
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
@@ -269,14 +284,18 @@ export function DeveloperChatPage() {
               return;
             }
             if (event.type === "location_resolved") {
-              /* 개발자 화면은 위치 설정을 쓰지 않는다 — 발화 요청에
-                 selected_search_center를 싣지도 않고 상단 위치 칩도 없다.
-                 반영할 곳이 없으니 흘려보내되, 분기는 둬야 아래 done 처리가
-                 이 이벤트까지 done으로 좁혀 읽지 않는다. */
+              /* 사용자 화면과 같이 반영한다. 발화가 위치를 바꾸면("쌍문동에
+                 갈만한곳") 그 결과가 위치 설정으로 돌아와야 다음 턴도 같은 곳을
+                 본다 — 이 화면만 안 받으면 두 화면이 서로 다른 위치를 들고
+                 같은 세션을 건드린다. */
+              syncLocationSettingsFromConditions(event.data);
               return;
             }
             if (event.type === "error") throw new ApiError(event.data);
             const response = event.data.response;
+            /* location_resolved가 오지 않은 경로(단발 응답)를 위해 여기서도 한 번
+               맞춘다 — 사용자 화면과 같다. 같은 값이면 아무것도 쓰지 않는다. */
+            syncLocationSettingsFromConditions(response.state.user_conditions);
             const elapsedMsClient = performance.now() - startedAt;
             if (receivedStreamResult || receivedStreamMessage) {
               dispatch({
@@ -433,6 +452,20 @@ export function DeveloperChatPage() {
     await requestSend(text);
   }
 
+  /* 사용자 화면의 상단 위치 칩과 같은 모델을 쓴다. 다만 AppHeader를 그대로 못
+     가져온다 — 그쪽은 사이드바 컨텍스트(AppShellContext)를 요구하고 이 화면은 3분할
+     레이아웃이라 그 껍데기가 없다. 그래서 값만 같은 것을 쓰고 표시는 이 화면 말투로
+     그린다.
+
+     아래 TurnLocationBadges와 역할이 다르다 — 저것은 **직전 턴이 실제로 쓴** 위치고,
+     이 칩은 **지금 설정돼 있어 다음 발화에 실려 갈** 위치다. 둘이 어긋나는 순간이
+     바로 발화가 설정을 이긴 턴이라, 나란히 보여야 판단이 된다. */
+  const locationChip = buildLocationChipModel(
+    locationSettings,
+    state.interpreted_conditions?.location_query ?? null,
+    Boolean(state.device_location),
+  );
+
   return (
     <main className="grid h-screen grid-cols-[380px_minmax(0,1fr)_480px] overflow-hidden bg-white text-gray-950 dark:bg-gray-950 dark:text-gray-50">
       <ApiExchangePanel
@@ -447,10 +480,25 @@ export function DeveloperChatPage() {
 
       <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
         <header className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl font-bold">TripBranch</h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
               {text.subtitle}
+            </p>
+            <p
+              className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400"
+              title={locationChip.description}
+            >
+              <span className="text-gray-400 dark:text-gray-500">다음 발화에 실릴 위치 </span>
+              {locationChip.kind === "single"
+                ? locationChip.name
+                : `${locationChip.origin} → ${locationChip.center}`}
+              {locationChip.isDeviceLocationPending && (
+                /* 이름은 "현재 위치"인데 좌표를 아직 못 받은 상태. 사용자 화면은
+                   회색 점으로 말하는데 여기는 글자로 말한다. 이 구분이 없으면
+                   좌표 없이 보낸 턴을 "GPS로 찾았겠지"로 잘못 읽는다. */
+                <span className="text-gray-400 dark:text-gray-500"> (좌표 없음)</span>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-2">
