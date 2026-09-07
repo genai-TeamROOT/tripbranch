@@ -57,7 +57,7 @@ const HOME_TEXT = {
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
-    requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
+    requestError: "입력을 처리하지 못했어요.",
   },
   en: {
     headline: { lead: "Did your ", accent: "plans", tail: " change suddenly?" },
@@ -79,7 +79,7 @@ const HOME_TEXT = {
     start: "Start recommendations",
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
-    requestError: "We couldn’t process your request. Please try again.",
+    requestError: "We couldn’t process your request.",
   },
 } as const;
 
@@ -263,9 +263,14 @@ export function HomePage() {
         if (wasCancelledByUser(controller)) dispatch({ type: "CANCEL_CHAT_TURN" });
         return;
       }
+      /* 이 시점에는 이미 /chat으로 넘어가 있다(위 navigate). 그래서 홈의 배너가
+         아니라 대화 안에 남긴다 — 사용자가 보고 있는 화면이 거기다. */
       dispatch({
-        type: "SET_ERROR",
-        payload: error instanceof ApiError ? error.message : text.requestError,
+        type: "FAIL_TURN",
+        payload: {
+          message: error instanceof ApiError ? error.message : text.requestError,
+          retryInput: trimmed,
+        },
       });
     } finally {
       endChatRequest(controller);
@@ -291,6 +296,7 @@ export function HomePage() {
   const locationChip = buildLocationChipModel(
     locationSettings,
     state.interpreted_conditions?.location_query ?? null,
+    Boolean(state.device_location),
   );
 
   return (

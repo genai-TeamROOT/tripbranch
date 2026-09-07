@@ -16,6 +16,7 @@ import {
   Clock,
   CreditCard,
   Dog,
+  Crosshair,
   Eye,
   Loader2,
   type LucideIcon,
@@ -29,10 +30,11 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
-import { useTripState } from "../../state/TripContext";
+import { useTripDispatch, useTripState } from "../../state/TripContext";
+import { getBrowserDeviceLocation } from "../../utils/geolocation";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
 import {
@@ -195,6 +197,61 @@ function DetailText({ fieldKey, value }: { fieldKey: keyof InfoPlaceCard; value:
   );
 }
 
+/*
+ * 값이 길면 두 줄까지만 보이고 "더 보기"로 편다(TP-248).
+ *
+ * **자르는 것이 아니라 접는다.** line-clamp는 화면에서만 가리고 글자는 그대로 두므로
+ * 낭독기와 브라우저 찾기는 전문을 본다. 무장애 정보는 사람이 그것을 믿고 실제로
+ * 이동하는 값이라, 어느 조각도 없어지면 안 된다.
+ *
+ * 두 줄인 이유는 접히는 것이 소수여야 "더 보기"가 신호로 읽히기 때문이다. 편의시설
+ * 값의 평균은 21자이고 60자를 넘는 것은 3%다(2026-09-07 실측) — 한 줄로 접으면
+ * 아홉 줄 중 절반에 버튼이 붙어 오히려 지저분해진다.
+ */
+function CollapsibleDetailText({
+  fieldKey,
+  value,
+  isEn,
+}: {
+  fieldKey: keyof InfoPlaceCard;
+  value: string;
+  isEn: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const clampRef = useRef<HTMLDivElement | null>(null);
+
+  /* 글자 수가 아니라 실제로 넘쳤는지로 판정한다. 화면 폭과 언어에 따라 같은 값도
+     줄 수가 달라져서, 글자 수로 재면 어떤 화면에서는 버튼이 헛돈다. */
+  useEffect(() => {
+    const node = clampRef.current;
+    if (!node || expanded) return;
+    const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [value, expanded]);
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <div ref={clampRef} className={expanded ? undefined : "line-clamp-2"}>
+        <DetailText fieldKey={fieldKey} value={value} />
+      </div>
+      {/* 편 뒤에는 넘침 판정이 거짓이 되므로(가릴 것이 없다) expanded도 함께 본다. */}
+      {(overflowing || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((previous) => !previous)}
+          className="text-xs font-medium text-brand underline underline-offset-2"
+        >
+          {expanded ? (isEn ? "Show less" : "접기") : isEn ? "Show more" : "더 보기"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface OperatingHoursRow {
   period: string;
   hours: string;
@@ -288,15 +345,7 @@ function InfoRow({
 }
 
 /** Figma InfoTable(29:203) — 아이콘+라벨 / 값을 한 줄씩, 실선으로 나눈다. */
-function InfoTable({
-  card,
-  item,
-  isEn,
-}: {
-  card: InfoPlaceCard;
-  item?: RecommendationItem;
-  isEn: boolean;
-}) {
+function InfoTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean }) {
   const visibleEntries = INFO_TABLE_FIELDS.filter(([key]) => {
     const value = card[key];
     return typeof value === "string" && value.trim();
@@ -310,18 +359,10 @@ function InfoTable({
           const value = card[key];
           if (typeof value !== "string") return null;
           const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
-          const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
           return (
-            <InfoRow
-              key={key}
-              icon={Icon}
-              label={isEn ? labelEn : labelKo}
-              emphasized={Boolean(statusSuffix)}
-            >
+            <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
               {operatingHours ? (
                 <OperatingHoursRows rows={operatingHours} />
-              ) : statusSuffix ? (
-                `${value} · ${statusSuffix}`
               ) : (
                 <DetailText fieldKey={key} value={value} />
               )}
@@ -357,7 +398,7 @@ function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean
             if (typeof value !== "string") return null;
             return (
               <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
-                <DetailText fieldKey={key} value={value} />
+                <CollapsibleDetailText fieldKey={key} value={value} isEn={isEn} />
               </InfoRow>
             );
           })}
@@ -505,12 +546,11 @@ function InfoTableSkeleton({
  */
 function QuickInfoPreview({ item, isEn }: { item?: RecommendationItem; isEn: boolean }) {
   if (!item?.operating_hours_display) return null;
-  const statusSuffix = operatingStatusSuffix(item, isEn);
+  /* 영업 상태는 장소명 옆으로 옮겼다(TP-248). 여기서도 말하면 같은 값이 한 화면에
+     두 번 나온다. */
   return (
-    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
-      {statusSuffix
-        ? `${item.operating_hours_display} · ${statusSuffix}`
-        : item.operating_hours_display}
+    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"}>
+      {item.operating_hours_display}
     </InfoRow>
   );
 }
@@ -1391,6 +1431,37 @@ export function RecommendationDetailPreviewModal({
   onClose,
 }: RecommendationDetailPreviewModalProps) {
   const { device_location, language } = useTripState();
+  const dispatch = useTripDispatch();
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  /*
+   * 길찾기를 열려고 좌표만 받는다. 위치 설정 화면의 "현재 위치 사용"과 달리
+   * 출발지(locationSettings.origin)는 건드리지 않는다 — 저쪽 버튼의 뜻은 "내 위치는
+   * 기기 좌표다"이지만 이 버튼의 뜻은 "길찾기를 열겠다"뿐이다.
+   */
+  async function handleUseCurrentLocation() {
+    if (isLocating) return;
+    setIsLocating(true);
+    setLocationError(null);
+    try {
+      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true, language });
+      dispatch({
+        type: "SET_DEVICE_LOCATION",
+        payload: { deviceLocation, capturedAt: Date.now() },
+      });
+    } catch (error) {
+      setLocationError(
+        error instanceof Error
+          ? error.message
+          : language === "en"
+            ? "Couldn't get your location."
+            : "위치를 가져오지 못했어요.",
+      );
+    } finally {
+      setIsLocating(false);
+    }
+  }
   const isEn = language === "en";
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
@@ -1410,6 +1481,8 @@ export function RecommendationDetailPreviewModal({
     placeNameProp ??
     (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
+  /* 장소명 옆 배지. item이 없는 경로(INFO·사진 검색)에서는 null이라 안 그려진다. */
+  const operatingStatus = operatingStatusSuffix(item, isEn);
   /*
    * 사진이 아예 없을 것을 **열 때 이미 안다.**
    *
@@ -1440,10 +1513,13 @@ export function RecommendationDetailPreviewModal({
    * 그 전에는 열 지도가 없다. 추천 카드에는 좌표가 없어서(RecommendationItem에
    * 필드 자체가 없다) 미리 채울 수도 없다.
    *
-   * 현재 위치가 없으면 자리도 잡지 않는다. 그 경우 상세가 와도 버튼은 끝내
-   * 나오지 않으므로, 자리를 잡으면 영영 못 누르는 버튼을 보여주게 된다.
+   * 현재 위치가 없으면 길찾기 대신 위치를 받는 자리로 쓴다. 예전에는 자리째
+   * 숨겼는데, 그러면 사용자는 버튼이 왜 없는지 알 방법이 없었다 — 위치 칩에는
+   * 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
+   * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
    */
-  const showRouteFooter = Boolean(device_location) && (canRoute || isLoading);
+  const needsDeviceLocation = !device_location;
+  const showRouteFooter = needsDeviceLocation || canRoute || isLoading;
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
@@ -1567,7 +1643,11 @@ export function RecommendationDetailPreviewModal({
           </button>
         </div>
 
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
+        {/* overscroll-contain: 여기가 끝에 닿아도 스크롤을 바깥으로 넘기지 않는다.
+            없으면 상세를 맨 위까지 올린 뒤 더 올릴 때 뒤의 채팅이 함께 밀린다 —
+            이 모달은 document.body로 포털되고 #root는 min-height라, 대화가 길면
+            문서 자체가 스크롤되기 때문이다. */}
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5">
           {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
               PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
               화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
@@ -1650,9 +1730,23 @@ export function RecommendationDetailPreviewModal({
                 {item.category}
               </span>
             )}
-            <h2 id="recommendation-detail-title" className="text-xl font-bold text-ink">
-              {title}
-            </h2>
+            {/*
+              지금 열려 있는지는 이 화면에서 가장 먼저 보고 싶은 값이라 장소명 옆에
+              둔다(TP-248). 전에는 운영시간 줄의 접미사로 붙어 있어서 아래 표까지
+              내려가야 보였다.
+
+              `operatingStatusSuffix()`가 근거가 있을 때만 값을 낸다는 규칙은 그대로다
+              — INFO·사진 검색 경로에는 remaining_minutes가 없어 "영업 중"을 지어내면
+              안 된다. 그때는 배지 자체를 그리지 않는다.
+            */}
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <h2 id="recommendation-detail-title" className="text-xl font-bold text-ink">
+                {title}
+              </h2>
+              {operatingStatus && (
+                <span className="shrink-0 text-sm font-bold text-brand">{operatingStatus}</span>
+              )}
+            </div>
             {item && (
               <div className="flex items-center gap-1.5 text-sm text-muted">
                 <MapPin size={13} />
@@ -1675,7 +1769,7 @@ export function RecommendationDetailPreviewModal({
           ) : (
             detailCard && (
               <>
-                <InfoTable card={detailCard} item={item} isEn={isEn} />
+                <InfoTable card={detailCard} isEn={isEn} />
                 <AccessibilityTable card={detailCard} isEn={isEn} />
               </>
             )
@@ -1752,6 +1846,46 @@ export function RecommendationDetailPreviewModal({
 
         {showRouteFooter && (
           <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
+            {needsDeviceLocation ? (
+              /* 길찾기는 "출발=현재 위치, 도착=이 좌표"라 현재 위치 없이는 열 수 없다.
+                 숨기는 대신 여기서 바로 받게 한다 — 화면을 옮기지 않아도 된다.
+                 위치 설정 화면과 달리 출발지는 건드리지 않는다. 저쪽 버튼의 뜻은
+                 "내 위치는 기기 좌표다"라 출발지를 비우지만, 이 버튼의 뜻은
+                 "길찾기를 열겠다"뿐이라 사용자가 정해둔 출발지를 바꾸면 안 된다. */
+              <div className="flex flex-col gap-2">
+                {/* 왜 필요한지를 말한다. "현재 위치가 필요해요"만 쓰면, 화면 위
+                    칩에는 위치가 떠 있는 터라 "이미 아는 거 아니야?"가 된다.
+                    출발지라는 말은 쓰지 않는다 — 여기서는 개념을 꺼낼 필요 없이
+                    "지금 계신 곳"이 곧바로 읽힌다. */}
+                <p className="text-center text-xs text-muted">
+                  {isEn
+                    ? "We need to know where you are to show directions."
+                    : "지금 계신 곳을 알아야 길을 안내할 수 있어요."}
+                </p>
+                {locationError && (
+                  <p role="alert" className="text-center text-xs text-rust">
+                    {locationError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  disabled={isLocating}
+                  onClick={() => void handleUseCurrentLocation()}
+                  className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep disabled:opacity-50"
+                >
+                  <Crosshair size={18} className={isLocating ? "animate-pulse" : undefined} />
+                  {/* 위치 설정 화면과 같은 말을 쓴다 — 한쪽에서 배운 뜻이 다른
+                      쪽에서도 통해야 한다. */}
+                  {isLocating
+                    ? isEn
+                      ? "Getting your location…"
+                      : "위치를 가져오는 중이에요…"
+                    : isEn
+                      ? "Use my current location"
+                      : "현재 위치 사용"}
+                </button>
+              </div>
+            ) : (
             <button
               type="button"
               disabled={!canRoute}
@@ -1773,6 +1907,7 @@ export function RecommendationDetailPreviewModal({
               <Navigation size={18} />
               {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}
             </button>
+            )}
           </div>
         )}
       </motion.section>

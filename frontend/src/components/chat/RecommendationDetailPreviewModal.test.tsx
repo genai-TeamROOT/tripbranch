@@ -273,7 +273,10 @@ it("로딩 중에도 이미 아는 운영시간을 먼저 보여준다", async (
 
   /* 상세 조회 응답이 오기 전인데도 카드가 이미 아는 값이 바로 보인다. */
   expect(await screen.findByText("운영시간")).toBeInTheDocument();
-  expect(screen.getByText("09:00~18:00 · 영업 중")).toBeInTheDocument();
+  expect(screen.getByText("09:00~18:00")).toBeInTheDocument();
+  /* 영업 상태는 장소명 옆에 있다(TP-248) — 운영시간 줄에 붙어 있으면 아래 표까지
+     내려가야 보인다. */
+  expect(screen.getByText("영업 중")).toBeInTheDocument();
 
   resolveDetail({
     status: "success",
@@ -282,8 +285,10 @@ it("로딩 중에도 이미 아는 운영시간을 먼저 보여준다", async (
   });
 
   /* 상세 조회 값이 도착하면 그쪽으로 바뀐다 — 미리보기 값이 남아 있지 않는다. */
-  await screen.findByText("매일 10:00~19:00 · 영업 중");
-  expect(screen.queryByText("09:00~18:00 · 영업 중")).not.toBeInTheDocument();
+  await screen.findByText("매일 10:00~19:00");
+  expect(screen.queryByText("09:00~18:00")).not.toBeInTheDocument();
+  /* 영업 상태는 장소명 옆에 그대로 있다. */
+  expect(screen.getByText("영업 중")).toBeInTheDocument();
 });
 
 /* INFO·사진 검색 경로는 item 자체가 없어 참고할 값이 없다 — 근거 없이 지어내지 않는다. */
@@ -638,6 +643,58 @@ it("무장애 값이 있으면 편의시설 구획으로 그린다", async () =>
   expect(within(section).queryByText("수유·기저귀")).not.toBeInTheDocument();
 });
 
+/*
+ * 접기(TP-248). jsdom에는 레이아웃이 없어 line-clamp가 실제로 자르는지는 잴 수 없다.
+ * 대신 **언제 "더 보기"를 띄울지**를 못 박는다 — 짧은 값에도 버튼이 붙으면 아홉 줄
+ * 대부분에 쓸모없는 버튼이 생긴다.
+ *
+ * 넘침 판정은 scrollHeight > clientHeight로 하므로, 그 두 값을 심어 상황을 만든다.
+ */
+function stubOverflow(scrollHeight: number, clientHeight: number) {
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    value: scrollHeight,
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    value: clientHeight,
+  });
+}
+
+it("편의시설 값이 두 줄을 넘으면 더 보기로 접는다", async () => {
+  stubOverflow(60, 20);
+  renderModal(
+    card({
+      accessible_parking: "장애인 전용 주차장 있음 (1.학여울역 1번출구 기준 왼쪽 3대)",
+    }),
+  );
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  /* 넘침 판정이 effect에서 상태를 바꾸므로 리렌더를 기다린다 — 동기 조회로 찾으면
+     간헐적으로 렌더 전에 본다. */
+  const more = await within(section).findByRole("button", { name: "더 보기" });
+
+  /* 접혀 있어도 글자는 DOM에 전부 있다 — 자르는 것이 아니라 가리는 것이다.
+     낭독기와 브라우저 찾기는 전문을 본다. */
+  expect(
+    within(section).getByText("장애인 전용 주차장 있음 (1.학여울역 1번출구 기준 왼쪽 3대)"),
+  ).toBeInTheDocument();
+
+  await userEvent.click(more);
+  expect(within(section).getByRole("button", { name: "접기" })).toBeInTheDocument();
+});
+
+it("두 줄에 들어가는 값에는 더 보기를 붙이지 않는다", async () => {
+  /* jsdom 기본값은 둘 다 0이라 넘치지 않는 상황이 된다. */
+  stubOverflow(0, 0);
+  renderModal(card({ accessible_restroom: "1층" }));
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  expect(within(section).queryByRole("button", { name: "더 보기" })).not.toBeInTheDocument();
+});
+
 it("무장애 값이 하나도 없으면 편의시설 구획을 숨긴다", async () => {
   renderModal(card({ parking: "가능 (240대)" }));
 
@@ -736,11 +793,14 @@ it("운영시간을 이미 알면 스켈레톤을 한 줄 적게 그린다", asy
     />,
   );
 
-  await screen.findByText("09:00~18:00 · 영업 중");
+  await screen.findByText("09:00~18:00");
   expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
   // 운영시간 줄과 스켈레톤이 같은 상자에 있어야 값이 도착할 때 상자 수가 안 바뀐다.
   const skeletonBox = screen.getByRole("status");
-  expect(within(skeletonBox).getByText("09:00~18:00 · 영업 중")).toBeInTheDocument();
+  expect(within(skeletonBox).getByText("09:00~18:00")).toBeInTheDocument();
+  /* 영업 상태는 그 상자 밖, 장소명 옆이다. */
+  expect(within(skeletonBox).queryByText("영업 중")).not.toBeInTheDocument();
+  expect(screen.getByText("영업 중")).toBeInTheDocument();
 });
 
 it("상세가 도착하면 스켈레톤이 사라지고 실제 표가 남는다", async () => {
@@ -816,17 +876,56 @@ it("상세가 도착하면 길찾기 버튼이 활성화된다", async () => {
   );
 });
 
-/* 현재 위치가 없으면 상세가 와도 버튼은 끝내 안 나온다 — 자리를 잡으면 영영 못
-   누르는 버튼을 보여주게 된다. */
-it("현재 위치가 없으면 로딩 중에도 버튼 자리를 잡지 않는다", async () => {
-  mockedFetch.mockReturnValue(new Promise(() => {}));
+/*
+ * 현재 위치가 없으면 길찾기 대신 위치를 받는 자리로 쓴다.
+ *
+ * 예전에는 자리째 숨겼는데, 그러면 사용자는 버튼이 왜 없는지 알 수 없었다 — 위치
+ * 칩에는 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
+ * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
+ */
+it("현재 위치가 없으면 길찾기 대신 위치 사용을 보여준다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
   render(
     <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
     { wrapper: TripProvider },
   );
 
-  await screen.findByRole("status");
+  expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
+  expect(screen.getByText("지금 계신 곳을 알아야 길을 안내할 수 있어요.")).toBeInTheDocument();
+  /* 좌표가 없으면 길찾기는 열 수 없으므로 그 버튼은 없다. */
   expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
+});
+
+it("현재 위치 사용을 누르면 좌표를 받아 길찾기 버튼으로 바뀐다", async () => {
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((success: PositionCallback) =>
+        success({
+          coords: { latitude: 37.5665, longitude: 126.978 },
+          timestamp: Date.now(),
+        } as GeolocationPosition),
+      ),
+    },
+  });
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await user.click(await screen.findByRole("button", { name: "현재 위치 사용" }));
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  await waitFor(() => expect(button).toBeEnabled());
 });
 
 /*

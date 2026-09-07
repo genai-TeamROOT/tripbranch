@@ -55,7 +55,7 @@ const baseCard: InfoPlaceCardData = {
 };
 
 describe("SeoulRealtimeSummarySection", () => {
-  it("인구·상권 값을 서울시 원문 구간 그대로 보여준다", () => {
+  it("인구 값을 서울시 원문 구간 그대로 보여준다", () => {
     render(<SeoulRealtimeSummarySection card={baseCard} />);
 
     // 만 명이 넘으면 좁은 타일에서 잘리지 않게 만 단위로 접는다.
@@ -65,21 +65,44 @@ describe("SeoulRealtimeSummarySection", () => {
     expect(screen.getByText("29.0%")).toBeInTheDocument();
     // 단계는 회색 캡션이 아니라 색 칩으로 보여준다.
     expect(screen.getByText("붐빔")).toHaveClass("bg-rust-tint");
-    // 원 단위 결제 금액은 만원으로 접는다.
-    expect(screen.getByText("790~800만원")).toBeInTheDocument();
-    expect(screen.getByText("최근 10분 매출 총액")).toBeInTheDocument();
-    expect(screen.getByText("신한카드 내국인 결제 기준 · 서울시 제공")).toBeInTheDocument();
-    expect(screen.getByText("329건")).toBeInTheDocument();
   });
 
-  it("결제 금액 상위 업종을 서울시가 준 순서·업종 그대로 싣는다", () => {
-    render(<SeoulRealtimeSummarySection card={baseCard} />);
+  it("상권 활동 단계를 '~ 시간대'로 붙여 하나로 보여준다(매출 총액·건수는 뺀다)", () => {
+    render(
+      <SeoulRealtimeSummarySection card={{ ...baseCard, question_type: "realtime_commercial" }} />,
+    );
 
-    // 업종 행은 지역 총액의 내역이라 같은 10분 창이다 — 기준을 제목에 밝힌다.
-    expect(screen.getByText("최근 10분 매출 Top 2 업종")).toBeInTheDocument();
-    // 여행지 카드에 안 어울려도 "의료 · 병원"을 걸러내지 않는다.
-    expect(screen.getByText("의료 · 병원")).toBeInTheDocument();
-    expect(screen.getByText("130~140만원")).toBeInTheDocument();
+    expect(screen.getByText("보통 시간대")).toBeInTheDocument();
+    expect(screen.queryByText("790~800만원")).not.toBeInTheDocument();
+    expect(screen.queryByText("329건")).not.toBeInTheDocument();
+    expect(screen.queryByText("최근 10분 매출 총액")).not.toBeInTheDocument();
+    expect(screen.queryByText("상권 활동")).not.toBeInTheDocument();
+  });
+
+  it("결제 상위 업종을 세로 목록이 아니라 한 줄에 순위·업종명만 나란히 보여준다(금액은 뺀다)", () => {
+    const { container } = render(
+      <SeoulRealtimeSummarySection card={{ ...baseCard, question_type: "realtime_commercial" }} />,
+    );
+
+    // 세로로 쌓인 카드 목록(li마다 줄바꿈)이 아니라 한 줄(flex row)이다.
+    const list = container.querySelector("ol");
+    expect(list).toHaveClass("flex");
+    // 한 줄에 다 넣어야 해서 대분류 접두어("의료 · ", "음식·음료 · ")는 빼고
+    // 소분류만 보여준다 — 전체 원문은 title 툴팁으로 남긴다.
+    expect(screen.getByText("병원")).toBeInTheDocument();
+    expect(screen.getByText("기타요식")).toBeInTheDocument();
+    expect(screen.getByTitle("의료 · 병원")).toBeInTheDocument();
+    expect(screen.queryByText("130~140만원")).not.toBeInTheDocument();
+  });
+
+  it("상권 활동 단계 칩과 Top 3 목록을 같은 한 줄에 함께 둔다", () => {
+    render(
+      <SeoulRealtimeSummarySection card={{ ...baseCard, question_type: "realtime_commercial" }} />,
+    );
+
+    const row = screen.getByText("보통 시간대").closest("div");
+    // 칩과 목록(ol)이 형제로 같은 행 안에 있다 — 두 줄로 갈라지지 않는다.
+    expect(row?.querySelector("ol")).not.toBeNull();
   });
 
   it("상권 미제공 지역(경복궁 등)은 상권 구획을 통째로 감춘다", () => {
@@ -87,6 +110,7 @@ describe("SeoulRealtimeSummarySection", () => {
       <SeoulRealtimeSummarySection
         card={{
           ...baseCard,
+          question_type: "realtime_commercial",
           seoul_realtime_summary: {
             population_min: 2500,
             population_max: 3000,
@@ -100,14 +124,24 @@ describe("SeoulRealtimeSummarySection", () => {
     // 만 명 미만이면 접지 않고 원래 자릿수를 그대로 보여준다.
     expect(screen.getByText("2,500~3,000명")).toBeInTheDocument();
     expect(screen.getByText("실시간 인구")).toBeInTheDocument();
-    expect(screen.queryByText("실시간 상권")).not.toBeInTheDocument();
+    expect(screen.queryByText("실시간 인기 상권")).not.toBeInTheDocument();
   });
 
-  it("실시간 상권 질문에도 같은 블록을 싣는다", () => {
+  it("실시간 상권(realtime_commercial) 질문에는 상권 구획을 싣는다", () => {
     render(
       <SeoulRealtimeSummarySection card={{ ...baseCard, question_type: "realtime_commercial" }} />,
     );
-    expect(screen.getByText("실시간 상권")).toBeInTheDocument();
+    expect(screen.getByText("실시간 인기 상권")).toBeInTheDocument();
+  });
+
+  it("실시간 혼잡도(concentration) 질문에는 같은 응답에 상권 값이 실려 와도 상권 구획을 감춘다", () => {
+    render(<SeoulRealtimeSummarySection card={{ ...baseCard, question_type: "concentration" }} />);
+
+    // 인구 구획은 그대로 뜬다 — 물어본 것과 관련 없는 상권 구획만 뺀다.
+    expect(screen.getByText("실시간 인구")).toBeInTheDocument();
+    expect(screen.queryByText("실시간 인기 상권")).not.toBeInTheDocument();
+    expect(screen.queryByText("보통 시간대")).not.toBeInTheDocument();
+    expect(screen.queryByText("병원")).not.toBeInTheDocument();
   });
 
   it("서울시 데이터를 조회하지 않는 질문 유형에는 렌더링하지 않는다", () => {

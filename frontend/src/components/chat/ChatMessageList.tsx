@@ -11,6 +11,7 @@
  * 이유가 없다(개발자용 정보가 실서비스 화면에 새던 문제를 정리함).
  */
 
+import { CircleAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { AgentProgressEvent, ChatMessage, Language, TravelOriginToggle } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
@@ -190,6 +191,51 @@ function TimeSeparator({
   );
 }
 
+/*
+ * 실패한 턴을 알리는 가운데 정렬 한 줄(TP-245).
+ *
+ * TimeSeparator와 같은 모양과 색을 쓴다. 대화 흐름에 끼어드는 줄이라 붉은색은
+ * 시선을 너무 끌었다 — 실패 사실만 조용히 알리고, 다음 행동은 "다시 시도"가 맡는다.
+ *
+ * 대신 아이콘을 하나 붙인다. 색까지 같으면 시각 구분선과 생김새가 완전히 같아져
+ * 훑어볼 때 둘이 구분되지 않는다.
+ */
+function TurnErrorNotice({
+  text,
+  retryInput,
+  onRetry,
+  language,
+}: {
+  text: string;
+  retryInput?: string;
+  onRetry?: (input: string) => void;
+  language: Language;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1 py-1">
+      {/* 이 저장소가 오류에 쓰는 role 그대로다(ErrorBanner·ChatComposer·LocationPage). */}
+      <p
+        role="alert"
+        className="flex items-start justify-center gap-1 text-center text-xs text-muted"
+      >
+        {/* 문구가 이미 실패를 말하므로 낭독에서는 뺀다. 여러 줄로 접힐 때 첫 줄에
+            맞도록 위로 붙인다. */}
+        <CircleAlert size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
+        {text}
+      </p>
+      {retryInput && onRetry && (
+        <button
+          type="button"
+          onClick={() => onRetry(retryInput)}
+          className="rounded-full px-2 py-0.5 text-xs font-medium text-ink underline underline-offset-2 transition-colors hover:bg-chip"
+        >
+          {language === "en" ? "Try again" : "다시 시도"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
@@ -200,6 +246,8 @@ interface ChatMessageListProps {
   onRelaxRadius: () => void;
   onSelectClarificationOption: (optionId: string, label: string) => void;
   onSelectFollowUpSuggestion: (suggestion: string) => void;
+  /** 실패한 턴의 "다시 시도". 안 넘기면 버튼 자체를 그리지 않는다. */
+  onRetryTurn?: (input: string) => void;
   onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   locationRefresh: {
     ageMinutes: number | null;
@@ -220,6 +268,7 @@ export function ChatMessageList({
   onRelaxRadius,
   onSelectClarificationOption,
   onSelectFollowUpSuggestion,
+  onRetryTurn,
   onToggleTravelOrigin,
   locationRefresh,
   progress,
@@ -236,6 +285,18 @@ export function ChatMessageList({
                 key={message.id}
                 at={message.at}
                 partial={message.partial}
+                language={language}
+              />
+            );
+          }
+
+          if (message.type === "turn_error") {
+            return (
+              <TurnErrorNotice
+                key={message.id}
+                text={message.text}
+                retryInput={message.retryInput}
+                onRetry={onRetryTurn}
                 language={language}
               />
             );

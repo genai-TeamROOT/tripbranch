@@ -959,9 +959,19 @@ def _format_estimated_duration_label(total_minutes: int) -> str:
     270 - 180 = 90으로 앞뒤가 맞는다. 한쪽만 올리면 여기가 어긋난다.
     """
 
+    return _format_duration_label(_round_up_display_minutes(total_minutes))
+
+
+def _round_up_display_minutes(total_minutes: int) -> int:
+    """`_format_estimated_duration_label()`이 실제로 말하게 되는 분.
+
+    부족분·초과분을 이 값에서 뺄 수 있게 따로 뺐다 — 원본값에서 빼면 화면에
+    적힌 두 수의 뺄셈이 맞지 않는다(149분 편성을 180분 요청에 대고 말하면
+    총합은 "2시간 30분"인데 부족분은 원본 31분을 올려 "40분"이 된다).
+    """
+
     step = _DURATION_DISPLAY_ROUNDING_MIN
-    rounded = -(-total_minutes // step) * step
-    return _format_duration_label(rounded)
+    return -(-total_minutes // step) * step
 
 
 def _topic_particle(word: str) -> str:
@@ -1118,6 +1128,48 @@ def _with_over_budget_note(
     )
 
 
+def _with_under_budget_note(
+    message: str, schedule: ScheduleResult, time_available_min: int | None
+) -> str:
+    """편성이 요청한 시간보다 허용 오차 이상 짧으면 그 사실을 덧붙인다.
+
+    **왜 필요한가.** TP-238이 판정을 셋으로 갈랐는데(`within`·`over`·`under`)
+    말풍선에는 `over` 문장만 있었다. 그래서 3시간을 요청했는데 1곳 120분이
+    나오면 화면이 `"2시간 코스를 짜봤어요"`라고만 말하고 **왜 짧은지 한마디도
+    하지 않는다.** 2026-09-07 브라우저 실측에서 첫 턴이 그 모양이었다.
+
+    `over`와 대칭이지만 **사용자가 할 수 있는 일이 다르다.** 길면 뺄 곳을 고르면
+    되지만, 짧은 것은 사용자가 손쓸 데가 없다 — 그래서 요청을 되묻지 않고 사실만
+    말한다.
+
+    **원인은 자리를 다 썼는지로 가른다.** 항목 수가 상한과 같으면 더 넣을 자리가
+    없었다는 뜻이고(후보가 모자랐거나 예산이 그만큼밖에 허락하지 않았다), 그때만
+    "더 찾지 못했다"고 말할 수 있다. 상한이 남아 있는데 짧으면 그건 LLM이 덜 고른
+    것이라 원인을 단정하지 않는다 — 말할 것이 없어서 짧은 것과 말하지 않는 것은
+    다르다.
+
+    `item_capacity`가 없는 옛 스냅샷은 원인 문장을 붙이지 않는다.
+    """
+
+    if time_available_min is None:
+        return message
+    if _budget_status(schedule, time_available_min) is not ScheduleBudgetStatus.UNDER:
+        return message
+    # **표시한 총합에서 뺀다.** 원본값에서 빼면 화면의 두 수가 어긋난다 —
+    # `_round_up_display_minutes()` docstring에 예가 있다.
+    short_min = time_available_min - _round_up_display_minutes(schedule.total_duration_min)
+    if short_min <= 0:
+        return message
+    note = (
+        f"{message} {_format_duration_label(time_available_min)}으로 말씀하셨는데 "
+        f"{_format_duration_label(short_min)}쯤 짧아요."
+    )
+    capacity = schedule.item_capacity
+    if capacity is not None and len(schedule.items) >= capacity:
+        return f"{note} 근처에서 넣을 만한 곳을 더 찾지 못했어요."
+    return note
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -1137,7 +1189,9 @@ def compose_schedule_message(
     계산값을 보여준다. 그 판정은 planner가 내려 ScheduleResult에 싣는다(TP-238).
 
     총 소요시간이 요청한 활동 가능 시간을 허용 오차 이상으로 넘으면 한 문장을
-    덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다.
+    덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다. 반대로 허용 오차
+    이상으로 짧으면 그 사실도 말한다(`_with_under_budget_note()`) — 판정이
+    셋인데 문장이 하나뿐이면 `under`인 턴이 조용히 짧게 나간다.
 
     보관함과 편성 결과가 어긋난 부분은 사유별로 문장을 덧붙인다(SCHEDULE-12,
     TP-223, `_with_saved_place_notes()`) — 담아둔 장소를 조용히 빠뜨리거나 담지
@@ -1155,14 +1209,14 @@ def compose_schedule_message(
         duration_label = _format_duration_label(time_available_min)
     else:
         duration_label = _format_estimated_duration_label(schedule.total_duration_min)
-    return _with_saved_place_notes(
-        _with_over_budget_note(
-            f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}",
-            schedule,
-            time_available_min,
-        ),
+    headline = f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
+    # 판정은 셋 중 하나라 두 함수가 동시에 붙지 않는다 — 각자 자기 판정만 본다.
+    with_budget_note = _with_under_budget_note(
+        _with_over_budget_note(headline, schedule, time_available_min),
         schedule,
+        time_available_min,
     )
+    return _with_saved_place_notes(with_budget_note, schedule)
 
 
 async def compose_chat_message(

@@ -227,6 +227,99 @@ describe("PopulationForecastBars 세로축", () => {
     // 붐빔 = CONGESTION_HEIGHT 92.
     expect((bars[0] as HTMLElement).style.height).toBe("92%");
   });
+
+  it("안내 아이콘은 어긋남과 무관하게 항상 뜨고, 무엇을 보여주는 데이터인지·출처·기준 시각을 말한다", () => {
+    render(<PopulationForecastBars card={scaledCard} />);
+
+    const icon = screen.getByLabelText("인구 혼잡도 예측 안내");
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    fireEvent.click(icon);
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "향후 12시간 인구 혼잡도 예측이에요 (9월 5일 16:25 기준, 통신 데이터 기반 · 서울시 실시간 도시데이터).",
+    );
+    // 어긋나지 않는 카드(scaledCard)라 어긋남 설명은 안 붙는다.
+    expect(tooltip).not.toHaveTextContent("계산 기준이 달라서");
+  });
+
+  it("바로 옆 막대끼리 인구 수와 혼잡도 단계 순서가 실제로 어긋나면, 같은 아이콘 툴팁에 그 설명을 덧붙인다", () => {
+    // 난지한강공원 실측(2026-09-05)과 같은 모양 — 예측(17시)이 현재보다 인구는
+    // 적은데 단계는 더 높다(약간 붐빔 3,250명 → 붐빔 2,750명).
+    const invertedCard: InfoPlaceCardData = {
+      ...scaledCard,
+      population_current_level: "약간 붐빔",
+      seoul_realtime_summary: { population_min: 3000, population_max: 3500 },
+      population_forecasts: [
+        {
+          forecast_at: "2026-09-05 17:00",
+          congestion_level: "붐빔",
+          population_min: 2500,
+          population_max: 3000,
+        },
+      ],
+    };
+    render(<PopulationForecastBars card={invertedCard} />);
+
+    fireEvent.click(screen.getByLabelText("인구 혼잡도 예측 안내"));
+    const tooltip = screen.getByRole("tooltip");
+    // 항상 뜨는 안내와 어긋남 설명이 같은 툴팁 안에 함께 있다.
+    expect(tooltip).toHaveTextContent("향후 12시간 인구 혼잡도 예측이에요");
+    expect(tooltip).toHaveTextContent(
+      "'현재'와 '예측' 혼잡도는 계산 기준이 달라서, 막대 높이(인구 수)와 색(혼잡도 단계)이 안 맞아 보일 때가 있어요.",
+    );
+  });
+
+  it("그래프가 뭘 보여주는지·출처는 아이콘 안내에만 있고, 별도 캡션으로 반복하지 않는다", () => {
+    render(<PopulationForecastBars card={scaledCard} />);
+    expect(screen.queryByText(/통신 데이터 기반/)).not.toBeInTheDocument();
+  });
+});
+
+describe("PopulationForecastBars 시각 라벨", () => {
+  // 실측(2026-09-07)에서 모바일 카드 폭(~340px)에 재현한 것과 같은 12슬롯 예측.
+  const twelveHourCard: InfoPlaceCardData = {
+    ...baseCard,
+    population_current_level: "여유",
+    population_observed_at: "9월 7일 11:00",
+    seoul_realtime_summary: { population_min: 1500, population_max: 2000 },
+    population_forecasts: Array.from({ length: 12 }, (_, index) => ({
+      forecast_at: `2026-09-07 ${String(12 + index).padStart(2, "0")}:00`,
+      congestion_level: "여유",
+      population_min: 1000,
+      population_max: 1200,
+    })),
+  };
+
+  it("라벨을 막대 칸에 가두지 않는다 — 잘리지 않고 전체 글자가 그대로 나온다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+
+    // 좁은 칸 안에 truncate로 가두던 이전 방식이면 "현재"·"12시"가 "현...",
+    // "1..."로 잘렸다(2026-09-07 모바일 375px 실측). 이제는 칸 폭과 무관하게
+    // 글자 전체가 그대로 나와야 한다.
+    expect(screen.getByText("현재")).toBeInTheDocument();
+    expect(screen.getByText("14시")).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\.$/)).not.toBeInTheDocument();
+  });
+
+  it("'현재' 바로 다음 칸에는 라벨을 보여주지 않는다 — 붙어 보이지 않게 3칸 간격을 지킨다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+
+    // "현재"(0번) 다음 예측은 12시(1번 칸)인데, 이 칸은 라벨을 보여주지 않는다
+    // — 안 그러면 "현재"와 곧바로 붙어 보인다(2026-09-07 실측으로 확인).
+    expect(screen.queryByText("12시")).not.toBeInTheDocument();
+    expect(screen.queryByText("13시")).not.toBeInTheDocument();
+    // 3칸 간격(현재=0, 14시=3, 17시=6, 20시=9, 23시=12)으로만 보여준다.
+    for (const label of ["14시", "17시", "20시", "23시"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it("라벨 span에 더는 칸 폭 제약(truncate)을 걸지 않는다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+    expect(screen.getByText("현재")).not.toHaveClass("truncate");
+    expect(screen.getByText("14시")).not.toHaveClass("truncate");
+  });
 });
 
 describe("CongestionLevelChip", () => {

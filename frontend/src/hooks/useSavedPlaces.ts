@@ -18,10 +18,25 @@ import type { SavedPlaceItem, SavedPlacesResponse } from "../types";
 /** 매 렌더 새 배열을 만들지 않도록 고정한다 — useMemo 의존성이 흔들린다. */
 const EMPTY_ITEMS: SavedPlaceItem[] = [];
 
+/*
+ * 담기와 빼기를 갈라 말한다(TP-250). 하나로 뭉치면 방금 무엇을 눌렀는지와 문구가
+ * 어긋난다 — 빼기에 실패했는데 "담지 못했어요"가 뜨는 식이다.
+ *
+ * 실패하면 카드가 원래대로 되돌아가므로(아래 낙관적 갱신), 문구가 그 되돌아감이
+ * 무엇이었는지를 설명하는 자리가 된다.
+ */
 const FAILURE_TEXT = {
-  ko: "보관함을 업데이트하지 못했어요. 잠시 후 다시 시도해주세요.",
-  en: "We couldn't update your saved places. Please try again.",
+  save: {
+    ko: "보관함에 담지 못했어요.",
+    en: "We couldn't save this place.",
+  },
+  remove: {
+    ko: "보관함에서 빼지 못했어요.",
+    en: "We couldn't remove this place.",
+  },
 } as const;
+
+type SavedPlacesAction = keyof typeof FAILURE_TEXT;
 
 export function useSavedPlaces() {
   const state = useTripState();
@@ -68,7 +83,11 @@ export function useSavedPlaces() {
   }, [items.length, refresh]);
 
   const commit = useCallback(
-    async (optimistic: SavedPlaceItem[], call: () => Promise<SavedPlacesResponse>) => {
+    async (
+      action: SavedPlacesAction,
+      optimistic: SavedPlaceItem[],
+      call: () => Promise<SavedPlacesResponse>,
+    ) => {
       const previous = items;
       dispatch({ type: "SET_SAVED_PLACES", payload: { items: optimistic } });
       try {
@@ -77,8 +96,10 @@ export function useSavedPlaces() {
       } catch (error) {
         dispatch({ type: "SET_SAVED_PLACES", payload: { items: previous } });
         dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof ApiError ? error.message : FAILURE_TEXT[language],
+          type: "FAIL_TURN",
+          payload: {
+            message: error instanceof ApiError ? error.message : FAILURE_TEXT[action][language],
+          },
         });
       }
     },
@@ -90,6 +111,7 @@ export function useSavedPlaces() {
       if (!sessionId) return;
       if (savedPlaceIds.has(place.place_id)) {
         await commit(
+          "remove",
           items.filter((item) => item.place_id !== place.place_id),
           () => removeSavedPlace(sessionId, place.place_id),
         );
@@ -109,7 +131,7 @@ export function useSavedPlaces() {
           saved_at: new Date().toISOString(),
         },
       ];
-      await commit(optimistic, () => savePlace(sessionId, place.place_id));
+      await commit("save", optimistic, () => savePlace(sessionId, place.place_id));
     },
     [commit, items, savedPlaceIds, sessionId],
   );
@@ -118,6 +140,7 @@ export function useSavedPlaces() {
     async (placeId: string) => {
       if (!sessionId) return;
       await commit(
+        "remove",
         items.filter((item) => item.place_id !== placeId),
         () => removeSavedPlace(sessionId, placeId),
       );

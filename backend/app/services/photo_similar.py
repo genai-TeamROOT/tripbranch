@@ -396,7 +396,9 @@ async def _resolve_center(
     if query.latitude is None or query.longitude is None:
         raise AppError(
             code="location_required",
-            message="어디서 찾을까요? 지역을 알려주시거나 위치를 켜 주세요.",
+            # 두 가지를 나란히 시키면 무엇을 먼저 할지 안 보인다. 위치 켜기는 화면
+            # 버튼이 맡으므로 여기서는 하나만 묻는다(TP-250).
+            message="어디 근처에서 찾을까요?",
             status_code=422,
             retryable=True,
         )

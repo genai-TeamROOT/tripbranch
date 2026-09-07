@@ -1630,5 +1630,12 @@ class TestSchedulePlanInstructionMatchesPlannerCapacity:
         with patch.object(RealGeminiProvider, "_call_structured", _capture):
             await provider.generate_schedule_plan(request)
 
-        assert "3개 이상 5개 이하" in captured["instruction"]
+        # **예전에는 "3개 이상 5개 이하"였다.** 시간을 말하지 않은 요청의 상한이
+        # 상수 (3, 5)에서 기본 예산 240분 유도로 바뀌었다 — 관광지 5곳이면
+        # 60x3 + 15x2 = 210 <= 270이라 3곳까지고, 4곳은 285분이라 막힌다.
+        # 이 클래스의 계약은 "프롬프트가 planner와 같은 범위를 본다"이므로
+        # 값이 바뀌어도 계약은 그대로다.
+        assert "2개 이상 3개 이하" in captured["instruction"]
+        # 프롬프트 문구 자체는 건드리지 않았다 — 기본값 240이 이 안내와
+        # 일관되기 때문이다(PROMPT_VERSION 올릴 것 없음).
         assert "3~4시간 내외로 구성" in captured["instruction"]

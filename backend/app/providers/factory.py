@@ -187,9 +187,15 @@ def get_gemini_audio_transcriber() -> GeminiAudioTranscriber:
     만들어 채팅으로 보내지 않고 기능 미사용 오류를 명시적으로 반환한다.
     """
     if settings.resolved_llm_provider != "real":
+        # 원인은 로그로만 남긴다. 사용자는 "Gemini 실연동 환경"이 무엇인지도, 어떻게
+        # 바꾸는지도 알 수 없다 — 화면에는 지금 할 수 있는 일만 말한다(TP-250).
+        logger.warning(
+            "음성 입력 요청을 거절했습니다: LLM provider가 real이 아닙니다(현재 %s).",
+            settings.resolved_llm_provider,
+        )
         raise AppError(
             code="voice_input_unavailable",
-            message="음성 입력은 Gemini 실연동 환경에서 사용할 수 있어요.",
+            message="지금은 음성 입력을 쓸 수 없어요. 텍스트로 입력해주세요.",
             status_code=503,
             retryable=False,
             provider="Gemini",

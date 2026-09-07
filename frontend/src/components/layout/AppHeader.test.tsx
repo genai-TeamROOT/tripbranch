@@ -28,8 +28,11 @@ interface ShellValue {
 
 /* 화면이 넘기는 것과 같은 경로로 모델을 만든다 — 손으로 지어내면 조립 규칙이
    바뀌어도 이 테스트는 그대로 통과한다. null이면 pill 자체가 없는 경우다. */
-function chipFor(settings: { origin: string | null; center: string | null } | null) {
-  return settings === null ? null : buildLocationChipModel(settings);
+function chipFor(
+  settings: { origin: string | null; center: string | null } | null,
+  hasDeviceLocation = true,
+) {
+  return settings === null ? null : buildLocationChipModel(settings, null, hasDeviceLocation);
 }
 
 /*
@@ -56,7 +59,7 @@ afterEach(() => {
 function renderHeader(
   settings: { origin: string | null; center: string | null } | null,
   shell?: Partial<ShellValue>,
-  extra?: { routes?: ReactNode; keepStrip?: boolean },
+  extra?: { routes?: ReactNode; keepStrip?: boolean; hasDeviceLocation?: boolean },
 ) {
   const value: ShellValue | undefined = shell
     ? { drawerOpen: false, openDrawer: vi.fn(), closeDrawer: vi.fn(), ...shell }
@@ -65,7 +68,10 @@ function renderHeader(
   return render(
     <AppShellProvider value={value}>
       <MemoryRouter initialEntries={["/chat"]}>
-        <AppHeader location={chipFor(settings)} keepStrip={extra?.keepStrip} />
+        <AppHeader
+          location={chipFor(settings, extra?.hasDeviceLocation ?? true)}
+          keepStrip={extra?.keepStrip}
+        />
         {extra?.routes}
       </MemoryRouter>
     </AppShellProvider>,
@@ -228,4 +234,26 @@ test("보여줄 것이 아무것도 없으면 데스크톱에서 헤더를 접�
   const { container } = renderHeader(null);
 
   expect(container.firstElementChild).toHaveClass("md:hidden");
+});
+
+/*
+ * 좌표를 아직 못 받았을 때의 점.
+ *
+ * 깜빡이는 초록은 "지금 GPS를 쓰는 중"이라는 뜻이라, 좌표가 없는데 붙으면 화면이
+ * 사실과 다른 말을 한다. 실제로 생기는 상태다 — 새 대화(RESET)는 좌표만 지우고
+ * 출발지·검색지는 sessionStorage에 남는다.
+ */
+test("좌표를 못 받았으면 깜빡이는 초록 점을 붙이지 않는다", () => {
+  const { container } = renderHeader({ origin: null, center: "광화문역" }, undefined, {
+    hasDeviceLocation: false,
+  });
+
+  expect(container.querySelector(".animate-ping")).toBeNull();
+  expect(container.querySelector(".bg-muted")).not.toBeNull();
+});
+
+test("좌표가 있으면 깜빡이는 초록 점을 붙인다", () => {
+  const { container } = renderHeader({ origin: null, center: "광화문역" });
+
+  expect(container.querySelector(".animate-ping")).not.toBeNull();
 });
