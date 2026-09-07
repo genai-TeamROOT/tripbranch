@@ -57,7 +57,7 @@ const HOME_TEXT = {
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
-    requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
+    requestError: "입력을 처리하지 못했어요.",
   },
   en: {
     headline: { lead: "Did your ", accent: "plans", tail: " change suddenly?" },
@@ -79,7 +79,7 @@ const HOME_TEXT = {
     start: "Start recommendations",
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
-    requestError: "We couldn’t process your request. Please try again.",
+    requestError: "We couldn’t process your request.",
   },
 } as const;
 

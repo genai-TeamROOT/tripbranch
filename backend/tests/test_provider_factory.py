@@ -93,13 +93,18 @@ def test_get_gemini_audio_transcriber_uses_dedicated_default_model(monkeypatch) 
     assert captured["model_name"] == "gemini-3.5-flash-lite"
 
 
-def test_get_gemini_audio_transcriber_requires_real_llm(monkeypatch) -> None:
+def test_get_gemini_audio_transcriber_requires_real_llm(monkeypatch, caplog) -> None:
     monkeypatch.setattr(factory, "settings", Settings(_env_file=None, provider_mode="fake"))
 
-    with pytest.raises(AppError, match="Gemini 실연동") as raised:
+    with caplog.at_level(logging.WARNING), pytest.raises(AppError) as raised:
         factory.get_gemini_audio_transcriber()
 
     assert raised.value.code == "voice_input_unavailable"
+    # 사용자에게는 지금 할 수 있는 일만 말한다. "Gemini 실연동 환경"은 사용자가
+    # 무엇인지도 어떻게 바꾸는지도 알 수 없는 서버 설정이라, 원인은 로그로만 남긴다.
+    assert "Gemini" not in raised.value.message
+    assert "텍스트로 입력" in raised.value.message
+    assert "real이 아닙니다" in caplog.text
 
 
 def test_get_walking_route_provider_defaults_to_fake(monkeypatch) -> None:

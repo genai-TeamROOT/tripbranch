@@ -1,14 +1,19 @@
 /*
- * 역할: 채팅 입력창 왼쪽의 "+" 버튼. 누르면 사진/갤러리 메뉴가 열리고, 고른 사진을
+ * 역할: 채팅 입력창 왼쪽의 "+" 버튼. 누르면 카메라/갤러리 메뉴가 열리고, 고른 사진을
  * 부모에게 넘긴다.
  * 입력: 사진 선택 콜백과 외부 요청 중 여부.
  * 출력: "+" 버튼과 메뉴. 사진을 고르면 onSelect로 File을 넘긴다.
  * 호출 시점: ChatComposer가 입력창을 렌더링할 때.
  *
- * "사진"과 "갤러리"를 나눈 것은 input 하나의 capture 속성 차이다 — capture가 있으면
+ * "카메라"와 "갤러리"를 나눈 것은 input 하나의 capture 속성 차이다 — capture가 있으면
  * 카메라가 바로 열리고, 없으면 갤러리(파일 선택)가 열린다. 데스크톱 브라우저는
  * capture를 무시하고 둘 다 파일 선택으로 떨어지므로, 메뉴는 그대로 두되 동작이
  * 같아지는 것을 정상으로 본다.
+ *
+ * 앞 항목의 이름이 "사진"이었는데, 아이콘만 카메라라 무엇이 다른지 이름에서 읽히지
+ * 않았다. "사진"이 더 포괄적으로 읽혀 오히려 갤러리 쪽으로 착각하기 쉽다 — 실제로
+ * 2026-09-07에 이것 때문에 카메라 기능이 없는 줄 알고 카드를 새로 만들었다가
+ * 닫았다(TP-249). 하는 일 그대로 "카메라"로 부른다(TP-250).
  */
 
 import { Camera, ImageIcon, Plus } from "lucide-react";
@@ -88,7 +93,7 @@ export function PhotoInputButton({ disabled = false, onSelect, onError }: PhotoI
             onClick={() => cameraRef.current?.click()}
             className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
           >
-            <Camera size={16} className="text-brand" aria-hidden /> 사진
+            <Camera size={16} className="text-brand" aria-hidden /> 카메라
           </button>
           <button
             type="button"
