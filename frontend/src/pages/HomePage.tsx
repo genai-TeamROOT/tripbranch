@@ -56,7 +56,6 @@ const HOME_TEXT = {
     placeholder: "트리비에게 물어보세요",
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
-    locationError: "위치를 가져오지 못했어요.",
     requestError: "입력을 처리하지 못했어요.",
   },
   en: {
@@ -78,7 +77,6 @@ const HOME_TEXT = {
     placeholder: "Ask Trivi",
     start: "Start recommendations",
     developer: "Start in developer view",
-    locationError: "We couldn’t get your location.",
     requestError: "We couldn’t process your request.",
   },
 } as const;
@@ -120,14 +118,31 @@ export function HomePage() {
     setIsLoading(true);
     setErrorMessage(null);
 
-    let deviceLocation: string;
-    try {
-      // 사용자 동작 직후 호출해야 브라우저가 위치 권한 팝업을 정상적으로 표시한다.
-      deviceLocation = await getBrowserDeviceLocation();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : text.locationError);
-      setIsLoading(false);
-      return;
+    /*
+     * **출발지를 정해 뒀으면 GPS를 부르지 않는다.** 예전에는 무조건 물어보고 실패하면
+     * 대화 자체를 막았다. 그런데 위치 설정에서 안국역을 골라 둔 사용자에게 기기 좌표는
+     * 필요 없다 — 서버가 이동시간을 재는 출발점은 그 이름이고(D-067), 이름을 좌표로
+     * 바꾸는 일은 백엔드가 한다. 필요도 없는 권한 팝업을 띄우고, 거절하면 아무것도 못
+     * 하게 만들던 자리였다.
+     *
+     * **GPS 실패가 곧 중단이 되지 않게 한다.** 좌표 없이 보내면 백엔드가 어디서
+     * 찾을지 되묻는다(location_required). 예전에는 여기서 막혀 사용자가 할 수 있는
+     * 일이 없었다 — 거절했으면 되묻기에 답해서 계속 갈 수 있어야 한다.
+     */
+    const settings = loadLocationSettings();
+    let deviceLocation: string | null = state.device_location;
+    let capturedAt: number | null = null;
+    if (!settings.origin && !deviceLocation) {
+      try {
+        // 사용자 동작 직후 호출해야 브라우저가 위치 권한 팝업을 정상적으로 표시한다.
+        deviceLocation = await getBrowserDeviceLocation();
+        capturedAt = Date.now();
+      } catch {
+        /* 좌표 없이 보낸다. 화면에 오류를 띄우지 않는 이유는 답변이 곧 되묻기로
+           이어져, 오류 문구와 되묻기가 겹쳐 뜨면 무엇을 하라는 건지 흐려지기
+           때문이다. */
+        deviceLocation = null;
+      }
     }
 
     // 위치 확보 직후 채팅 화면으로 이동한다. 응답을 기다리는 동안 A→B→C→D 처리
@@ -137,8 +152,8 @@ export function HomePage() {
       type: "START_CHAT_TURN",
       payload: {
         userInput: trimmed,
-        deviceLocation,
-        deviceLocationCapturedAt: Date.now(),
+        deviceLocation: deviceLocation ?? undefined,
+        deviceLocationCapturedAt: capturedAt ?? undefined,
       },
     });
     navigate(targetPath);
@@ -160,8 +175,8 @@ export function HomePage() {
           language: state.language,
           session_id: null,
           device_location: deviceLocation,
-          selected_search_center: loadLocationSettings().center,
-          selected_current_location: loadLocationSettings().origin,
+          selected_search_center: settings.center,
+          selected_current_location: settings.origin,
         },
         (event) => {
           if (event.type === "progress") {
