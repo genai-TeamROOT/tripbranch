@@ -116,8 +116,6 @@ export function SavedScheduleList() {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-bold text-label">{isEn ? "Saved schedules" : "저장한 일정"}</h2>
-
       <div className="flex h-11 items-center gap-2 rounded-xl border border-border bg-white px-3">
         <Search size={15} className="shrink-0 text-muted" />
         <input

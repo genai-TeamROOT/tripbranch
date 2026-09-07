@@ -331,7 +331,9 @@ test("저장한 일정이 있으면 목록 화면(짠 일정 없음/있음)에�
     vi.fn(async () => Response.json(saved)),
   );
 
-  const listed = () => screen.findByRole("heading", { name: "저장한 일정" });
+  /* 목록 구획이 떴는지는 검색창으로 본다 — 상단 "저장한 일정" 표제는
+     2026-09-07에 없앴다. */
+  const listed = () => screen.findByRole("textbox", { name: "저장한 일정 검색" });
 
   // ① 짠 일정이 없을 때
   const empty = render(
@@ -398,8 +400,8 @@ test("저장한 일정을 못 불러오면 목록 없이 오류와 '목록으로
   expect(
     await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요."),
   ).toBeInTheDocument();
-  expect(screen.queryByRole("heading", { name: "저장한 일정" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "저장한 일정 검색" })).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "목록으로" }));
-  expect(await screen.findByRole("heading", { name: "저장한 일정" })).toBeInTheDocument();
+  expect(await screen.findByRole("textbox", { name: "저장한 일정 검색" })).toBeInTheDocument();
 });

@@ -116,7 +116,9 @@ test("저장한 일정이 없으면 구획을 통째로 그리지 않는다", as
   const { container } = renderList();
 
   /* 위치 표시기(LocationProbe)만 남는다 — 목록 구획은 없다. */
-  await waitFor(() => expect(screen.queryByText("저장한 일정")).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "저장한 일정 검색" })).not.toBeInTheDocument(),
+  );
   expect(container.querySelector("section")).toBeNull();
 });
 

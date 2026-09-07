@@ -145,7 +145,9 @@ export function SchedulePage() {
   return (
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader keepStrip />
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10">
+      {/* pt-6: "저장한 일정" 표제를 없애면서(2026-09-07) 목록 첫 줄이 헤더 바로
+          아래 붙었다 — PreferencesPage와 같은 여백으로 맞춘다. */}
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10 pt-6">
         <PageTransition pathKey={contentKey}>
           {/* PageTransition이 안의 내용을 div 한 겹으로 감싸면서, 바깥
               (.max-w-2xl 컨테이너)의 gap-5가 자식이 하나뿐이라 더 이상 안
