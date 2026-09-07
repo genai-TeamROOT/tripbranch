@@ -276,6 +276,52 @@ describe("PopulationForecastBars 세로축", () => {
   });
 });
 
+describe("PopulationForecastBars 시각 라벨", () => {
+  // 실측(2026-09-07)에서 모바일 카드 폭(~340px)에 재현한 것과 같은 12슬롯 예측.
+  const twelveHourCard: InfoPlaceCardData = {
+    ...baseCard,
+    population_current_level: "여유",
+    population_observed_at: "9월 7일 11:00",
+    seoul_realtime_summary: { population_min: 1500, population_max: 2000 },
+    population_forecasts: Array.from({ length: 12 }, (_, index) => ({
+      forecast_at: `2026-09-07 ${String(12 + index).padStart(2, "0")}:00`,
+      congestion_level: "여유",
+      population_min: 1000,
+      population_max: 1200,
+    })),
+  };
+
+  it("라벨을 막대 칸에 가두지 않는다 — 잘리지 않고 전체 글자가 그대로 나온다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+
+    // 좁은 칸 안에 truncate로 가두던 이전 방식이면 "현재"·"12시"가 "현...",
+    // "1..."로 잘렸다(2026-09-07 모바일 375px 실측). 이제는 칸 폭과 무관하게
+    // 글자 전체가 그대로 나와야 한다.
+    expect(screen.getByText("현재")).toBeInTheDocument();
+    expect(screen.getByText("14시")).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\.$/)).not.toBeInTheDocument();
+  });
+
+  it("'현재' 바로 다음 칸에는 라벨을 보여주지 않는다 — 붙어 보이지 않게 3칸 간격을 지킨다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+
+    // "현재"(0번) 다음 예측은 12시(1번 칸)인데, 이 칸은 라벨을 보여주지 않는다
+    // — 안 그러면 "현재"와 곧바로 붙어 보인다(2026-09-07 실측으로 확인).
+    expect(screen.queryByText("12시")).not.toBeInTheDocument();
+    expect(screen.queryByText("13시")).not.toBeInTheDocument();
+    // 3칸 간격(현재=0, 14시=3, 17시=6, 20시=9, 23시=12)으로만 보여준다.
+    for (const label of ["14시", "17시", "20시", "23시"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it("라벨 span에 더는 칸 폭 제약(truncate)을 걸지 않는다", () => {
+    render(<PopulationForecastBars card={twelveHourCard} />);
+    expect(screen.getByText("현재")).not.toHaveClass("truncate");
+    expect(screen.getByText("14시")).not.toHaveClass("truncate");
+  });
+});
+
 describe("CongestionLevelChip", () => {
   it("인구 혼잡도와 상권 활동을 같은 색 사다리로 보여준다", () => {
     const { rerender } = render(<CongestionLevelChip level="여유" />);

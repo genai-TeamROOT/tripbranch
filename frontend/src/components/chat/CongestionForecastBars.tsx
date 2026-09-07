@@ -439,9 +439,12 @@ export function PopulationForecastBars({ card }: { card: InfoPlaceCardData }) {
     ...forecasts.map((forecast, index) => ({
       key: forecast.forecast_at,
       label: hourLabel(forecast.forecast_at),
-      // 12슬롯을 다 적으면 칸 폭보다 글자가 길어 "20…"으로 잘린다. 세 칸에 하나만
-      // 적어 눈금처럼 쓰고, 정확한 시각은 막대 말풍선이 알려준다.
-      labelShown: index % 3 === 0,
+      // 12슬롯을 다 적으면 라벨끼리 너무 붙어 보인다. 세 칸에 하나만 적어
+      // 눈금처럼 쓰고, 정확한 시각은 막대 말풍선이 알려준다. "현재" 칸이 앞에
+      // 하나 더 있다는 걸 셈에 넣어야 한다 — 안 넣으면 예측 배열의 0번째가
+      // 전체 열에서는 1번째라, "현재"와 첫 라벨이 한 칸만 떨어져 붙어 보인다
+      // (2026-09-07 모바일 실측에서 라벨 겹침으로 드러남).
+      labelShown: (index + (card.population_current_level ? 1 : 0)) % 3 === 0,
       level: forecast.congestion_level ?? "",
       populationMin: forecast.population_min ?? null,
       populationMax: forecast.population_max ?? null,
@@ -508,7 +511,13 @@ export function PopulationForecastBars({ card }: { card: InfoPlaceCardData }) {
             ))}
           </div>
         )}
-        <div className="relative min-w-0 flex-1">
+        <div
+          // 막대 사이 간격을 여기 한 곳(CSS 변수)에만 두고 막대 행·라벨 위치
+          // 계산이 같은 값을 참조하게 한다 — 웹은 기존 그대로(6px), 좁은 화면은
+          // 더 좁혀(3px) 막대 자체가 간격 대비 더 두꺼워 보이게 한다(2026-09-07:
+          // 모서리를 각지게 하는 대신 간격을 줄이는 쪽으로 다시 잡았다).
+          className="relative min-w-0 flex-1 [--pf-bar-gap:3px] sm:[--pf-bar-gap:6px]"
+        >
           {ticks.length > 0 && (
             <div className="pointer-events-none absolute inset-x-0 top-0 h-16" aria-hidden="true">
               {ticks.map((tick) => (
@@ -522,7 +531,7 @@ export function PopulationForecastBars({ card }: { card: InfoPlaceCardData }) {
           )}
           {/* 격자선 레이어가 absolute라 static 형제보다 위에 그려진다 — 막대 행도
               positioned로 만들어 격자선이 막대 뒤로 가게 한다. */}
-          <div className="relative flex h-16 items-end gap-1.5">
+          <div className="relative flex h-16 items-end gap-[var(--pf-bar-gap)]">
             {columns.map((column, index) => {
               const color = POPULATION_LEVEL_COLOR[column.level] ?? UNKNOWN_LEVEL_COLOR;
               const midpoint = midpoints[index];
@@ -576,17 +585,34 @@ export function PopulationForecastBars({ card }: { card: InfoPlaceCardData }) {
               );
             })}
           </div>
-          <div className="mt-1 flex gap-1.5">
-            {columns.map((column) => (
-              <span
-                key={column.key}
-                className={`min-w-0 flex-1 truncate text-center text-[10px] ${
-                  column.isCurrent ? `font-semibold text-ink ${CURRENT_COLUMN_CLASS}` : "text-muted"
-                }`}
-              >
-                {column.labelShown ? column.label : ""}
-              </span>
-            ))}
+          {/*
+           * 라벨을 막대와 같은 flex-1 칸에 가두지 않는다 — 그 칸 폭은 화면 폭에
+           * 비례해 줄어들어서, 모바일(카드 폭 ~340px)에서는 칸 하나가 20px 안팎이라
+           * "현재"(2글자)조차 "현..."으로 잘렸다(2026-09-07 모바일 실측 재현).
+           * 대신 막대 중심 좌표 위에 절대 위치로 얹어 글자가 자기 칸 폭과
+           * 무관해지게 한다 — 3칸마다 하나만 보여주는 솎아내기(labelShown)는
+           * 그대로라 라벨 사이 간격은 어느 화면 폭에서도 충분하다. 막대 행 간격이
+           * 화면 폭에 따라 3px/6px로 바뀌므로(위 --pf-bar-gap), 하드코딩한 px 대신
+           * 그 변수를 그대로 참조해 라벨 중심이 항상 실제 막대 중심과 맞게 한다.
+           */}
+          <div className="relative mt-1 h-3.5">
+            {columns.map((column, index) =>
+              column.labelShown ? (
+                <span
+                  key={column.key}
+                  className={`absolute top-0 -translate-x-1/2 whitespace-nowrap text-[10px] leading-none ${
+                    column.isCurrent ? "font-semibold text-ink" : "text-muted"
+                  }`}
+                  style={{
+                    left: `calc((100% - (${columns.length - 1}) * var(--pf-bar-gap)) / ${
+                      columns.length
+                    } * ${index + 0.5} + ${index} * var(--pf-bar-gap))`,
+                  }}
+                >
+                  {column.label}
+                </span>
+              ) : null,
+            )}
           </div>
         </div>
       </div>
