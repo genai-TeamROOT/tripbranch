@@ -1,27 +1,21 @@
 /*
  * 역할: 모든 화면을 감싸는 최상위 레이아웃 — 데스크톱 사이드바 + 모바일 푸시 드로어 +
- *   본문 셸(.tb-shell) + 그 위에 쌓이는 바텀시트 스택.
+ *   본문 셸(.tb-shell).
  * 입력: 없음(현재 URL을 useLocation으로 직접 읽는다).
- * 출력: 사이드바 접힘 상태(localStorage에 남긴다), 드로어 열림 상태, 기반 화면 +
- *   시트로 열린 화면들.
+ * 출력: 사이드바 접힘 상태(localStorage에 남긴다), 드로어 열림 상태, 현재 화면.
  * 호출 시점: App.tsx가 신원이 필요한 라우트(path="*")의 element로 이걸 직접 쓴다.
- * 근거: package_D/DESIGN_SYSTEM.md §4(레이아웃 셸), §5.3(App.tsx 조립 — 2단 렌더링).
+ * 근거: package_D/DESIGN_SYSTEM.md §4(레이아웃 셸).
  *
- * 바텀시트는 모바일 전용 패턴이다 — 태블릿·데스크톱(사이드바가 상시 보이는
- * 폭)에서는 위치·일정도 시트로 겹쳐 뜨우지 않고 그냥 지금 화면을 그대로
- * 전체 페이지로 그린다. location.state.backgroundLocation은 계속 실려
- * 있지만(모바일로 다시 좁아지면 바로 시트로 되돌아가야 하니 지우지 않는다),
- * 데스크톱에서는 무시한다.
+ * **바텀시트 스택은 걷어냈다**(2026-09-07). 위치·일정이 취향 설정과 같은 전체
+ * 페이지가 되면서 시트로 여는 화면이 하나도 남지 않았고, 그 뒤로는 스택 계산과
+ * BottomSheetLayer가 늘 빈 배열만 돌려 아무것도 그리지 않는 코드가 됐다.
  */
 
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
-import { buildLocationStack } from "../../state/sheetNav";
+import { useLocation } from "react-router-dom";
 import { AppRoutes } from "./AppRoutes";
 import { AppShellProvider, useAppShell } from "./AppShellContext";
 import { PageTransition } from "./PageTransition";
-import { BottomSheetLayer } from "./BottomSheetLayer";
 import { DesktopSidebar } from "./DesktopSidebar";
 import { SideDrawer } from "./SideDrawer";
 
@@ -39,8 +33,6 @@ function AppShellInner() {
   const { drawerOpen, closeDrawer } = useAppShell();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const location = useLocation();
-  const navigate = useNavigate();
-  const isDesktop = useIsDesktopSidebar();
 
   useEffect(() => {
     try {
@@ -50,12 +42,6 @@ function AppShellInner() {
     }
   }, [collapsed]);
 
-  const stack = buildLocationStack(location);
-  // 데스크톱은 지금 위치를 그대로 기반 화면으로 그린다 — 쌓인 시트가 있어도
-  // 겹쳐 띄우지 않는다(모바일 전용 패턴).
-  const baseLocation = isDesktop ? location : stack[0];
-  const sheetLocations = isDesktop ? [] : stack.slice(1);
-
   return (
     <div className="tb-app-root">
       <DesktopSidebar collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)} />
@@ -64,24 +50,24 @@ function AppShellInner() {
         className={`tb-shell ${drawerOpen ? "tb-shell--pushed" : ""}`}
         // 드로어가 열려 본문이 오른쪽으로 밀려난 상태에서, 밀려난 본문 아무 곳이나
         // 누르면 바깥을 누른 것으로 보고 드로어를 닫는다(탭-투-클로즈).
-        onClickCapture={drawerOpen ? closeDrawer : undefined}
+        //
+        // **햄버거만 건너뛴다.** 그 버튼도 셸 안에 있어서, 캡처가 먼저 닫고 버튼이
+        // 다시 여는 바람에 열린 채로 다시 눌러도 닫히지 않았다(2026-09-07 실측).
+        // 여닫이는 버튼 하나가 온전히 갖는다.
+        onClickCapture={
+          drawerOpen
+            ? (event) => {
+                if ((event.target as HTMLElement).closest("[data-drawer-toggle]")) return;
+                closeDrawer();
+              }
+            : undefined
+        }
       >
-        {/*
-         * 기반 화면만 감싼다. 시트는 BottomSheetLayer가 이미 아래에서 올라오는
-         * 애니메이션을 가지고 있어서, 여기서 또 감싸면 두 번 움직인다.
-         *
-         * 키를 baseLocation.pathname으로 잡는 것이 중요하다. 실제 위치로 잡으면
-         * 시트를 열고 닫을 때마다 뒤에 있는 기반 화면이 다시 떠오르고, 게다가
-         * 다시 마운트되면서 스크롤 위치와 화면 상태를 잃는다.
-         */}
-        <PageTransition pathKey={baseLocation.pathname} fullHeight>
-          <AppRoutes location={baseLocation} />
+        {/* 키를 경로로 잡는다 — 같은 화면 안에서 쿼리만 바뀔 때(일정의
+            ?saved=…)까지 다시 마운트되면 스크롤과 화면 상태를 잃는다. */}
+        <PageTransition pathKey={location.pathname} fullHeight>
+          <AppRoutes />
         </PageTransition>
-        {sheetLocations.map((sheetLocation, depth) => (
-          <BottomSheetLayer key={sheetLocation.key} depth={depth} onDismiss={() => navigate(-1)}>
-            <AppRoutes location={sheetLocation} />
-          </BottomSheetLayer>
-        ))}
       </div>
     </div>
   );

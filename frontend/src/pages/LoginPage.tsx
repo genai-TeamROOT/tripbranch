@@ -23,6 +23,7 @@ import { useState, type FormEvent } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { isGuestSession } from "../auth/identityLabel";
 import { AuthLayout } from "../auth/AuthLayout";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Button } from "../components/ui/button";
@@ -40,10 +41,26 @@ export function LoginPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
-  /* RequireUser가 넘겨준 원래 목적지. 직접 들어온 경우엔 홈으로 보낸다. */
+  /* 사이드바에서 왔으면 그 화면으로 돌려보낸다. 직접 들어온 경우엔 홈이다. */
   const from = (location.state as { from?: string } | null)?.from ?? "/";
 
-  if (status === "ready" && session) {
+  /*
+   * 이미 게스트로 앱을 쓰고 있는 사람이 로그인하러 온 경우다. 이때 하단 버튼을
+   * "게스트로 시작하기"로 두면 안 된다 — signInAnonymously는 **새 익명 계정을
+   * 만들기 때문에** 지금까지 쌓은 대화가 달린 uid를 잃는다. 그 자리에는 마음을
+   * 바꿨을 때 돌아갈 길만 있으면 된다.
+   */
+  const alreadyBrowsing = status === "ready" && session !== null;
+
+  /*
+   * **게스트는 통과시킨다**(2026-09-06). 진입이 게스트로 자동으로 열리게 바뀌면서
+   * (`RequireUser`) 이 화면에 오는 사람은 전부 게스트 세션을 달고 온다 — 예전처럼
+   * "세션이 있으면 되돌려보내기"로 두면 사이드바의 로그인 버튼이 아무 데도 못 간다.
+   *
+   * 계정 사용자는 그대로 되돌려보낸다. 이미 로그인한 사람에게 로그인 화면은
+   * 할 일이 없는 화면이다.
+   */
+  if (status === "ready" && session && !isGuestSession(session)) {
     return <Navigate to={from} replace />;
   }
 
@@ -106,9 +123,15 @@ export function LoginPage() {
             variant="outline"
             size="lg"
             disabled={isLoading || status !== "ready"}
-            onClick={() => void handleGuestStart()}
+            onClick={() =>
+              alreadyBrowsing ? navigate(from, { replace: true }) : void handleGuestStart()
+            }
           >
-            {isLoading ? "시작하는 중이에요…" : "게스트로 시작하기"}
+            {alreadyBrowsing
+              ? "로그인 없이 둘러보기"
+              : isLoading
+                ? "시작하는 중이에요…"
+                : "게스트로 시작하기"}
           </Button>
         </>
       }
@@ -125,7 +148,7 @@ export function LoginPage() {
 
         {/* 방금 누른 버튼의 실패가 먼저다. 링크 오류는 그 아래로 밀린다 —
             이미 지나간 일이라 지금 하려는 동작을 가리면 안 된다. */}
-        {errorMessage ?? linkError ? (
+        {(errorMessage ?? linkError) ? (
           <ErrorBanner message={errorMessage ?? linkError ?? ""} />
         ) : null}
 

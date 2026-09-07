@@ -7,12 +7,17 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { AuthProvider } from "../auth/AuthContext";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
+import { resetSavedSchedulesCache } from "../state/savedSchedules";
 import { SchedulePage } from "./SchedulePage";
 
 beforeEach(() => {
   sessionStorage.clear();
+  /* 저장 목록 캐시는 모듈 수준이라 같은 파일의 앞 테스트 결과가 그대로 남는다.
+     이 화면은 그 목록으로 무엇을 그릴지 정하므로 테스트마다 비운다. */
+  resetSavedSchedulesCache();
 });
 
 afterEach(() => {
@@ -22,16 +27,26 @@ afterEach(() => {
 test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준다", async () => {
   const user = userEvent.setup();
   render(
-    <MemoryRouter initialEntries={["/schedule"]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 
-  expect(screen.getByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
+  /*
+   * **받아오기 전에는 안내가 없다.** 저장한 일정이 있는 사람에게 "아직 짠 일정이
+   * 없어요"가 한 번 스쳤다 사라지면 안 된다 — 그래서 목록이 도착하기 전인 이
+   * 순간을 먼저 확인한다(비동기 대기 없이 바로 본다).
+   */
+  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+
+  /* 목록이 도착하고, 비어 있으니 그제야 안내가 뜬다. */
+  expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
 
   const cta = screen.getByRole("button", { name: "홈에서 일정 짜기" });
   await user.click(cta);
@@ -107,17 +122,21 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
   const user = userEvent.setup();
   seedScheduleState();
   render(
-    <MemoryRouter initialEntries={["/schedule"]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 
-  expect(screen.getByText("역삼 아트뮤지엄")).toBeInTheDocument();
-  expect(screen.getByText("대림창고")).toBeInTheDocument();
+  /* 장소 이름은 두 곳에 나온다 — 시간 띠의 범례와 정류장 카드. 범례는 aria-hidden
+     이라 소리로는 한 번만 읽히지만, 화면 질의에는 둘 다 걸린다. */
+  expect(screen.getAllByText("역삼 아트뮤지엄").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("대림창고").length).toBeGreaterThan(0);
   // 서버가 내려준 이동수단을 그대로 쓴다 — 예전에는 전 구간을 도보로 고정 표기했다(TP-216).
   expect(screen.getByText("대중교통 이동 12분")).toBeInTheDocument();
   // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null) — 구간 표기는 한 줄뿐이다.
@@ -166,13 +185,15 @@ const SAVED_DETAIL = {
 
 function renderSaved(id: string) {
   return render(
-    <MemoryRouter initialEntries={[`/schedule?saved=${id}`]}>
-      <AppShellProvider>
-        <TripProvider>
-          <SchedulePage />
-        </TripProvider>
-      </AppShellProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={[`/schedule?saved=${id}`]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
 }
 
@@ -181,8 +202,31 @@ test("저장한 일정을 열면 그때 편성이 그대로 보인다", async ()
 
   renderSaved(SAVED_DETAIL.id);
 
-  expect(await screen.findByText("경복궁")).toBeInTheDocument();
+  expect((await screen.findAllByText("경복궁")).length).toBeGreaterThan(0);
   expect(screen.getByText("경복궁 한 바퀴")).toBeInTheDocument();
+});
+
+/*
+ * 저장한 일정에는 시간 띠의 "지금"을 얹지 않는다.
+ *
+ * **시계를 고정해야 의미가 있는 테스트다.** 저장 일정은 14:30~16:00 인데, 그
+ * 바깥 시각에 돌면 "지금"은 어차피 안 뜬다 — 그러면 이 테스트는 배선이 끊겨도
+ * 통과한다(2026-09-06 되돌림 확인에서 실제로 그랬다). 일정 한가운데로 시계를
+ * 맞춰, 넘기기만 하면 뜨는 상태에서 안 뜨는 것을 본다.
+ */
+test("저장한 일정에는 지금 표시가 뜨지 않는다", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date(2026, 7, 31, 15, 15));
+
+  try {
+    renderSaved(SAVED_DETAIL.id);
+    await screen.findAllByText("경복궁");
+
+    expect(screen.queryByText("지금")).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 /*
@@ -209,4 +253,80 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
   expect(await screen.findByText(/불러오지 못했어요/)).toBeInTheDocument();
   /* "아직 짠 일정이 없어요"로 뭉뚱그리면 사용자는 저장이 안 된 줄 안다. */
   expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+});
+
+/*
+ * 저장한 일정 목록을 사이드바에서 여기로 옮겼다(2026-09-04). **세 상태 모두**에
+ * 있어야 한다 — 특히 "아직 짠 일정이 없어요"와 불러오기 실패 화면에서는 다른
+ * 일정을 고를 유일한 입구다. 목록을 빼도 나머지 테스트는 전부 통과했다(되돌림 확인).
+ */
+/*
+ * 저장한 일정 목록은 **저장한 것이 있을 때** 세 상태 모두에서 보인다
+ * (짠 일정 없음 / 있음 / ?saved= 불러오기 실패).
+ *
+ * 예전에는 "세 상태 모두에 구획이 있다"였는데, 비었을 때도 "아직 저장한 일정이
+ * 없어요"를 내는 바람에 첫 화면에서 **비었다는 안내가 두 개 겹쳐** 보였다.
+ * 지금은 비면 구획째 사라지고, 무엇을 안내할지는 이 화면이 정한다.
+ */
+test("저장한 일정이 있으면 세 상태 모두에서 목록이 보인다", async () => {
+  const saved = {
+    items: [
+      {
+        id: "aaaaaaaa-1111-4222-8333-444444444444",
+        title: "성수 저녁 코스",
+        session_id: null,
+        created_at: "2026-09-01T18:00:00+09:00",
+        updated_at: "2026-09-01T18:00:00+09:00",
+      },
+    ],
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(saved)));
+
+  const listed = () => screen.findByRole("heading", { name: "저장한 일정" });
+
+  // ① 짠 일정이 없을 때
+  const empty = render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+  expect(await listed()).toBeInTheDocument();
+  /* 목록이 있으면 빈 안내는 뜨지 않는다 — 이것이 이번에 고친 것이다. */
+  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+  empty.unmount();
+
+  // ② 짠 일정이 있을 때
+  seedScheduleState();
+  const filled = render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/schedule"]}>
+        <AppShellProvider>
+          <TripProvider>
+            <SchedulePage />
+          </TripProvider>
+        </AppShellProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+  expect(await listed()).toBeInTheDocument();
+  filled.unmount();
+
+  // ③ 저장한 일정을 못 불러왔을 때 — 다른 일정을 고를 유일한 입구다.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("/schedules/")
+        ? new Response(null, { status: 404 })
+        : Response.json(saved),
+    ),
+  );
+  renderSaved("gone");
+  expect(await screen.findByText("이미 지워졌거나 접근 권한이 없을 수 있어요.")).toBeInTheDocument();
+  expect(await listed()).toBeInTheDocument();
 });

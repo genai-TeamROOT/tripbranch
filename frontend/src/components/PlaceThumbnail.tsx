@@ -27,9 +27,21 @@ interface PlaceThumbnailProps {
    * 두 번째가 나간다.
    */
   fallbackSrc?: string | null;
+  /**
+   * 크기·모양 클래스. 안 넘기면 추천 카드용 기본값이다.
+   *
+   * **밖에서 정할 수 있게 둔 이유**는 일정 화면이 같은 사진을 다른 크기로 쓰기
+   * 때문이다(정류장 96px 정사각, 지금 있는 곳은 전체 폭). 여기서 못 바꾸면 그
+   * 화면이 <img>와 자리표시를 다시 짜게 되고, 그러면 이 컴포넌트를 만든 이유가
+   * 사라진다 — 화면마다 "사진 없음" 모양이 갈렸던 것이 그 시작이었다.
+   */
+  className?: string;
 }
 
-export function PlaceThumbnail({ src, fallbackSrc }: PlaceThumbnailProps) {
+const DEFAULT_SHAPE = "h-28 w-full rounded-2xl transition-transform duration-300 group-hover:scale-105";
+
+export function PlaceThumbnail({ src, fallbackSrc, className }: PlaceThumbnailProps) {
+  const shape = className ?? DEFAULT_SHAPE;
   /*
    * 실패한 주소들을 그대로 담는다. boolean으로 두면 같은 카드가 다른 사진으로 다시
    * 그려질 때(재랭킹 등) 실패 표시가 남아 멀쩡한 사진까지 가린다 — 목록은
@@ -53,7 +65,7 @@ export function PlaceThumbnail({ src, fallbackSrc }: PlaceThumbnailProps) {
       // 눈에 띈다.
       <span
         data-testid="place-thumbnail-placeholder"
-        className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-gray-400"
+        className={`flex items-center justify-center bg-chip text-gray-400 ${shape}`}
       >
         <ImageOff size={26} strokeWidth={1.5} aria-hidden />
       </span>
@@ -68,7 +80,7 @@ export function PlaceThumbnail({ src, fallbackSrc }: PlaceThumbnailProps) {
       src={current}
       alt=""
       loading="lazy"
-      className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
+      className={`object-cover ${shape}`}
       onError={() => setFailed((previous) => [...previous, current])}
     />
   );

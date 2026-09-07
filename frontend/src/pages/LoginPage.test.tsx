@@ -16,6 +16,7 @@ import { AuthProvider } from "../auth/AuthContext";
 import { LoginPage } from "./LoginPage";
 import {
   emailAuthCalls,
+  GUEST_SESSION,
   resetSupabaseMock,
   setMockEmailAuthError,
   setMockSession,
@@ -109,12 +110,48 @@ test("게스트 시작은 그대로 동작한다", async () => {
   expect(emailAuthCalls()).toHaveLength(0);
 });
 
-test("이미 로그인돼 있으면 폼을 보여주지 않는다", async () => {
-  resetSupabaseMock(); // 기본값이 게스트 세션 있음
+test("이미 계정으로 로그인돼 있으면 폼을 보여주지 않는다", async () => {
+  setMockSession({
+    ...GUEST_SESSION,
+    user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
+  } as typeof GUEST_SESSION);
   renderLogin();
 
   expect(await screen.findByText("홈 화면")).toBeInTheDocument();
   expect(screen.queryByLabelText("이메일")).not.toBeInTheDocument();
+});
+
+/*
+ * **게스트는 세션이 있어도 통과시킨다**(2026-09-06). 진입이 게스트로 자동으로
+ * 열리게 바뀌면서(RequireUser) 이 화면에 오는 사람은 전부 게스트 세션을 달고
+ * 온다 — 예전처럼 "세션이 있으면 되돌려보내기"로 두면 사이드바의 로그인 버튼이
+ * 아무 데도 못 간다.
+ */
+test("게스트로 쓰던 중이면 로그인 폼을 보여준다", async () => {
+  resetSupabaseMock(); // 기본값이 게스트 세션 있음
+  renderLogin();
+
+  expect(await screen.findByLabelText("이메일")).toBeInTheDocument();
+  expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
+});
+
+/*
+ * 게스트에게 "게스트로 시작하기"를 다시 내밀면 안 된다 — signInAnonymously는
+ * **새 익명 계정을 만들어** 지금까지 쌓은 대화가 달린 uid를 잃게 한다. 그 자리에는
+ * 마음을 바꿨을 때 돌아갈 길만 둔다.
+ */
+test("게스트에게는 새 게스트 발급 대신 돌아갈 길을 준다", async () => {
+  resetSupabaseMock();
+  renderLogin();
+
+  await screen.findByLabelText("이메일");
+  expect(screen.queryByRole("button", { name: "게스트로 시작하기" })).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "로그인 없이 둘러보기" }));
+
+  expect(await screen.findByText("홈 화면")).toBeInTheDocument();
+  /* 새 신원을 만들지 않았다 — 만들었다면 인증 호출이 남는다. */
+  expect(emailAuthCalls()).toHaveLength(0);
 });
 
 /*

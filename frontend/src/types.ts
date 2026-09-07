@@ -192,6 +192,19 @@ export interface ScheduleItem {
   // mode가 없으면 서버가 좌표를 못 구해 시간표 폴백값을 쓴 구간이다.
   travel_to_next_mode?: TravelMode | null;
   travel_to_next_measured?: boolean;
+  /*
+   * 일정 카드에 그릴 장소 사진. 편성 단계에서 후보(RecommendationItem)의 값을 그대로
+   * 옮겨 담은 것이라(app/schedule/planner.py) 화면이 장소별로 다시 조회하지 않는다 —
+   * `/chat/place-details`로도 얻을 수 있지만 그 경로는 INFO 전체(이름 재해석 + 외부
+   * 조회 + 취향 인사이트)를 타서 정류장 수만큼 외부 호출이 나간다.
+   *
+   * 이 필드 이전에 저장된 세션 복원분·기존 테스트 픽스처와도 호환되도록 optional로
+   * 둔다(warnings·travel_to_next_mode와 같은 이유). 없으면 PlaceThumbnail이 자리표시를
+   * 그린다.
+   */
+  image_url?: string | null;
+  /** image_url이 404일 때 대신 그릴 주소. PlaceThumbnail의 fallbackSrc로 넘긴다. */
+  image_url_fallback?: string | null;
   reason: string;
   // 백엔드가 항상 채워 보내지만(app.schemas.ScheduleItem, 기본값 []), 기존
   // 테스트 픽스처가 이 필드 없이 만든 객체와도 호환되도록 optional로 둔다.

@@ -9,7 +9,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
-import { loadPreferences } from "../state/preferenceStorage";
+import { loadPreferences, savePreferences } from "../state/preferenceStorage";
 import { resetPreferenceSync } from "../state/preferenceSync";
 import { PreferencesPage } from "./PreferencesPage";
 import { PREFERENCE_GROUPS } from "./preferenceOptions";
@@ -84,7 +84,7 @@ test("3개 미만이면 저장 버튼이 남은 개수를 안내하며 비활성
 
   const enabled = screen.getByRole("button", { name: "저장하기" });
   expect(enabled).not.toBeDisabled();
-  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
 });
 
 test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", async () => {
@@ -95,30 +95,32 @@ test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", asy
   for (const label of options) {
     await user.click(screen.getByRole("button", { name: label }));
   }
-  expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByText("3–5개 중 5개 선택됨")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "넓고 쾌적한" }));
-  expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "넓고 쾌적한" })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
+  /* 6번째는 눌러도 아무 일이 안 나는 게 아니라 **아예 못 누른다**(2026-09-06).
+     눌러도 반응이 없는 것과 고장은 화면에서 구분되지 않는다. */
+  const sixth = screen.getByRole("button", { name: "넓고 쾌적한" });
+  expect(sixth).toBeDisabled();
+  await user.click(sixth);
+  expect(screen.getByText("3–5개 중 5개 선택됨")).toBeInTheDocument();
+  expect(sixth).toHaveAttribute("aria-pressed", "false");
+
+  /* 이미 고른 칩은 빼는 동작이라 상한과 무관하게 눌린다. */
+  expect(screen.getByRole("button", { name: "조용한 곳" })).toBeEnabled();
 
   await user.click(screen.getByRole("button", { name: "선택 초기화" }));
-  expect(screen.getByText("0 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByText("3–5개 중 0개 선택됨")).toBeInTheDocument();
 });
 
-test("키워드 직접 입력으로 새 칩을 추가하면 선택된 채로 나타난다", async () => {
-  const user = userEvent.setup();
+/*
+ * **키워드를 직접 만드는 길을 없앴다**(2026-09-06). 칩 목록은 DB에 대응이 있는
+ * 것만 남긴 것인데(아래 테스트), 직접 입력한 키워드는 `codes: []`라 어디에도
+ * 대응하지 않는다 — 고를 수 있는 5칸 중 하나를 아무 데도 안 걸리는 값이 차지했다.
+ */
+test("키워드를 직접 만드는 입구가 없다", () => {
   renderPage();
 
-  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
-  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
-  await user.click(screen.getByRole("button", { name: "추가" }));
-
-  const chip = await screen.findByRole("button", { name: "조용한 서점" });
-  expect(chip).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByText("1 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "키워드 직접 입력" })).not.toBeInTheDocument();
 });
 
 /*
@@ -161,34 +163,31 @@ test("저장하면 이 기기에 남고, 다시 열면 고른 채로 시작한�
 
   unmount();
   renderPage();
-  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "카페" })).toHaveAttribute("aria-pressed", "true");
 });
 
-test("직접 입력한 키워드는 custom으로 저장되고 다시 열어도 남는다", async () => {
+/*
+ * 입구는 없앴지만 **전에 저장해 둔 키워드는 계속 보여야 한다.** 안 그리면 선택
+ * 개수(N/5)에는 잡히는데 화면에 없는 칩이 생겨서, 5개를 다 못 고르는데 그 이유가
+ * 어디에도 안 보인다. 여기 있으면 눌러서 빼고 저장하는 것으로 정리된다.
+ */
+test("전에 직접 넣어둔 키워드는 남아 있고 눌러서 뺄 수 있다", async () => {
   const user = userEvent.setup();
-  const { unmount } = renderPage();
-
-  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
-  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
-  await user.click(screen.getByRole("button", { name: "추가" }));
-  for (const label of ["조용한 곳", "카페"]) {
-    await user.click(screen.getByRole("button", { name: label }));
-  }
-  await user.click(screen.getByRole("button", { name: "저장하기" }));
-
-  expect(loadPreferences()).toContainEqual({
-    label: "조용한 서점",
-    source: "custom",
-    codes: [],
-  });
-
-  unmount();
+  savePreferences([
+    { label: "조용한 서점", source: "custom", codes: [] },
+    { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+    { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
+  ]);
   renderPage();
-  expect(screen.getByRole("button", { name: "조용한 서점" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+
+  const custom = screen.getByRole("button", { name: "조용한 서점" });
+  expect(custom).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
+
+  await user.click(custom);
+  expect(custom).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByText("3–5개 중 2개 선택됨")).toBeInTheDocument();
 });
 
 /*
@@ -227,14 +226,14 @@ test("저장하면 홈 화면으로 보낸다", async () => {
 });
 
 /*
- * 저장 뒤 화면을 떠나므로 "추천엔 아직 반영되지 않는다"를 저장 안내로 띄울 수
- * 없다. 그래서 부제가 그 사실을 항상 들고 있어야 한다 — 빠지면 홈에 취향이
- * 뜬 것만 보고 추천이 달라졌다고 읽는다.
+ * 저장하면 추천 순위에 반영된다(SCORING_VERSION 1.5.0). 부제는 이 사실만
+ * 말한다(2026-09-07) — 홈 화면에 안 보인다는 부수적인 사실은 뺐다.
  */
-test("부제가 추천에 아직 반영되지 않는다는 사실을 항상 밝힌다", () => {
+test("부제가 추천에 반영된다는 사실을 밝힌다", () => {
   renderPage();
 
-  expect(screen.getByText(/추천 결과에 반영하는 건 아직 준비 중이에요/)).toBeInTheDocument();
+  expect(screen.getByText(/고르신 취향이 추천 결과에 반영돼요/)).toBeInTheDocument();
+  expect(screen.queryByText(/홈 화면/)).not.toBeInTheDocument();
 });
 
 
@@ -289,7 +288,7 @@ test("계정에 저장된 취향이 있으면 그 상태로 열린다", async ()
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "야경 명소" })).toHaveAttribute("aria-pressed", "true"),
   );
-  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
 });
 
 /* 다른 기기에서 전부 해제한 사람의 계정은 "빈 목록"이 정본이다. 이 기기의 낡은
@@ -303,4 +302,128 @@ test("계정이 비어 있으면 이 기기 값을 계정으로 올린다", asyn
   renderPage();
 
   await waitFor(() => expect(server.items.map((item) => item.label)).toEqual(["조용한 곳"]));
+});
+
+/*
+ * **동행은 하나만 고른다**(2026-09-06 사용자 결정). 다른 동행을 누르면 막지 않고
+ * 바꾼다 — 막으면 먼저 빼고 다시 눌러야 해서 한 번에 될 일이 두 번 걸린다.
+ */
+test("동행을 다시 고르면 앞서 고른 동행이 빠진다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "데이트 코스" }));
+  await user.click(screen.getByRole("button", { name: "친구와 함께" }));
+
+  expect(screen.getByRole("button", { name: "데이트 코스" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(screen.getByRole("button", { name: "친구와 함께" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  /* 바꾼 것이지 더한 것이 아니다 — 개수가 늘면 안 된다. */
+  expect(screen.getByText("3–5개 중 1개 선택됨")).toBeInTheDocument();
+});
+
+/* 동행은 필수가 아니다. 하나 고른 뒤 다시 누르면 그냥 빠진다. */
+test("동행은 안 골라도 된다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "데이트 코스" }));
+  await user.click(screen.getByRole("button", { name: "데이트 코스" }));
+
+  expect(screen.getByText("3–5개 중 0개 선택됨")).toBeInTheDocument();
+});
+
+/*
+ * 상한 판정과 동행 교체가 따로 놀면 여기가 깨진다 — 5개를 다 고른 사람은 동행을
+ * 영영 못 바꾸게 된다. 교체는 개수가 늘지 않으므로 허용해야 한다.
+ */
+test("5개를 다 골랐어도 동행은 바꿀 수 있다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  for (const label of ["조용한 곳", "아늑한 공간", "야경 명소", "사진 명소", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  expect(screen.getByText("3–5개 중 5개 선택됨")).toBeInTheDocument();
+  /* 분위기 칩은 잠겼는데 동행은 열려 있어야 한다. */
+  expect(screen.getByRole("button", { name: "넓고 쾌적한" })).toBeDisabled();
+
+  const friends = screen.getByRole("button", { name: "친구와 함께" });
+  expect(friends).toBeEnabled();
+  await user.click(friends);
+
+  expect(friends).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "데이트 코스" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(screen.getByText("3–5개 중 5개 선택됨")).toBeInTheDocument();
+});
+
+/* 동행을 아직 안 골랐으면 5개가 찬 순간 동행도 함께 잠긴다 — 그때는 교체가
+   아니라 6번째를 더하는 것이다. */
+test("동행을 안 고른 채 5개가 차면 동행도 잠긴다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  for (const label of ["조용한 곳", "아늑한 공간", "야경 명소", "사진 명소", "힐링하기 좋은"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+
+  expect(screen.getByRole("button", { name: "데이트 코스" })).toBeDisabled();
+});
+
+/*
+ * 예전에 동행을 둘 이상 저장해 둔 값은 열 때 손대지 않는다 — 저장한 것을 말없이
+ * 지우지 않는다. 동행 칩을 한 번 누르면 그때 하나로 정리된다.
+ */
+test("전에 저장된 동행 2개는 그대로 열리고, 한 번 누르면 하나로 정리된다", async () => {
+  const user = userEvent.setup();
+  savePreferences([
+    { label: "데이트 코스", source: "preference", codes: ["date"] },
+    { label: "친구와 함께", source: "preference", codes: ["with_friends"] },
+    { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+  ]);
+  renderPage();
+
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "혼자 가기 좋은" }));
+
+  expect(screen.getByRole("button", { name: "데이트 코스" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(screen.getByRole("button", { name: "친구와 함께" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(screen.getByText("3–5개 중 2개 선택됨")).toBeInTheDocument();
+});
+
+/*
+ * 개수 규칙이 화면에 보여야 한다. 카운터는 최소·최대를 함께 내고, 그 옆 한 줄이
+ * 지금 무엇을 해야 하는지 말한다 — 아래 저장 버튼이 "몇 개 더"를 세는 것과 역할이
+ * 다르다.
+ */
+test("개수 안내가 상태에 따라 세 갈래로 바뀐다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(screen.getByText("저장하려면 3개는 골라야 해요")).toBeInTheDocument();
+
+  for (const label of ["조용한 곳", "아늑한 공간", "야경 명소"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  expect(screen.getByText("2개 더 고를 수 있어요")).toBeInTheDocument();
+
+  for (const label of ["사진 명소", "힐링하기 좋은"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  expect(screen.getByText("다 골랐어요. 바꾸려면 하나를 빼주세요")).toBeInTheDocument();
 });
