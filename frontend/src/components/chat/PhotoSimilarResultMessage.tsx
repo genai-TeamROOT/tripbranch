@@ -26,7 +26,9 @@ const RELIABLE_PHOTO_COUNT = 2;
 
 interface PhotoSimilarResultMessageProps {
   imageUrl?: string | null;
-  status?: "loading" | "done";
+  /* failed는 요청이 실패한 경우다. 사유는 바로 뒤 turn_error가 말하므로 여기서는
+     올린 사진만 남기고 아래 영역을 그리지 않는다(TP-245). */
+  status?: "loading" | "done" | "failed";
   centerName: string;
   places: PhotoSimilarPlace[];
   candidateCount: number;
@@ -47,69 +49,73 @@ export function PhotoSimilarResultMessage({
         <img src={imageUrl} alt="올린 사진" className="ml-auto max-h-48 rounded-md object-cover" />
       )}
 
-      <div className="mr-auto max-w-full text-sm text-ink">
-        {status === "loading" ? (
-          <p className="flex items-center gap-2 text-muted">
-            <Spinner />
-            분위기가 닮은 곳을 찾고 있어요…
-          </p>
-        ) : places.length === 0 ? (
-          /*
-           * 두 상황을 구분한다. 문구가 하나면 "왜 안 나왔는지"를 사용자도
-           * 개발자도 알 수 없다.
-           *
-           *   후보 0곳    지금 갈 수 있는 곳 자체가 없었다(영업시간·반경).
-           *   후보 있음   후보는 있는데 사진 벡터가 없다. 적재가 안 된 구다.
-           */
-          <p>
-            {candidateCount === 0 ? (
-              <>
-                <span className="font-medium">{centerName}</span> 주변에서 지금 갈 수 있는 곳을 찾지
-                못했어요. 다른 지역으로 찾아볼까요?
-              </>
-            ) : (
-              <>
-                <span className="font-medium">{centerName}</span> 주변 {candidateCount}곳을 봤는데
-                사진과 비교할 수 있는 곳이 없었어요. 아직 사진을 모으지 못한 지역이에요.
-              </>
-            )}
-          </p>
-        ) : (
-          <>
-            <p className="mb-3">
-              <span className="font-medium">{centerName}</span> 주변에서 분위기가 닮은 곳이에요.
-              눌러서 사진을 확인해 보세요.
+      {status === "failed" ? null : (
+        <div className="mr-auto max-w-full text-sm text-ink">
+          {status === "loading" ? (
+            <p className="flex items-center gap-2 text-muted">
+              <Spinner />
+              분위기가 닮은 곳을 찾고 있어요…
             </p>
-            {/* 좁은 화면에서는 가로 스크롤로 흘린다. 줄바꿈하면 다시 세로로 길어진다. */}
-            <ul className="scrollbar-none -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-              {places.map((place, index) => (
-                <li key={place.content_id} className="w-28 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setSelected(place)}
-                    className="group text-left"
-                  >
-                    {/*
-                     * 비교에 실제로 쓴 사진이다(place_image_embeddings의 첫 장).
-                     * places.first_image_url이 아니다 — 절반 이상이 다른 주소라
-                     * 대표 이미지를 쓰면 비교하지 않은 사진을 보여주게 된다.
-                     */}
-                    <PlaceThumbnail src={place.image_url} />
-                    <span className="mt-2 flex items-baseline gap-1">
-                      <span className="text-[11px] tabular-nums text-brand">{index + 1}</span>
-                      <span className="line-clamp-2 text-xs font-bold text-ink">{place.title}</span>
-                    </span>
-                    {place.photo_count < RELIABLE_PHOTO_COUNT && (
-                      /* 사진 한 장으로 만든 벡터라 덜 믿을 만하다는 것을 숨기지 않는다. */
-                      <span className="text-[11px] leading-tight text-muted">사진 1장 비교</span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </div>
+          ) : places.length === 0 ? (
+            /*
+             * 두 상황을 구분한다. 문구가 하나면 "왜 안 나왔는지"를 사용자도
+             * 개발자도 알 수 없다.
+             *
+             *   후보 0곳    지금 갈 수 있는 곳 자체가 없었다(영업시간·반경).
+             *   후보 있음   후보는 있는데 사진 벡터가 없다. 적재가 안 된 구다.
+             */
+            <p>
+              {candidateCount === 0 ? (
+                <>
+                  <span className="font-medium">{centerName}</span> 주변에서 지금 갈 수 있는 곳을
+                  찾지 못했어요. 다른 지역으로 찾아볼까요?
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">{centerName}</span> 주변 {candidateCount}곳을 봤는데
+                  사진과 비교할 수 있는 곳이 없었어요. 아직 사진을 모으지 못한 지역이에요.
+                </>
+              )}
+            </p>
+          ) : (
+            <>
+              <p className="mb-3">
+                <span className="font-medium">{centerName}</span> 주변에서 분위기가 닮은 곳이에요.
+                눌러서 사진을 확인해 보세요.
+              </p>
+              {/* 좁은 화면에서는 가로 스크롤로 흘린다. 줄바꿈하면 다시 세로로 길어진다. */}
+              <ul className="scrollbar-none -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+                {places.map((place, index) => (
+                  <li key={place.content_id} className="w-28 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setSelected(place)}
+                      className="group text-left"
+                    >
+                      {/*
+                       * 비교에 실제로 쓴 사진이다(place_image_embeddings의 첫 장).
+                       * places.first_image_url이 아니다 — 절반 이상이 다른 주소라
+                       * 대표 이미지를 쓰면 비교하지 않은 사진을 보여주게 된다.
+                       */}
+                      <PlaceThumbnail src={place.image_url} />
+                      <span className="mt-2 flex items-baseline gap-1">
+                        <span className="text-[11px] tabular-nums text-brand">{index + 1}</span>
+                        <span className="line-clamp-2 text-xs font-bold text-ink">
+                          {place.title}
+                        </span>
+                      </span>
+                      {place.photo_count < RELIABLE_PHOTO_COUNT && (
+                        /* 사진 한 장으로 만든 벡터라 덜 믿을 만하다는 것을 숨기지 않는다. */
+                        <span className="text-[11px] leading-tight text-muted">사진 1장 비교</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
 
       {selected && (
         <RecommendationDetailPreviewModal

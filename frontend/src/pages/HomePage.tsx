@@ -262,9 +262,14 @@ export function HomePage() {
         if (wasCancelledByUser(controller)) dispatch({ type: "CANCEL_CHAT_TURN" });
         return;
       }
+      /* 이 시점에는 이미 /chat으로 넘어가 있다(위 navigate). 그래서 홈의 배너가
+         아니라 대화 안에 남긴다 — 사용자가 보고 있는 화면이 거기다. */
       dispatch({
-        type: "SET_ERROR",
-        payload: error instanceof ApiError ? error.message : text.requestError,
+        type: "FAIL_TURN",
+        payload: {
+          message: error instanceof ApiError ? error.message : text.requestError,
+          retryInput: trimmed,
+        },
       });
     } finally {
       endChatRequest(controller);

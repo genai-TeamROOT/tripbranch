@@ -462,6 +462,24 @@ export type ChatMessage =
       text: string;
     }
   | {
+      /*
+       * 실패한 턴을 대화 안에 남긴다(TP-245). 가운데 정렬 한 줄이라 답변 말풍선과
+       * 섞이지 않고, time_separator가 쓰던 모양을 따른다.
+       *
+       * **배너가 아니라 메시지인 이유.** 배너는 대화 목록 맨 위에 있어서 대화가
+       * 길어지면 화면 밖으로 밀려났다. 이 화면은 새 메시지마다 맨 아래로
+       * 스크롤하므로, 메시지로 넣으면 따로 붙잡아 두지 않아도 눈앞에 온다.
+       *
+       * 사용자 발화는 실패해도 대화에 남는다 — 실패도 그때 있었던 일이라 무엇에
+       * 대한 실패인지가 위아래로 읽힌다.
+       */
+      id: string;
+      type: "turn_error";
+      text: string;
+      /** 있으면 "다시 시도"가 붙고, 누르면 이 발화를 그대로 다시 보낸다. */
+      retryInput?: string;
+    }
+  | {
       id: string;
       type: "photo_similar_result";
       /**
@@ -472,8 +490,12 @@ export type ChatMessage =
       /**
        * 검색이 끝나기 전에는 places가 없다. 사진만 먼저 띄우고 "찾는 중"을
        * 보여주기 위해서다 — 응답이 1~2초라 아무것도 없으면 멈춘 것처럼 보인다.
+       *
+       * failed는 요청이 실패한 경우다. 사유는 바로 뒤에 붙는 turn_error가 말하므로
+       * 여기서는 올린 사진만 남긴다 — 채팅이 실패해도 사용자 발화를 남기는 것과
+       * 같은 규칙이다(TP-245).
        */
-      status: "loading" | "done";
+      status: "loading" | "done" | "failed";
       /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여준다. */
       centerName: string;
       places: PhotoSimilarPlace[];

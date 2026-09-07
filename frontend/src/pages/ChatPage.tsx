@@ -21,7 +21,6 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
-import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
@@ -284,9 +283,12 @@ export function ChatPage() {
           return;
         }
         dispatch({
-          type: "SET_ERROR",
-          payload:
-            error instanceof ApiError ? error.message : CHAT_TEXT[state.language].requestError,
+          type: "FAIL_TURN",
+          payload: {
+            message:
+              error instanceof ApiError ? error.message : CHAT_TEXT[state.language].requestError,
+            retryInput: text,
+          },
         });
       } finally {
         endChatRequest(controller);
@@ -380,9 +382,13 @@ export function ChatPage() {
         pending.travelOriginOverride,
       );
     } catch (error) {
+      /* 위치 갱신은 사용자가 고른 발화가 아니라 그 앞단계라 다시 보낼 값이 없다 —
+         retryInput 없이 사유만 남긴다. */
       dispatch({
-        type: "SET_ERROR",
-        payload: error instanceof Error ? error.message : "현재 위치를 가져오지 못했어요.",
+        type: "FAIL_TURN",
+        payload: {
+          message: error instanceof Error ? error.message : "현재 위치를 가져오지 못했어요.",
+        },
       });
     }
   }, [dispatch, pendingLocationRefresh, send]);
@@ -435,15 +441,6 @@ export function ChatPage() {
           </button>
         </div>
 
-        {state.error && (
-          <ErrorBanner
-            message={state.error}
-            onRetry={() => {
-              if (state.user_input) void requestSend(state.user_input);
-            }}
-          />
-        )}
-
         <ChatMessageList
           messages={state.messages}
           showDebug={false}
@@ -455,6 +452,7 @@ export function ChatPage() {
           // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
           // 것과 같은 경로로 분류를 태운다.
           onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
+          onRetryTurn={(input) => void requestSend(input)}
           onToggleTravelOrigin={(toggle) => {
             const label =
               toggle.alternative_origin === "search_center"

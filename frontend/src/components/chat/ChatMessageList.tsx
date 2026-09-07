@@ -190,6 +190,42 @@ function TimeSeparator({
   );
 }
 
+/*
+ * 실패한 턴을 알리는 가운데 정렬 한 줄(TP-245).
+ *
+ * TimeSeparator와 같은 모양을 쓰되 색만 다르다 — 시각 표시는 읽지 않아도 되는
+ * 정보라 회색이지만, 이건 읽어야 다음 행동을 정할 수 있어서 오류 색을 쓴다.
+ */
+function TurnErrorNotice({
+  text,
+  retryInput,
+  onRetry,
+  language,
+}: {
+  text: string;
+  retryInput?: string;
+  onRetry?: (input: string) => void;
+  language: Language;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1 py-1">
+      {/* 이 저장소가 오류에 쓰는 role 그대로다(ErrorBanner·ChatComposer·LocationPage). */}
+      <p role="alert" className="text-center text-xs text-rust">
+        {text}
+      </p>
+      {retryInput && onRetry && (
+        <button
+          type="button"
+          onClick={() => onRetry(retryInput)}
+          className="rounded-full px-2 py-0.5 text-xs font-medium text-rust underline underline-offset-2 transition-colors hover:bg-chip"
+        >
+          {language === "en" ? "Try again" : "다시 시도"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
@@ -200,6 +236,8 @@ interface ChatMessageListProps {
   onRelaxRadius: () => void;
   onSelectClarificationOption: (optionId: string, label: string) => void;
   onSelectFollowUpSuggestion: (suggestion: string) => void;
+  /** 실패한 턴의 "다시 시도". 안 넘기면 버튼 자체를 그리지 않는다. */
+  onRetryTurn?: (input: string) => void;
   onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   locationRefresh: {
     ageMinutes: number | null;
@@ -220,6 +258,7 @@ export function ChatMessageList({
   onRelaxRadius,
   onSelectClarificationOption,
   onSelectFollowUpSuggestion,
+  onRetryTurn,
   onToggleTravelOrigin,
   locationRefresh,
   progress,
@@ -236,6 +275,18 @@ export function ChatMessageList({
                 key={message.id}
                 at={message.at}
                 partial={message.partial}
+                language={language}
+              />
+            );
+          }
+
+          if (message.type === "turn_error") {
+            return (
+              <TurnErrorNotice
+                key={message.id}
+                text={message.text}
+                retryInput={message.retryInput}
+                onRetry={onRetryTurn}
                 language={language}
               />
             );
