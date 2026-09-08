@@ -249,10 +249,30 @@ test("친 검색어가 최근 검색에 남고, 다시 누르면 그 검색어�
 
   searchPlacesMock.mockClear();
   searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
-  await user.click(screen.getByRole("button", { name: "익선동 골목" }));
+  await user.click(screen.getByRole("button", { name: "익선동 골목 다시 검색" }));
 
   expect(searchPlacesMock).toHaveBeenCalledWith("익선동 골목");
   expect(await screen.findByText("안국역")).toBeInTheDocument();
+});
+
+test("최근 검색을 휴지통으로 한 줄씩 지운다", async () => {
+  /* 2026-09-08에 추가했다. 즐겨찾기와 달리 연필(이름 수정)은 없다 — 사용자가
+     친 말 그대로가 값이라 고칠 것이 없다. */
+  const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [], outside_service_area_count: 0 });
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "익선동 골목");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  await waitFor(() => expect(loadRecentSearches()).toEqual(["익선동 골목"]));
+
+  await user.click(screen.getByRole("button", { name: "익선동 골목 최근 검색에서 삭제" }));
+
+  expect(loadRecentSearches()).toEqual([]);
+  expect(screen.getByText("아직 검색한 장소가 없어요")).toBeInTheDocument();
+  /* 지우는 것이 재검색으로 새지 않는다 — 줄 전체가 "다시 검색" 버튼이라
+     stopPropagation이 빠지면 지우면서 검색까지 나간다. */
+  expect(searchPlacesMock).toHaveBeenCalledTimes(1);
 });
 
 test("칩이 출발지와 검색 기준을 각각 보여주고, 하나만 되돌린다", async () => {
@@ -552,7 +572,7 @@ test("검색 중에 최근 검색을 누르면 조용히 무시하지 않고 진
   expect(await screen.findByRole("button", { name: "검색 중" })).toBeDisabled();
 
   /* 검색어는 결과가 오기 전에 최근 검색으로 남는다 — 그 줄이 아직 잠기지 않았다. */
-  await user.click(screen.getByRole("button", { name: "안국역" }));
+  await user.click(screen.getByRole("button", { name: "안국역 다시 검색" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("아직 검색 중이에요");
 

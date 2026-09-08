@@ -46,7 +46,11 @@ import {
 } from "../components/layout/LocationPurposeModal";
 import { useFavorites } from "../hooks/useFavorites";
 import { useLocationSettings } from "../hooks/useLocationSettings";
-import { loadRecentSearches, rememberRecentSearch } from "../state/recentSearchesStorage";
+import {
+  forgetRecentSearch,
+  loadRecentSearches,
+  rememberRecentSearch,
+} from "../state/recentSearchesStorage";
 import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
@@ -609,15 +613,54 @@ export function LocationPage() {
             </p>
           ) : (
             recentSearches.map((keyword) => (
-              <button
-                type="button"
+              /* 즐겨찾기 줄과 같은 구조·같은 규칙이다.
+
+                 hover 배경: 여기는 더 어긋나 있었다 — `-mx-4`에 `w-full`이 같이
+                 붙어 폭은 부모(343px) 그대로인 채 위치만 왼쪽으로 밀려서, 배경이
+                 왼쪽으로만 16px 넘치고 오른쪽은 16px 모자랐다(실측: 줄 0~343px vs
+                 구분선 16~359px). 즐겨찾기 줄은 `div`라 양쪽으로 늘어났으니,
+                 **같은 클래스가 두 목록에서 다르게 동작하고 있었다.**
+
+                 `<button>`이던 줄을 `div role="button"`으로 바꿨다(2026-09-08) —
+                 휴지통을 넣으려면 버튼 안에 버튼이 들어가야 해서다. 즐겨찾기 줄이
+                 먼저 같은 이유로 이 모양이었고, aria-label을 줄에 직접 주는 것도
+                 그쪽과 같다(안 주면 줄 이름에 휴지통 라벨까지 딸려 붙는다). */
+              <div
                 key={keyword}
+                role="button"
+                tabIndex={0}
+                aria-label={isEn ? `Search ${keyword} again` : `${keyword} 다시 검색`}
                 onClick={() => void runSearch(keyword)}
-                className="-mx-4 flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-chip"
+                onKeyDown={(event) => {
+                  /* 줄 자체에 포커스가 있을 때만 검색한다 — 휴지통에서 누른
+                     스페이스가 위로 올라가면 지우면서 검색까지 나간다. */
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  void runSearch(keyword);
+                }}
+                className="flex cursor-pointer items-center gap-2.5 rounded-xl py-3 text-left transition-colors hover:bg-chip"
               >
-                <Search size={14} className="shrink-0 text-muted" />
+                <Search size={16} className="shrink-0 text-muted" />
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">{keyword}</span>
-              </button>
+                {/* 즐겨찾기와 달리 연필은 없다 — 최근 검색은 사용자가 친 말
+                    그대로가 값이라 고칠 것이 없다. 다시 검색하면 새로 남는다. */}
+                <button
+                  type="button"
+                  aria-label={
+                    isEn
+                      ? `Remove ${keyword} from recent searches`
+                      : `${keyword} 최근 검색에서 삭제`
+                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRecentSearches(forgetRecentSearch(keyword));
+                  }}
+                  className={`${ROW_ACTION_CLASS} text-muted hover:text-rust`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             ))
           )}
         </div>

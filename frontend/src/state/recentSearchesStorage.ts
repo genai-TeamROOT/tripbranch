@@ -51,6 +51,28 @@ export function rememberRecentSearch(query: string): string[] {
   return next;
 }
 
+/**
+ * 목록에서 검색어 하나를 뺀다.
+ *
+ * 전체를 지우는 clearRecentSearches와 따로 두는 이유는 **지우는 단위가 다르기**
+ * 때문이다 — 이건 화면에서 줄 하나를 지우는 것이고, clear는 로그아웃 정리
+ * (localUserData)가 통째로 비울 때 쓴다. 남는 것이 없으면 키까지 지워
+ * clearRecentSearches를 부른 것과 같은 상태로 둔다.
+ */
+export function forgetRecentSearch(query: string): string[] {
+  const next = loadRecentSearches().filter((item) => item !== query);
+  try {
+    if (next.length === 0) {
+      sessionStorage.removeItem(RECENT_SEARCHES_KEY);
+    } else {
+      sessionStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next));
+    }
+  } catch {
+    /* 저장소가 막혀 있어도 화면의 목록은 지워진 상태로 계속 보여준다. */
+  }
+  return next;
+}
+
 export function clearRecentSearches(): void {
   try {
     sessionStorage.removeItem(RECENT_SEARCHES_KEY);
