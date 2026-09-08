@@ -29,6 +29,10 @@ function isTripState(value: unknown): value is TripState {
     Array.isArray(state.shown_place_ids) &&
     Array.isArray(state.messages) &&
     Array.isArray(state.auditTurns) &&
+    /* 이 필드가 없던 저장본도 그대로 복원한다. 저장 버전을 올리면 대신 그 대화가
+       통째로 버려진다 — 이어물을 버튼 목록 하나 때문에 치를 값이 아니다. 없으면
+       TripProvider가 초기값(빈 배열)으로 채운다. */
+    (state.recent_follow_ups === undefined || Array.isArray(state.recent_follow_ups)) &&
     state.messages.every(isChatMessage) &&
     isChatPhase(state.phase) &&
     (state.device_location === null || typeof state.device_location === "string") &&

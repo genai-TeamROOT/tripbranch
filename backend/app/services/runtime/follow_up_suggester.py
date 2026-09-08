@@ -164,6 +164,22 @@ def _drops_congestion_without_a_place(label: str, known_places: list[str]) -> bo
     return not _mentions_a_place(label, known_places)
 
 
+def _comparable(label: str) -> str:
+    """두 문구가 같은 말인지 견주려고 표기 차이를 지운다.
+
+    글자 그대로 비교하면 걸러야 할 것을 놓친다. 같은 요청이 물음표 하나, 띄어쓰기
+    하나만 달라도 다른 문자열이 되기 때문이다 — "여기 주차되나요?"와 "여기 주차되나요"는
+    사용자에게 같은 버튼이다.
+
+    **표기만 지우고 뜻은 건드리지 않는다.** 조사나 어미까지 손대면 서로 다른 요청이
+    같은 것으로 뭉개진다("경복궁 가는 길 막혀?"와 "경복궁 가는 길 막혔어?"는 같지만,
+    "경복궁 주차돼?"와 "경복궁 주차장 있어?"는 다르게 남아야 한다). 여기서 지우는 것은
+    공백과 문장 끝 부호뿐이다.
+    """
+
+    return "".join(label.split()).rstrip("?？!！.。").casefold()
+
+
 def _fix_known_typos(label: str) -> str:
     """관측된 맞춤법 오류만 바로잡는다. 목록에 없는 것은 건드리지 않는다."""
 
@@ -182,28 +198,36 @@ def _strip_stray_question_mark(label: str) -> str:
 
 
 def _clean(
-    suggestions: list[str], *, user_input: str, known_places: list[str]
+    suggestions: list[str],
+    *,
+    user_input: str,
+    known_places: list[str],
+    already_shown: list[str],
 ) -> list[str]:
     """모델이 준 문구를 화면에 올릴 수 있는 형태로 좁힌다.
 
     프롬프트에 적은 개수·길이 상한은 부탁이고 실제 계약은 여기다. 상한을 넘겨 받아도
     턴을 실패시키지 않고 잘라 쓴다 — 버튼은 답변에 딸린 부가물이라 없는 편이 잘못된
     것보다 낫고, 잘못된 것보다는 몇 개 적은 편이 낫다.
+
+    already_shown은 화면이 최근에 버튼으로 보여준 문구다(AgentRequest.recent_follow_ups).
+    모델에도 같은 목록을 넘겨 피하게 하지만, 지켜졌는지는 여기서 본다.
     """
 
-    spoken = user_input.strip()
+    seen = {_comparable(user_input)}
+    seen.update(_comparable(shown) for shown in already_shown)
     cleaned: list[str] = []
     for suggestion in suggestions:
         label = _fix_known_typos(_strip_stray_question_mark(" ".join(suggestion.split())))
         if not label or len(label) > MAX_LABEL_LENGTH:
             continue
-        # 방금 한 질문을 그대로 다시 권하지 않는다.
-        if label == spoken:
-            continue
-        if label in cleaned:
+        # 방금 한 질문도, 최근에 이미 버튼으로 보여준 문구도 다시 권하지 않는다.
+        key = _comparable(label)
+        if key in seen:
             continue
         if _drops_congestion_without_a_place(label, known_places):
             continue
+        seen.add(key)
         cleaned.append(label)
         if len(cleaned) == MAX_SUGGESTIONS:
             break
@@ -229,6 +253,8 @@ async def suggest_follow_ups(
 
     place_names = _place_names(response)
     search_place = _search_place(response)
+    # 화면이 최근에 버튼으로 보여준 문구. 개수·길이는 AgentRequest 검증기가 이미 잘랐다.
+    already_shown = list(request.recent_follow_ups)
     try:
         result = await llm.generate_follow_up_suggestions(
             user_input=request.user_input,
@@ -241,6 +267,10 @@ async def suggest_follow_ups(
             # 주차 질문을 권할 자리인지 모델이 가릴 근거. 도보·대중교통으로 움직이는
             # 사용자에게 주차 자리를 묻게 하면 버튼 하나를 통째로 버리는 셈이 된다.
             transport=response.state.user_conditions.transport,
+            # 이미 권한 문구. 아래 _clean()이 다시 걸러내지만, 모델이 처음부터 다른
+            # 방향을 잡게 하는 쪽이 본질적이다 — 걸러내기만 하면 세 자리를 채우지
+            # 못하고 버튼이 한두 개로 줄어든다.
+            already_suggested=already_shown,
             max_suggestions=MAX_SUGGESTIONS,
             max_label_length=MAX_LABEL_LENGTH,
         )
@@ -256,7 +286,8 @@ async def suggest_follow_ups(
     return _clean(
         result.data,
         user_input=request.user_input,
-        known_places=[*place_names, *( [search_place] if search_place else [] )],
+        known_places=[*place_names, *([search_place] if search_place else [])],
+        already_shown=already_shown,
     )
 
 

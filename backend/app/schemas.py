@@ -1033,6 +1033,39 @@ class InterpretRequest(BaseModel):
 # AgentResponse는 여전히 임시 모델이다 — 계약이 확정되면 필드가 바뀔 수 있다.
 
 
+# AgentRequest.recent_follow_ups의 상한.
+#
+# 개수: 직전 턴에 보여준 세 개.
+#
+# **막으려는 것은 "세 개가 전부 방금 본 것"이다.** 세 개면 직전 턴의 버튼 전부를 덮으므로
+# 그 경우가 구조적으로 불가능해진다. 두 턴 이상 전의 문구가 하나씩 돌아오는 것은 남지만,
+# 그건 사용자가 "또 이거네"라고 느끼는 것과 강도가 다르다.
+#
+# **넓히면 버튼이 마른다.** 한 장소를 두고 이어가는 대화에서 그 장소로 이어갈 질문은 원래
+# 예닐곱 개뿐이라(운영시간·주차·혼잡도·행사·도로·편의시설·이동시간), 목록이 길어지면 그
+# 공간을 통째로 덮어버린다. 모델이 규칙을 어겨서가 아니다 — 같은 조건을 다섯 번 돌려 모델
+# 원본을 봤더니 다섯 번 다 한 개였고, _clean()이 버린 것은 없었다.
+#
+# 같은 5턴 대화(마포구 추천 -> 난지한강공원 운영시간·주차·편의시설·혼잡도)로 잰 값이다.
+#   상한  3 -> 버튼 3/3/3/3/3, 반복 4건 (모두 두 턴 이상 전 문구)
+#   상한  6 -> 버튼 3/3/3/1/1, 반복 2건
+#   상한 10 -> 버튼이 0이 되는 턴이 생김
+#
+# **측정 전에 두 가지를 먼저 확인한다.** 이 값을 한 번 열로 올렸다가 되돌렸는데, 그때 근거로
+# 삼은 측정이 (1) LANGFUSE_PROMPTS_ENABLED가 켜져 있어 레포가 아닌 원격 프롬프트로 돌았고
+# (2) 아예 다른 워크트리에서 뜬 서버를 향하고 있었다. 프롬프트 출처와 서버의 작업 디렉터리를
+# 먼저 본다.
+#
+# 세 개는 직전 턴에 보여준 버튼 전부다 — 사용자가 방금 보고 지나친 것들이라 되풀이될
+# 확률이 가장 높고, 그만큼만 부탁하면 모델이 실제로 지킨다.
+#
+# 길이: 버튼 문구의 상한(follow_up_suggester.MAX_LABEL_LENGTH)과 같은 값이다. 그보다 긴
+# 문자열은 이 슬롯이 만든 문구일 수 없으므로 비교 대상이 아니다. 두 곳에서 같은 값을
+# 쓰지만 상수를 공유하지는 않는다 — 저쪽이 schemas를 가져다 쓰는 방향이라 반대로는 못 건다.
+MAX_RECENT_FOLLOW_UPS = 3
+MAX_RECENT_FOLLOW_UP_LENGTH = 40
+
+
 class AgentRequest(BaseModel):
     """run_agent()의 입력. has_previous_recommendation 등은 더 이상 호출자가 넣지 않는다 —
     Runtime이 B의 SessionContextResponse에서 직접 계산한다."""
@@ -1089,6 +1122,34 @@ class AgentRequest(BaseModel):
     # 세션 상태(ignore_operating_hours_until)는 건드리지 않는다 — 이 턴에만
     # 적용되는 일회성 오버라이드다.
     debug_ignore_operating_hours: bool = False
+    # 화면이 최근에 후속 질문 버튼으로 보여준 문구(오래된 것이 앞). 같은 문구를
+    # 다시 권하지 않으려고 받는 제외 목록이다.
+    #
+    # **서버가 채울 수 없어서 화면이 보낸다.** B가 보관하는 recent_turns에는 사용자가
+    # 실제로 한 말만 남는다. 버튼으로 보여줬는데 누르지 않은 문구는 어디에도 안 남아서,
+    # 서버만으로는 "이미 권했다"를 알 방법이 없다. 화면이 유일한 출처다.
+    #
+    # 그래서 ApiContext.recent_turns 계열과 규칙이 반대다 — 저쪽은 라우터가 채우고
+    # 호출자가 보낸 값을 무시하지만, 이쪽은 화면이 보낸 값을 그대로 쓴다.
+    #
+    # **신뢰할 수 없는 입력이다.** 이 문구는 후속 질문 제안 프롬프트에 실린다. 개수와
+    # 길이를 아래 검증기가 자르되, 형식이 어긋나도 422로 turn을 실패시키지 않는다 —
+    # 버튼 중복을 막자고 대화를 끊을 이유가 없다.
+    recent_follow_ups: list[str] = Field(default_factory=list)
+
+    @field_validator("recent_follow_ups", mode="before")
+    @classmethod
+    def _trim_recent_follow_ups(cls, value: object) -> list[str]:
+        """제외 목록을 프롬프트에 실어도 되는 크기로 자른다. 어긋난 입력은 버린다."""
+
+        if not isinstance(value, list):
+            return []
+        trimmed = [
+            stripped
+            for stripped in (item.strip() for item in value if isinstance(item, str))
+            if stripped and len(stripped) <= MAX_RECENT_FOLLOW_UP_LENGTH
+        ]
+        return trimmed[-MAX_RECENT_FOLLOW_UPS:]
 
 
 class LLMCallMetadata(BaseModel):

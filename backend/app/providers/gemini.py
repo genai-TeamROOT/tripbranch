@@ -715,6 +715,7 @@ class RealGeminiProvider:
         place_names: list[str],
         search_place: str | None,
         transport: str | None,
+        already_suggested: list[str],
         max_suggestions: int,
         max_label_length: int,
     ) -> ProviderResult[list[str]]:
@@ -729,6 +730,7 @@ class RealGeminiProvider:
             "places_shown": place_names,
             "search_place": search_place,
             "transport": transport,
+            "already_suggested": already_suggested,
         }
         result = await self._call_structured(
             instruction,

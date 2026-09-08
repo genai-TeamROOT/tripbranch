@@ -188,6 +188,9 @@ export function ChatPage() {
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
             schedule_from_saved: options?.scheduleFromSaved ?? false,
+            /* 이미 보여준 후속 질문. 서버는 이 값을 만들 수 없다 — 보여주기만 하고
+               누르지 않은 문구는 화면 말고 아는 곳이 없다. */
+            recent_follow_ups: state.recent_follow_ups,
           },
           (event) => {
             if (event.type === "progress") {
@@ -314,6 +317,7 @@ export function ChatPage() {
       state.device_location,
       state.language,
       state.messages,
+      state.recent_follow_ups,
       state.session_id,
     ],
   );

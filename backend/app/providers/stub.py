@@ -1103,6 +1103,7 @@ class FakeLLMProvider:
         place_names: list[str],
         search_place: str | None,
         transport: str | None,
+        already_suggested: list[str],
         max_suggestions: int,
         max_label_length: int,
     ) -> ProviderResult[list[str]]:
@@ -1112,6 +1113,10 @@ class FakeLLMProvider:
         (`follow_up_suggester.py`)의 정제·상한 로직이 한 줄도 안 돌면서 테스트는
         통과한다. 그래서 여기서는 이번 턴에 나간 장소 이름을 실제로 써서 문구를
         만들고, 상한을 넘는 개수를 일부러 반환한다 — 호출부가 자르는지 확인된다.
+
+        **already_suggested는 여기서 거르지 않고 일부러 되돌려 준다.** 같은 이유다 —
+        Fake가 미리 걸러 주면 호출부의 중복 제거가 한 줄도 안 돌면서 테스트는 통과한다.
+        중복을 실제로 없애는 책임은 호출부에 있고, 그게 도는지 확인되어야 한다.
         """
 
         del assistant_message, max_label_length
@@ -1134,7 +1139,10 @@ class FakeLLMProvider:
         suggestions = [f"{name} 운영시간 알려줘" for name in place_names[:max_suggestions]]
         suggestions.append("다른 곳도 보여줘")
         suggestions.append("이 장소들로 일정 짜줘")
-        return provider_result(suggestions, source=ProviderSource.FAKE_LLM)
+        # 이미 보여준 문구를 맨 앞에 되돌려 준다(위 docstring 참고).
+        return provider_result(
+            [*already_suggested[-1:], *suggestions], source=ProviderSource.FAKE_LLM
+        )
 
     async def stream_recommendation_summary(
         self,
