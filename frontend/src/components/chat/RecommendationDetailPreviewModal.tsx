@@ -30,7 +30,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
@@ -1214,7 +1214,12 @@ function photoKey(url: string): string {
  * 밀린다 — 사진이 늦게 도착하는 만큼 그 이동이 눈에 띈다. 한 장뿐인 곳(52%)에서는
  * 빈 자리가 남지만, 배경 없이 비워 두면 눈에 걸리지 않는다.
  */
-const PHOTO_STRIP_HEIGHT = "h-[60px]";
+/* 썸네일 56px + 위아래 여백 6px씩. 선택 표시가 ring이라 크기를 키우지는 않지만,
+   ring-offset이 요소 바깥에 그려지므로 그만큼 자리가 있어야 잘리지 않는다. */
+/** 큰 사진을 이만큼 밀어야 넘어간다. 짧으면 세로로 스크롤하다 사진이 넘어간다. */
+const SWIPE_THRESHOLD_PX = 40;
+
+const PHOTO_STRIP_HEIGHT = "h-[68px]";
 
 /** 사진 영역의 껍데기. 로딩·갤러리·이미지 없음 세 경우가 같은 높이를 쓴다. */
 function PhotoAreaShell({
@@ -1296,9 +1301,14 @@ function FadeInImage({
   if (!placeholderSrc) return image;
 
   return (
-    // overflow-hidden: 흐림 처리로 커진(scale-105) 미리보기가 둥근 모서리 밖으로
-    // 삐져나오지 않게 자른다.
-    <div className="relative overflow-hidden">
+    /* overflow-hidden: 흐림 처리로 커진(scale-105) 미리보기가 모서리 밖으로
+       삐져나오지 않게 자른다.
+
+       **rounded-2xl이 여기에도 있어야 한다**(2026-09-08). 안쪽 두 img는 둥근데
+       이 래퍼가 사각이라 사각으로 잘랐고, 105%로 커진 흐림 이미지가 네 귀퉁이를
+       채워 "첫 사진만 라운드가 안 먹은" 것처럼 보였다. 아래 두 img의 반지름과
+       같은 값이어야 한다 — 부르는 쪽(PlacePhotoGallery)도 rounded-2xl이다. */
+    <div className="relative overflow-hidden rounded-2xl">
       <img
         src={placeholderSrc}
         alt=""
@@ -1356,9 +1366,42 @@ function PlacePhotoGallery({
   // 모달을 연 채로 다른 장소의 상세가 도착하면 선택을 처음으로 되돌린다. 안 되돌리면
   // 사진이 3장인 곳에서 3번째를 보다가 1장짜리 장소로 바뀌었을 때 빈 자리가 남는다.
   const firstUrl = urls[0];
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
     setActiveIndex(0);
   }, [firstUrl]);
+
+  /*
+   * 큰 사진을 옆으로 밀어 넘긴다. 작은 사진 줄은 그대로 두는데, 그쪽이 키보드·
+   * 스크린리더로 고를 수 있는 유일한 길이기 때문이다 — 스와이프는 덤으로 얹는
+   * 손가락용 지름길이지 대체재가 아니다.
+   *
+   * framer-motion의 drag를 쓰지 않았다. 사진이 손가락을 따라 끌려오는 모양을
+   * 내려면 상태 하나로는 안 되고(끌리는 중의 오프셋, 놓았을 때의 관성) 이 화면이
+   * 지금 필요한 것보다 커진다. 여기서는 "민 방향으로 한 장"만 하면 된다.
+   */
+  const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+  };
+
+  const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    /* 세로가 더 크면 시트를 스크롤하려던 손짓이다 — 사진을 넘기지 않는다. */
+    if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+    setActiveIndex((previous) => {
+      const current = Math.min(previous, urls.length - 1);
+      /* 끝에서 반대편으로 돌지 않는다. 몇 장 중 몇 번째인지가 사진 위에 떠 있어서
+         (1 / 3) 돌면 그 숫자가 갑자기 뛰는 것으로 읽힌다. */
+      return Math.max(0, Math.min(urls.length - 1, current + (deltaX < 0 ? 1 : -1)));
+    });
+  };
 
   if (urls.length === 0) return null;
 
@@ -1368,7 +1411,14 @@ function PlacePhotoGallery({
   return (
     <PhotoAreaShell
       main={
-        <div className="relative">
+        /* touch-pan-y: 세로 스크롤은 브라우저에 그대로 넘기고 가로만 우리가 받는다.
+           이게 없으면 사진 위에서 위아래로 쓸어도 시트가 안 움직인다. */
+        <div
+          className="relative touch-pan-y"
+          data-testid="photo-swipe-surface"
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
           <FadeInImage
             /* src가 바뀌면 새로 받아오므로 다시 켜지게 remount한다 — key가 없으면
                이전 사진의 "도착함" 상태가 그대로 남아 안 온 사진이 보인다. */
@@ -1391,7 +1441,7 @@ function PlacePhotoGallery({
       strip={
         urls.length > 1 ? (
           <div
-            className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+            className="-mx-1 flex gap-2 overflow-x-auto px-1 py-1.5"
             role="group"
             aria-label={`${placeName} 사진 목록`}
           >
@@ -1402,11 +1452,16 @@ function PlacePhotoGallery({
                 onClick={() => setActiveIndex(index)}
                 aria-label={`${placeName} 사진 ${index + 1}번째 보기`}
                 aria-current={index === safeIndex}
-                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                /* **테두리가 아니라 ring이다**(2026-09-08). border-2는 요소를 60px로
+                   키웠는데 자리는 56px뿐이라(h-[60px] 안쪽 pb-1) 위아래 4px이 잘려
+                   보였다. ring은 그림자라 크기를 안 바꾸고, ring-offset이 사진과
+                   선 사이의 간격이 된다. 색도 디자인 토큰 밖이던 blue-600 대신
+                   brand를 쓴다(#2563eb -> #2454e0, 사실상 같은 파랑이다). */
+                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg transition ${
                   index === safeIndex
-                    ? "border-blue-600 dark:border-blue-400"
-                    : "border-transparent opacity-70 hover:opacity-100"
-                }`}
+                    ? "ring-1 ring-brand ring-offset-2 ring-offset-bg"
+                    : "opacity-70 hover:opacity-100"
+                } focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 focus:ring-offset-bg`}
               >
                 <FadeInImage
                   src={url}
@@ -1638,22 +1693,34 @@ export function RecommendationDetailPreviewModal({
       >
         <span className="mx-auto mt-2.5 h-1.5 w-10 shrink-0 rounded-full bg-border" />
 
-        <div className="flex shrink-0 justify-end px-4 pb-3 pt-5">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-ink shadow-resting transition-colors hover:bg-chip focus:outline-none focus:ring-2 focus:ring-brand"
-            aria-label={isEn ? "Close details" : "상세 창 닫기"}
-          >
-            <X size={20} />
-          </button>
-        </div>
+        {/* **사진 위에 겹쳐 띄운다**(2026-09-08). 전에는 제 행을 차지해서 사진이
+            그만큼 아래로 밀렸다. 시트(relative) 기준 absolute라 아래 목록을
+            스크롤해도 제자리에 남는다.
+
+            사진 위에 놓이므로 흰 원만으로는 밝은 사진에서 묻힌다 — 컴포저·헤더가
+            이미 쓰는 프로스티드(반투명 + backdrop-blur)를 같은 언어로 쓴다.
+
+            top-7(28px)은 사진의 윗변과 같은 값이다: 손잡이 바가 mt-2.5(10px) +
+            h-1.5(6px)로 16px에서 끝나고, 아래 스크롤 영역의 pt-3(12px)이 더해진다.
+            셋 중 하나를 바꾸면 이 값도 같이 바꿔야 한다.
+
+            right-3(12px)은 사진의 오른쪽 끝(스크롤 영역 px-4 = 16px)보다 4px
+            바깥이다. 딱 맞추면(right-4) 버튼의 모서리와 사진의 둥근 모서리가
+            겹쳐 그 사이에 초승달 모양 틈이 보인다 — 조금 넘겨서 덮는다. */}
+        <button
+          type="button"
+          onClick={handleClose}
+          className="absolute right-3 top-7 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/70 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-brand"
+          aria-label={isEn ? "Close details" : "상세 창 닫기"}
+        >
+          <X size={20} />
+        </button>
 
         {/* overscroll-contain: 여기가 끝에 닿아도 스크롤을 바깥으로 넘기지 않는다.
             없으면 상세를 맨 위까지 올린 뒤 더 올릴 때 뒤의 채팅이 함께 밀린다 —
             이 모달은 document.body로 포털되고 #root는 min-height라, 대화가 길면
             문서 자체가 스크롤되기 때문이다. */}
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5 pt-3">
           {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
               PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
               화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
@@ -1762,6 +1829,27 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
+          {item?.recommendation_reason && (
+            /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 문장은 추천 카드가
+               이미 들고 온 값이라(item) 상세 응답을 기다리지 않는다 — 위에 두면
+               표가 스켈레톤인 동안 읽을 것이 있고, 이 장소가 왜 떴는지를 운영시간
+               같은 사실보다 먼저 본다. 길이가 처음부터 정해져 있어 나중에 표가
+               채워져도 이 절이 밀리거나 늘지 않는다.
+
+               박스(rounded-2xl bg-sky-light p-4)는 걷었다. 아래 "개요"와 같은
+               모양이 되어 이 화면의 절들이 제목 + 본문 하나로 고르게 읽힌다.
+               구분은 배경이 아니라 제목의 브랜드 색이 진다. */
+            <section className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-1.5">
+                <Sparkles size={14} className="text-brand" />
+                <p className="text-xs font-bold text-brand">
+                  {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
+                </p>
+              </div>
+              <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+            </section>
+          )}
+
           {isLoading ? (
             /* 운영시간을 이미 알면 그 줄은 실제 값이므로 스켈레톤을 한 줄 적게 둔다.
                줄 수는 지연과 무관하게 처음부터 최종값이다 — 지연에 묶으면 200ms
@@ -1779,18 +1867,6 @@ export function RecommendationDetailPreviewModal({
                 <AccessibilityTable card={detailCard} isEn={isEn} />
               </>
             )
-          )}
-
-          {item?.recommendation_reason && (
-            <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">
-              <div className="flex items-center gap-1.5">
-                <Sparkles size={14} className="text-brand-deep" />
-                <p className="text-xs font-bold text-brand-deep">
-                  {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
-                </p>
-              </div>
-              <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
-            </section>
           )}
 
           {detailCard?.overview && (
@@ -1851,7 +1927,34 @@ export function RecommendationDetailPreviewModal({
         </div>
 
         {showRouteFooter && (
-          <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
+          <div className="relative shrink-0 bg-bg/80 px-4 pb-7 pt-4 backdrop-blur-md">
+            {/* **바 자체가 반투명이다**(2026-09-08). 처음에는 불투명한 bg-bg 바
+                위에 페이드 띠만 얹었는데, 그러니 그 띠가 내용 위에 덧칠된
+                별개의 층으로 읽혀 새 선처럼 보였다(사용자 보고). 지금은 바가
+                bg-bg/80 + backdrop-blur-md로 뒤를 비추고, 이 띠는 그 상태를
+                위로 이어 붙이는 역할만 한다 — 두 요소의 알파와 블러 세기가
+                같아야 맞닿는 선이 안 생긴다.
+
+                AppHeader가 같은 언어다(불투명 바 없이 그라데이션 + 프로스티드
+                컨트롤). 여기만 불투명한 바를 쓰고 있던 것이 원인이었다.
+
+                위로 갈수록 배경색이 투명해지고(bg-gradient-to-t) 블러도 같은
+                방향으로 옅어진다(mask-image).
+
+                bottom-full — 이 바의 윗변에 딱 붙여 위로 자란다. 그래서 부모가
+                relative 여야 한다(없으면 시트 전체를 기준으로 잡아 엉뚱한 데 뜬다).
+
+                블러와 색 fade를 한 요소에 둔 이유는, 둘의 시작·끝이 어긋나면
+                흐릿한 띠의 가장자리가 오히려 새로운 선으로 보이기 때문이다.
+
+                h-5(20px)다. 처음 h-10(40px)으로 잡았더니 띠가 읽고 있던 줄까지
+                덮어 내용이 잘린 것처럼 보였다(사용자 보고) — 경계를 지우는 데
+                필요한 만큼만 남긴다. 마스크에 중간 정지점(40%)을 두었던 것도
+                걷었다. 그 지점이 블러가 꺾이는 자리라 또 하나의 옅은 선이 됐다. */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 bottom-full h-5 bg-gradient-to-t from-bg/80 to-transparent backdrop-blur-md [mask-image:linear-gradient(to_top,rgb(0_0_0),transparent)]"
+            />
             {needsDeviceLocation ? (
               /* 길찾기는 "출발=현재 위치, 도착=이 좌표"라 현재 위치 없이는 열 수 없다.
                  숨기는 대신 여기서 바로 받게 한다 — 화면을 옮기지 않아도 된다.
@@ -1892,26 +1995,26 @@ export function RecommendationDetailPreviewModal({
                 </button>
               </div>
             ) : (
-            <button
-              type="button"
-              disabled={!canRoute}
-              onClick={() => {
-                if (!canRoute || !detailCard) return;
-                void directions.openDirections({
-                  destLat: detailCard.latitude as number,
-                  destLng: detailCard.longitude as number,
-                  destName: detailCard.place_name ?? title,
-                });
-              }}
-              className={`flex h-[52px] w-full items-center justify-center gap-2 rounded-full text-base font-bold transition-colors ${
-                canRoute
-                  ? "bg-brand text-white hover:bg-brand-deep"
-                  : "cursor-not-allowed bg-chip text-muted"
-              }`}
-            >
-              <Navigation size={18} />
-              {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}
-            </button>
+              <button
+                type="button"
+                disabled={!canRoute}
+                onClick={() => {
+                  if (!canRoute || !detailCard) return;
+                  void directions.openDirections({
+                    destLat: detailCard.latitude as number,
+                    destLng: detailCard.longitude as number,
+                    destName: detailCard.place_name ?? title,
+                  });
+                }}
+                className={`flex h-[52px] w-full items-center justify-center gap-2 rounded-full text-base font-bold transition-colors ${
+                  canRoute
+                    ? "bg-brand text-white hover:bg-brand-deep"
+                    : "cursor-not-allowed bg-chip text-muted"
+                }`}
+              >
+                <Navigation size={18} />
+                {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}
+              </button>
             )}
           </div>
         )}
