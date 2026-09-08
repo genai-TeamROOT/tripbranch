@@ -1020,6 +1020,19 @@ class InterpretRequest(BaseModel):
 # AgentResponse는 여전히 임시 모델이다 — 계약이 확정되면 필드가 바뀔 수 있다.
 
 
+# AgentRequest.recent_follow_ups의 상한.
+#
+# 개수: 최근 열 개. 넓힐수록 같은 문구가 다시 나올 확률은 줄지만, 다 걸러내서 버튼이
+# 하나도 안 뜨는 턴이 늘어난다 — 한 장소를 두고 이어가는 대화에서 만들 수 있는 질문은
+# 원래 몇 가지 안 된다. 중복을 막는 것보다 권할 게 남아 있는 쪽이 중요해서 좁게 잡았다.
+#
+# 길이: 버튼 문구의 상한(follow_up_suggester.MAX_LABEL_LENGTH)과 같은 값이다. 그보다 긴
+# 문자열은 이 슬롯이 만든 문구일 수 없으므로 비교 대상이 아니다. 두 곳에서 같은 값을
+# 쓰지만 상수를 공유하지는 않는다 — 저쪽이 schemas를 가져다 쓰는 방향이라 반대로는 못 건다.
+MAX_RECENT_FOLLOW_UPS = 10
+MAX_RECENT_FOLLOW_UP_LENGTH = 40
+
+
 class AgentRequest(BaseModel):
     """run_agent()의 입력. has_previous_recommendation 등은 더 이상 호출자가 넣지 않는다 —
     Runtime이 B의 SessionContextResponse에서 직접 계산한다."""
@@ -1076,6 +1089,34 @@ class AgentRequest(BaseModel):
     # 세션 상태(ignore_operating_hours_until)는 건드리지 않는다 — 이 턴에만
     # 적용되는 일회성 오버라이드다.
     debug_ignore_operating_hours: bool = False
+    # 화면이 최근에 후속 질문 버튼으로 보여준 문구(오래된 것이 앞). 같은 문구를
+    # 다시 권하지 않으려고 받는 제외 목록이다.
+    #
+    # **서버가 채울 수 없어서 화면이 보낸다.** B가 보관하는 recent_turns에는 사용자가
+    # 실제로 한 말만 남는다. 버튼으로 보여줬는데 누르지 않은 문구는 어디에도 안 남아서,
+    # 서버만으로는 "이미 권했다"를 알 방법이 없다. 화면이 유일한 출처다.
+    #
+    # 그래서 ApiContext.recent_turns 계열과 규칙이 반대다 — 저쪽은 라우터가 채우고
+    # 호출자가 보낸 값을 무시하지만, 이쪽은 화면이 보낸 값을 그대로 쓴다.
+    #
+    # **신뢰할 수 없는 입력이다.** 이 문구는 후속 질문 제안 프롬프트에 실린다. 개수와
+    # 길이를 아래 검증기가 자르되, 형식이 어긋나도 422로 turn을 실패시키지 않는다 —
+    # 버튼 중복을 막자고 대화를 끊을 이유가 없다.
+    recent_follow_ups: list[str] = Field(default_factory=list)
+
+    @field_validator("recent_follow_ups", mode="before")
+    @classmethod
+    def _trim_recent_follow_ups(cls, value: object) -> list[str]:
+        """제외 목록을 프롬프트에 실어도 되는 크기로 자른다. 어긋난 입력은 버린다."""
+
+        if not isinstance(value, list):
+            return []
+        trimmed = [
+            stripped
+            for stripped in (item.strip() for item in value if isinstance(item, str))
+            if stripped and len(stripped) <= MAX_RECENT_FOLLOW_UP_LENGTH
+        ]
+        return trimmed[-MAX_RECENT_FOLLOW_UPS:]
 
 
 class LLMCallMetadata(BaseModel):

@@ -806,6 +806,13 @@ export interface AgentDebugRequest {
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
   conversation_place_name?: string | null;
   /*
+   * 최근에 후속 질문 버튼으로 보여준 문구. 서버가 같은 문구를 다시 권하지 않는 데 쓴다.
+   *
+   * **서버가 알 수 없는 값이라 화면이 보낸다.** 세션에 남는 것은 사용자가 실제로 한
+   * 말뿐이라, 보여주기만 하고 누르지 않은 문구는 화면 말고 아는 곳이 없다.
+   */
+  recent_follow_ups?: string[];
+  /*
    * 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
    * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다.
    */

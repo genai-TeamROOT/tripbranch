@@ -58,6 +58,7 @@ function seed(sessionId: string | null, items: SavedPlaceItem[]): void {
     device_location_snoozed_until: null,
     awaiting_clarification: false,
     saved_places: items,
+    recent_follow_ups: [],
     agentProgress: null,
     streamingIntent: null,
   } satisfies TripState);
