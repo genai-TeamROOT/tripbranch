@@ -19,7 +19,7 @@ import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
-import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
+import { SavedPlacesChip } from "../components/chat/SavedPlacesChip";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
 import { useVisualViewportHeight } from "../hooks/useVisualViewportHeight";
@@ -436,7 +436,19 @@ export function ChatPage() {
       className="flex h-full flex-col overflow-y-auto"
       style={visualViewportHeight != null ? { height: visualViewportHeight } : undefined}
     >
-      <AppHeader location={locationChip} />
+      {/* 담은 장소가 있으면 헤더 오른쪽에 "N곳 일정 짜기"가 뜬다. 전에는 이
+          동작이 입력창 바로 위(SavedPlacesBar)에 있어서, 하트를 누른 뒤 맨
+          아래까지 내려가야 보였다 — 카드를 보며 담는 동안에는 안 보인다. */}
+      <AppHeader
+        location={locationChip}
+        trailing={
+          <SavedPlacesChip
+            onPlanFromSaved={planFromSaved}
+            isLoading={isLoading}
+            language={state.language}
+          />
+        }
+      />
 
       <div
         ref={messagesContainerRef}
@@ -484,12 +496,6 @@ export function ChatPage() {
               : null
           }
           progress={state.agentProgress}
-          language={state.language}
-        />
-
-        <SavedPlacesBar
-          onPlanFromSaved={planFromSaved}
-          isLoading={isLoading}
           language={state.language}
         />
       </div>
