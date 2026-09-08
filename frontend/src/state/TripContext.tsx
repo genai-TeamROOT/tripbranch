@@ -264,9 +264,9 @@ export function isPastTurnControl(message: ChatMessage): boolean {
 /*
  * 다음 발화에 함께 보낼 "이미 보여준 후속 질문" 목록의 상한.
  * backend/app/schemas.py의 MAX_RECENT_FOLLOW_UPS와 같은 값이다 — 더 보내도 서버가
- * 뒤에서부터 자른다. 왜 열인지는 그쪽 주석에 있다.
+ * 뒤에서부터 자른다. 왜 셋인지는 그쪽 주석에 있다 — 넓히면 권할 것이 남지 않는다.
  */
-export const MAX_RECENT_FOLLOW_UPS = 10;
+export const MAX_RECENT_FOLLOW_UPS = 3;
 
 /*
  * 두 문구가 같은 말인지 견주기 위한 표기 정리. 공백과 문장 끝 부호만 지운다.
@@ -280,9 +280,8 @@ function comparableFollowUp(label: string): string {
  * 이번 턴에 보여준 문구를 기록에 얹는다. 겹치는 것은 새 쪽만 남기고, 상한을 넘으면
  * 오래된 것부터 버린다.
  *
- * 다 지우고 최신 것만 두지 않는 이유는, 걸러내야 할 대상이 **직전 턴만이 아니기**
- * 때문이다 — 세 개를 하나씩 눌러 가며 세 턴을 보내면 첫 턴의 문구가 네 번째 턴에서
- * 다시 나오는 게 원래 문제였다.
+ * 상한이 세 개라 사실상 직전 턴의 버튼만 남는다. 직전 턴이 두 개만 냈으면 그 앞 턴의
+ * 문구 하나가 자리에 남으므로, 매번 최신 한 벌로 갈아치우는 것과는 다르다.
  */
 export function mergeRecentFollowUps(existing: string[], incoming: string[]): string[] {
   const incomingKeys = new Set(incoming.map(comparableFollowUp));
