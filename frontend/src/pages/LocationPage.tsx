@@ -387,6 +387,52 @@ export function LocationPage() {
                 : "현재 위치 사용"}
           </span>
         </button>
+        {/* 서울 안내를 칩 위로 올렸다(2026-09-08). 이건 한 번 읽고 마는 고정
+            안내인데 위쪽에서 그 자리를 차지하고 있으면, 정작 지금 무엇이 잡혀
+            있는지를 말하는 칩이 밀려 내려간다. 칩은 바로 아래 즐겨찾기·최근
+            검색과 붙어 있는 편이 낫다 — 그 목록을 눌러 바뀌는 값이 칩이다.
+
+            **박스를 걷고 회색 글자로 바꾼다**(2026-09-08). 전에는 `bg-sky-light`
+            박스에 `text-brand-deep`이었는데, 그 대비가 "지금 눌러야 할 것"처럼
+            읽혔다 — 실제로는 바뀌지 않는 고정 안내다. 이 화면이 이미 쓰는 평문
+            한 줄 형식(`px-1 text-xs text-muted`, 아래 "현재 위치 · N분 전")을
+            그대로 따른다. **`Info` 아이콘은 남긴다** — 걷어낸 것은 박스와 강한
+            대비지, 이 줄이 안내라는 표시까지는 아니다.
+
+            정렬은 `items-center`다. `items-start`+`mt-0.5`로는 아이콘 중심이 글자
+            중심보다 **1.3px 위**였다(실측: 아이콘 200.5 vs 글자 glyph 201.8) —
+            `leading-relaxed`가 만든 19.5px 줄 상자 안에서 12px 글자가 2.5px
+            내려앉기 때문이고, `mt`는 2px 단위라 딱 맞는 값이 없다.
+
+            가운데 정렬은 **문구가 한 줄일 때만** 옳다(두 줄이면 아이콘이 줄 사이로
+            내려간다). 이 문구는 지원 하한인 320px에서도 한 줄이다 — 글자에 주어지는
+            폭 261px에 한국어 205px, 영어 244px(실측). 문구가 이보다 길어지면 다시
+            `items-start`로 돌리고 첫 줄 중심에 맞춰야 한다. */}
+        <p className="flex items-center gap-1.5 px-1 text-xs leading-relaxed text-muted">
+          <Info size={13} className="shrink-0" />
+          <span>
+            {isEn ? "We currently only recommend places in Seoul" : "현재 서울 지역 장소만 추천해 드리고 있어요"}
+          </span>
+        </p>
+
+        {state.device_location && (
+          /* 좌표를 그대로 보여주면 사용자에게는 숫자 두 개일 뿐이다. 주소로 바꾸는
+             역지오코딩은 아직 없으므로 "현재 위치"라고만 말한다. */
+          <p className="px-1 text-xs text-muted">
+            {isEn ? "Current location" : "현재 위치"}
+            {ageMinutes === null
+              ? ""
+              : isEn
+                ? ` · checked ${ageMinutes} min ago`
+                : ` · ${ageMinutes}분 전에 확인했어요`}
+          </p>
+        )}
+        {errorMessage && (
+          <p role="alert" className="px-1 text-xs text-rust">
+            {errorMessage}
+          </p>
+        )}
+
         {/* 지금 정해져 있는 두 값. 서로 다른 질문의 답이라 칩을 따로 두되, 사이에
             화살표를 넣어 "여기서 출발해 저기 주변을 찾는다"는 관계를 보인다.
 
@@ -437,31 +483,6 @@ export function LocationPage() {
               </button>
             )}
           </span>
-        </div>
-
-        {state.device_location && (
-          /* 좌표를 그대로 보여주면 사용자에게는 숫자 두 개일 뿐이다. 주소로 바꾸는
-             역지오코딩은 아직 없으므로 "현재 위치"라고만 말한다. */
-          <p className="px-1 text-xs text-muted">
-            {isEn ? "Current location" : "현재 위치"}
-            {ageMinutes === null
-              ? ""
-              : isEn
-                ? ` · checked ${ageMinutes} min ago`
-                : ` · ${ageMinutes}분 전에 확인했어요`}
-          </p>
-        )}
-        {errorMessage && (
-          <p role="alert" className="px-1 text-xs text-rust">
-            {errorMessage}
-          </p>
-        )}
-
-        <div className="flex items-start gap-2 rounded-xl bg-sky-light px-3.5 py-2.5">
-          <Info size={14} className="mt-0.5 shrink-0 text-brand-deep" />
-          <p className="text-xs leading-relaxed text-brand-deep">
-            {isEn ? "We currently only recommend places in Seoul" : "현재 서울 지역 장소만 추천해 드리고 있어요"}
-          </p>
         </div>
 
         <div className="mt-2 flex items-center justify-between">
