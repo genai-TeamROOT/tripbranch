@@ -211,4 +211,51 @@ describe("PhotoSimilarResultMessage", () => {
 
     expect(screen.queryByText(/분위기가 닮은 곳이에요/)).toBeNull();
   });
+
+  it("되돌린 대화에서는 사진 자리에 왜 없는지를 적는다", () => {
+    /* 빈 자리만 두면 사진이 사라진 것인지 원래 없던 것인지 알 수 없다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        restored
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByText("[사용자 입력 사진]")).toBeTruthy();
+    expect(screen.getByText(/따로 저장하지 않아서/)).toBeTruthy();
+  });
+
+  it("실시간에 축소본만 없는 경우에는 그 안내를 하지 않는다", () => {
+    /* 브라우저가 못 여는 형식(HEIC 등)이면 실시간에도 축소본이 없다. 그때
+       "저장하지 않아서"라고 말하면 틀린 설명이 된다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.queryByText("[사용자 입력 사진]")).toBeNull();
+    expect(screen.queryByText(/따로 저장하지 않아서/)).toBeNull();
+  });
+
+  it("사진이 있으면 그 안내를 하지 않는다", () => {
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl="data:image/jpeg;base64,x"
+        restored
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByAltText("올린 사진")).toBeTruthy();
+    expect(screen.queryByText("[사용자 입력 사진]")).toBeNull();
+  });
 });

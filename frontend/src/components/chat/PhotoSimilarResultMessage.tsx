@@ -8,6 +8,10 @@
  * 사용자 발화는 `ml-auto`, 응답은 `mr-auto`. 사진은 사용자가 올린 것이므로
  * 오른쪽이 맞다.
  *
+ * **되돌린 대화에는 사진 대신 안내를 놓는다.** 사진은 서버에 남기지 않아 다른
+ * 기기에서 열면 가져올 데가 없다. 빈 자리만 두면 사진이 사라진 것인지 원래
+ * 없던 것인지 알 수 없어, 왜 안 보이는지를 그 자리에 적는다.
+ *
  * **사진 아래에 발화 문구를 함께 둔다.** 사진만 있으면 그 턴에 무엇을 요청한
  * 것인지가 화면에 안 남아, 지난 대화를 되돌렸을 때 사진 한 장이 맥락 없이
  * 놓인다. 서버도 같은 문장을 대화 기록에 남긴다(routes/photo_similar.py의
@@ -37,6 +41,10 @@ const PHOTO_SEARCH_USER_INPUT = "이 사진과 비슷한 장소 추천해줘";
 
 interface PhotoSimilarResultMessageProps {
   imageUrl?: string | null;
+  /* 지난 대화를 되돌려 그리는 중인지. imageUrl이 비었다는 것만으로는 갈라낼 수
+     없다 — 실시간에도 브라우저가 못 여는 형식이면 축소본이 없는데, 그때
+     "저장하지 않아서"라고 말하면 틀린 설명이 된다. */
+  restored?: boolean;
   /* failed는 요청이 실패한 경우다. 사유는 바로 뒤 turn_error가 말하므로 여기서는
      올린 사진만 남기고 아래 영역을 그리지 않는다(TP-245).
 
@@ -55,6 +63,7 @@ interface PhotoSimilarResultMessageProps {
 
 export function PhotoSimilarResultMessage({
   imageUrl,
+  restored = false,
   status = "done",
   centerName,
   places,
@@ -65,8 +74,17 @@ export function PhotoSimilarResultMessage({
 
   return (
     <>
-      {imageUrl && (
+      {imageUrl ? (
         <img src={imageUrl} alt="올린 사진" className="ml-auto max-h-48 rounded-md object-cover" />
+      ) : (
+        restored && (
+          <div className="ml-auto max-w-[80%] rounded-md border border-dashed border-border px-4 py-3 text-right">
+            <p className="text-sm text-muted">[사용자 입력 사진]</p>
+            <p className="mt-1 text-xs text-muted">
+              올리신 사진은 따로 저장하지 않아서 다시 보여드릴 수 없어요.
+            </p>
+          </div>
+        )
       )}
 
       {/* 사용자 말풍선과 같은 모양이다(ChatMessageList의 user_text). */}

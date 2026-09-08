@@ -48,6 +48,16 @@ describe("buildPhotoSimilarMessage", () => {
     expect(message.status).toBe("done");
   });
 
+  it("되돌린 말풍선임을 표시한다", () => {
+    /* 이 표시가 있어야 화면이 사진 자리에 "저장하지 않아 못 보여준다"를 놓는다.
+       imageUrl이 비었다는 것만으로는 실시간의 축소본 실패와 갈라낼 수 없다. */
+    const message = buildPhotoSimilarMessage(record());
+
+    expect(message.type).toBe("photo_similar_result");
+    if (message.type !== "photo_similar_result") return;
+    expect(message.restored).toBe(true);
+  });
+
   it("사진은 비운다", () => {
     // 원본은 서버가 임베딩만 하고 버렸고 축소본은 그 브라우저에만 있다.
     // 다른 기기에서 열면 가져올 데가 없으므로 사진 자리를 건너뛴다.

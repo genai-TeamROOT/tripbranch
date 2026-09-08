@@ -1630,3 +1630,88 @@ test("사진으로 시작한 대화가 바로 채팅 히스토리에 올라간�
   await waitFor(() => expect(sessionListCalls.length).toBeGreaterThan(1));
   expect(await screen.findAllByText("성수동 사진으로 찾은 곳")).not.toHaveLength(0);
 });
+
+test("창을 새로 열고 사진이 첫 턴인 대화를 열어도 화면이 살아 있다", async () => {
+  /*
+   * 사진 검색 기록은 payload가 AgentResponse가 아니다. 복원이 그것을 모르고
+   * buildAgentMessages에 넘기면 llm_output을 읽다가 터져 화면이 통째로 죽는다.
+   */
+  const base = mockFetch();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/sessions")) {
+        return Response.json({
+          sessions: [
+            {
+              session_id: "photo-session-1",
+              title: "성수동 사진으로 찾은 곳",
+              location: "성수동",
+              last_active_at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/sessions/photo-session-1/resume")) {
+        return Response.json({
+          session_id: "photo-session-1",
+          title: "성수동 사진으로 찾은 곳",
+          turns: [
+            {
+              user_input: "이 사진과 비슷한 장소 추천해줘",
+              assistant_message: "성수동 주변에서 분위기가 닮은 곳 1곳을 찾았어요.",
+              intent: null,
+              question_type: null,
+              place_names: ["감성 카페"],
+              offered_action: null,
+              at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+          recommendations: [],
+          messages: [
+            {
+              session_id: "photo-session-1",
+              run_id: null,
+              user_id: null,
+              user_input: "이 사진과 비슷한 장소 추천해줘",
+              payload: {
+                kind: "photo_similar",
+                session_id: "photo-session-1",
+                center_name: "성수동",
+                candidate_count: 12,
+                truncated_count: 0,
+                elapsed_ms: 400,
+                places: [
+                  {
+                    content_id: "photo-place-1",
+                    title: "감성 카페",
+                    similarity: 0.82,
+                    photo_count: 3,
+                    address: "서울 성동구",
+                    image_url: null,
+                  },
+                ],
+              },
+              recorded_at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+          restore_from_messages: true,
+          last_active_at: "2026-09-09T09:00:00+09:00",
+          resumable: true,
+        });
+      }
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  const entries = await screen.findAllByText("성수동 사진으로 찾은 곳");
+  await userEvent.click(entries[0]);
+
+  /* 되돌아온 화면이 그려져야 한다 — 터지면 여기서 아무것도 못 찾는다. */
+  expect(await screen.findByText("감성 카페")).toBeInTheDocument();
+  expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeInTheDocument();
+  expect(screen.getByText("[사용자 입력 사진]")).toBeInTheDocument();
+});
+

@@ -482,6 +482,7 @@ export function ChatMessageList({
               <PhotoSimilarResultMessage
                 key={message.id}
                 imageUrl={message.imageUrl}
+                restored={message.restored}
                 status={message.status}
                 centerName={message.centerName}
                 places={message.places}

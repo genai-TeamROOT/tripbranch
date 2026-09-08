@@ -52,8 +52,9 @@ export function isPhotoSimilarRecord(
  * 사진 검색 턴 하나를 되돌린다.
  *
  * **사진은 없다.** 원본은 서버가 임베딩만 하고 버렸고 축소본은 그 브라우저의
- * sessionStorage에만 있어, 다른 기기에서 열면 가져올 데가 없다. imageUrl을
- * 비우면 컴포넌트가 사진 자리를 건너뛰고 발화 문구와 결과만 그린다.
+ * sessionStorage에만 있어, 다른 기기에서 열면 가져올 데가 없다. 사진 자리에는
+ * 왜 안 보이는지를 대신 놓는다(restored) — 빈 자리만 남으면 사용자는 사진이
+ * 사라진 것인지 원래 없던 것인지 알 수 없다.
  */
 export function buildPhotoSimilarMessage(
   payload: PhotoSimilarPlacesResponse,
@@ -62,6 +63,7 @@ export function buildPhotoSimilarMessage(
     id: createMessageId("photo"),
     type: "photo_similar_result",
     imageUrl: null,
+    restored: true,
     status: "done",
     centerName: payload.center_name,
     places: payload.places,
