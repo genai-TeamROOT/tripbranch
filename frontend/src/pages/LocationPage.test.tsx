@@ -375,6 +375,31 @@ test("즐겨찾기 줄을 누르면 검색 기준이 되고 주소·칩에 함�
   expect(screen.getByText(/역삼역 주변/)).toBeInTheDocument();
 });
 
+test("이름 글자를 눌러도 이름 편집이 아니라 장소 선택 모달이 열린다", async () => {
+  /* 2026-09-08에 바꾼 동작이다. 전에는 글자가 이름 바꾸기 버튼이라, 줄에서
+     이름을 뺀 빈 자리만 모달을 열었다. 이름 편집은 연필 아이콘으로 옮겼다. */
+  const user = userEvent.setup();
+  saveFavorites([{ id: "fav-1", label: "역삼역", searchCenterName: "역삼역" }]);
+  renderPage();
+
+  await user.click(screen.getByText("역삼역"));
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "역삼역 이름 바꾸기" })).not.toBeInTheDocument();
+});
+
+test("이름을 고치는 중에는 연필·휴지통이 사라지고 저장만 남는다", async () => {
+  /* 이름을 다 쓰고 오른쪽 아이콘을 누르려다 휴지통을 눌러 지우는 사고를 막는다. */
+  const user = userEvent.setup();
+  saveFavorites([{ id: "fav-1", label: "역삼역", searchCenterName: "역삼역" }]);
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "역삼역 이름 바꾸기" }));
+
+  expect(screen.getByRole("button", { name: "이름 저장" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "역삼역 즐겨찾기 삭제" })).not.toBeInTheDocument();
+});
+
 test("이름을 고치는 중에는 스페이스·엔터가 모달을 열지 않는다", async () => {
   /* 줄 전체가 "이 장소를 쓰겠다" 버튼이라, 안에서 누른 키가 위로 올라가면 이름에
      띄어쓰기 한 번 넣을 때마다 모달이 뜬다. */
@@ -401,7 +426,7 @@ test("예전에 자유 입력으로 만든 즐겨찾기는 라벨을 그대로 �
   expect(loadLocationSettings().center).toBe("안국역");
 });
 
-test("즐겨찾기 이름을 눌러 원하는 이름으로 바꾼다", async () => {
+test("연필 아이콘을 눌러 즐겨찾기 이름을 원하는 이름으로 바꾼다", async () => {
   const user = userEvent.setup();
   saveFavorites([{ id: "fav-1", label: "역삼역", searchCenterName: "역삼역" }]);
   renderPage();

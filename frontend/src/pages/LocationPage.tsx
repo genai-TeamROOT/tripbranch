@@ -26,6 +26,7 @@ import {
   MapPinCheck,
   MapPinned,
   Navigation,
+  Pencil,
   Search,
   Star,
   Trash2,
@@ -50,6 +51,16 @@ import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
 const MAX_FAVORITES = 10;
+
+/*
+ * 즐겨찾기 줄 안의 아이콘 버튼. **아이콘은 15px인데 누를 자리는 32px이다** —
+ * 크기를 안 주면 아이콘 크기가 곧 터치 타깃이 되어 14px밖에 안 됐다(2026-09-08
+ * 실측). 색은 각 버튼이 정한다 — 여기에 text-muted를 넣으면 "이름 저장"의
+ * text-brand와 같은 specificity로 부딪혀 어느 쪽이 이길지 클래스 순서가 아니라
+ * 생성된 CSS 순서로 갈린다.
+ */
+const ROW_ACTION_CLASS =
+  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors";
 
 export function LocationPage() {
   const state = useTripState();
@@ -462,8 +473,17 @@ export function LocationPage() {
             </p>
           ) : (
             favorites.map((favorite) => (
-              /* 줄 전체가 "이 장소를 쓰겠다"는 버튼이다 — 글자는 이름 바꾸기,
-                 휴지통은 삭제라 각자 제 일이 있고, 그 사이 빈 자리를 눌러 고른다.
+              /* 줄 전체가 "이 장소를 쓰겠다"는 버튼이다 — **이름·주소를 포함해
+                 어디를 눌러도** 모달이 열린다(2026-09-08).
+
+                 처음 설계는 달랐다: 글자가 이름 바꾸기였고 그 오른쪽 빈 자리만
+                 모달을 열었다(jjinsword, 2026-09-03의 "글자는 이름 바꾸기,
+                 그 사이 빈 자리를 눌러 고른다"). 실제로 재 보니 **375px 줄에서
+                 이름은 94px, 빈 자리가 189px**였다 — 넓은 쪽이 이름 편집도 아닌
+                 빈 공간에 걸려 있고, 정작 이름을 누르면 편집이 열렸다. 장소를
+                 고르는 일이 이름을 고치는 일보다 훨씬 잦으므로 줄 전체를 선택에
+                 주고, 이름 편집은 연필 아이콘으로 옮겼다.
+
                  핀은 지금 기준으로 잡혀 있는지만 보여주는 표시로 남는다. */
               <div
                 key={favorite.id}
@@ -475,7 +495,8 @@ export function LocationPage() {
                 onKeyDown={(event) => {
                   /* 줄 자체에 포커스가 있을 때만 연다. 이 줄 안에는 이름 입력창과
                      버튼이 있어서, 안 걸러내면 이름을 고치다 스페이스만 눌러도
-                     모달이 뜬다. */
+                     모달이 뜬다. 이름이 버튼이 아니게 된 뒤에도 입력창이 남아
+                     있으므로 이 가드는 그대로 필요하다. */
                   if (event.target !== event.currentTarget) return;
                   if (event.key !== "Enter" && event.key !== " ") return;
                   event.preventDefault();
@@ -512,24 +533,20 @@ export function LocationPage() {
                     className="min-w-0 flex-1 rounded-lg border border-brand px-2 py-1 text-sm text-ink outline-none"
                   />
                 ) : (
-                  <button
-                    type="button"
-                    aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      startRename(favorite.id, favorite.label);
-                    }}
-                    className="min-w-0 shrink text-left"
-                  >
+                  /* 버튼이 아니라 그냥 글자다 — 눌리는 것은 줄 전체다. 예전에는
+                     여기가 이름 바꾸기 버튼이었고, 그래서 남는 가로를 빈
+                     스페이서(`min-h-6 flex-1`)로 따로 두어야 했다. 이름이 가로를
+                     다 먹으면 어디를 눌러도 이름 편집이 됐기 때문이다. 지금은 그
+                     전제가 없어져 스페이서를 걷고 이름이 남는 가로를 받는다. */
+                  <div className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-ink">{favorite.label}</span>
                     {favorite.address && (
                       <span className="block truncate text-xs text-muted">{favorite.address}</span>
                     )}
-                  </button>
+                  </div>
                 )}
-                {/* 남는 가로. 글자에 닿지 않고 줄을 누를 수 있는 자리다 — 이름
-                    버튼이 flex-1로 가로를 다 먹으면 어디를 눌러도 이름 편집이 된다. */}
-                <span aria-hidden className="min-h-6 flex-1 self-stretch" />
+                {/* 이름을 고치는 중에는 저장 하나만 남긴다 — 연필은 이미 누른
+                    버튼이고, 휴지통은 이름을 다 쓰고 누르려다 지우는 사고가 난다. */}
                 {renamingId === favorite.id ? (
                   <button
                     type="button"
@@ -539,22 +556,36 @@ export function LocationPage() {
                       event.stopPropagation();
                       commitRename();
                     }}
-                    className="shrink-0 text-brand"
+                    className={`${ROW_ACTION_CLASS} text-brand`}
                   >
                     <Check size={15} />
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    aria-label={isEn ? `Delete ${favorite.label} from favorites` : `${favorite.label} 즐겨찾기 삭제`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
-                    }}
-                    className="shrink-0 text-muted transition-colors hover:text-rust"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <>
+                    {/* 휴지통 왼쪽이다 — 이름 편집이 글자에서 여기로 옮겨왔다. */}
+                    <button
+                      type="button"
+                      aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startRename(favorite.id, favorite.label);
+                      }}
+                      className={`${ROW_ACTION_CLASS} text-muted hover:text-brand`}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={isEn ? `Delete ${favorite.label} from favorites` : `${favorite.label} 즐겨찾기 삭제`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
+                      }}
+                      className={`${ROW_ACTION_CLASS} text-muted hover:text-rust`}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </>
                 )}
               </div>
             ))
