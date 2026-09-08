@@ -18,10 +18,14 @@
  * 덮어써지므로, 화면을 스크롤해 예전 카드에 피드백을 남기면 엉뚱한(최신) 턴의
  * 값이 잘못 붙는다.
  *
- * develop 병합 이후 "feedback" 메시지는 결과 카드뿐 아니라 되묻기(clarification)
- * 턴 뒤에도 붙는다(run_id만 있으면 붙는 범용 메시지라서) — 답변 자리에
- * assistant_text 대신 clarification 메시지가 오는 경우도 답변으로 인정한다.
- * clarification 메시지에는 intent가 없어 그 경우 intent는 계속 undefined다.
+ * 답변 자리에 assistant_text 대신 clarification 메시지가 오는 경우도 답변으로
+ * 인정한다. clarification 메시지에는 intent가 없어 그 경우 intent는 계속
+ * undefined다.
+ *
+ * **되묻기만 한 턴에는 이제 "feedback" 메시지가 붙지 않는다**(2026-09-08,
+ * agentMessages의 isClarificationOnlyTurn). 그래도 이 폴백은 남는다 — 되묻기와
+ * 결과 카드가 **함께** 온 턴에는 피드백이 그대로 붙고, 그 턴의 답변 자리에는
+ * clarification 메시지가 온다.
  */
 
 import type { ChatMessage } from "../types";

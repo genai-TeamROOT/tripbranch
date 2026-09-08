@@ -140,6 +140,14 @@ class RecommendationItem(BaseModel):
     place_id: str
     name: str
     category: str
+    # TourAPI 신분류 중분류명(한식·전시시설·면세점). `category`가 대분류 코드
+    # (`restaurant`·`shopping`)라 화면에 그대로 쓰기 어려워 함께 내려준다.
+    #
+    # **None이 정상 값이다.** 카드 조회가 실패하면 붙지 않고(썸네일과 같은 이유로
+    # 추천 자체는 그대로 살린다), 화면은 그때 `category`로 되돌아간다. 다만 실측에서
+    # 추천 후보 7,448건이 모두 소분류 코드로 해석됐다 — 해석 실패 0건, 라벨 41종
+    # (2026-09-08, places 스냅샷).
+    category_label: str | None = None
     distance_km: float
     remaining_minutes: int | None
     # 그 후보에 실제로 적용된 당일 운영 구간("09:00~18:00"). 프론트가

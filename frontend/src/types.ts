@@ -34,7 +34,16 @@ export interface InterpretedConditions {
 export interface RecommendationItem {
   place_id: string;
   name: string;
+  /** 대분류 코드. `restaurant`·`shopping` 같은 영어라 화면에 그대로 쓰지 않는다. */
   category: string;
+  /*
+   * TourAPI 신분류 중분류명(한식·전시시설·면세점). 화면에 보여줄 값은 이쪽이다.
+   *
+   * **None이 정상 값이다** — 카드 조회가 실패하면 안 붙는다(썸네일과 같은 이유로
+   * 추천 자체는 살린다). 그때는 category를 한글로 옮겨 쓴다(placeCategoryLabel).
+   * 실측에서는 추천 후보 7,448건이 모두 해석됐다(2026-09-08, 실패 0건).
+   */
+  category_label?: string | null;
   distance_km: number;
   remaining_minutes: number | null;
   /** D가 현재 적용한 당일 운영 구간으로 만든 표기값. 예: "09:00~18:00" */

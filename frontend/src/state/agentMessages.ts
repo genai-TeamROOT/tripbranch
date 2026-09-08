@@ -160,6 +160,32 @@ export function buildAgentMessages(
   const clarificationOptions = response.llm_output.clarification?.options;
 
   /*
+   * **되묻기만 한 턴에는 피드백 버튼을 붙이지 않는다**(2026-09-08).
+   *
+   * 되묻기는 답이 아니라 질문이다 — "어떤 걸 찾으세요?"에 좋아요/싫어요를
+   * 매기면 무엇에 대한 평가인지 알 수 없고, 그 점수가 추천 품질 자료로 섞인다.
+   *
+   * **이건 mintee의 결정을 덮는 것이다.** mintee가 ef43ea16(15:33)에
+   * `!isClarificationTurn` 조건을 넣었다가 5분 뒤 2d29192c(15:38)에서 스스로
+   * 지웠고, 그 커밋 타입이 fix였다 — 없는 것을 버그로 본 것이다. 다만 본문이
+   * 제목 한 줄뿐이라 **이유는 기록돼 있지 않다.** 사용자 결정으로 되돌린다.
+   *
+   * 되묻기와 결과 카드가 **함께** 온 턴은 그대로 붙인다. 그 턴에는 평가할
+   * 대상(카드)이 있고, 없애면 카드에 대한 피드백까지 사라진다.
+   */
+  const isClarificationTurn = Boolean(
+    message && clarificationOptions && clarificationOptions.length > 0,
+  );
+  const hasResultCards = Boolean(
+    response.recommendations ||
+      response.schedule ||
+      response.info_place_card ||
+      response.secondary_info_place_card ||
+      response.comparison,
+  );
+  const isClarificationOnlyTurn = isClarificationTurn && !hasResultCards;
+
+  /*
    * **추천 카드가 답변보다 먼저다.** 화면에 실제로 나가는 순서가 그렇다 —
    * 스트리밍 경로는 카드를 담은 result를 먼저 내보내고, 그 아래에 "추천 팁"
    * 말풍선을 연다(agent_runtime의 "화면 순서가 안내 → 카드 → 팁"). 저장된
@@ -246,7 +272,7 @@ export function buildAgentMessages(
     });
   }
 
-  if (response.state.run_id) {
+  if (response.state.run_id && !isClarificationOnlyTurn) {
     messages.push({
       id: createMessageId("feedback"),
       type: "feedback",

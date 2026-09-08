@@ -1,7 +1,14 @@
 /*
  * 역할: 추천 장소 하나를 가로 스크롤 카드로 렌더링한다(DESIGN_SYSTEM.md §6.5).
  * 입력: RecommendationItem 데이터.
- * 출력: 이미지, 순위, 장소명, 거리, 남은 운영시간, 추천 사유·주의사항, 담기 토글.
+ * 출력: 이미지, 순위, 장소명, 거리, 남은 운영시간, 주의사항, 담기 토글.
+ *
+ * **추천 사유를 카드에 쓰지 않는다**(2026-09-08). 사유는 D가
+ * `_recommendation_reason()`에서 만드는 한 가지 형식뿐이다 — "<축들> 조건을 종합한
+ * N순위 추천이에요."(recommendation_pipeline.py). 축 이름만 바뀌고 문장은 같아서
+ * 카드마다 두 줄을 먹으면서 하는 말이 "N순위"인데, 그 순위는 카드 제목에 이미
+ * `N위`로 붙어 있다. 사유 자체는 남아 있고(`recommendation_reason`) 상세
+ * 미리보기의 "AI가 추천하는 이유" 섹션과 개발자 패널이 그대로 쓴다.
  * 호출 시점: PlaceCardRow가 추천/검증 불가 목록을 한 줄씩 그릴 때 호출된다.
  * 담기/빼기 액션은 onToggleSave가 주어질 때만 노출한다(SCHEDULE-12 카드 3).
  * TODO: 지도 링크, 제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
@@ -82,17 +89,6 @@ function hoursRemainingLabel(item: RecommendationItem, language: Language): stri
   return formatClosingTime(item.remaining_minutes, language);
 }
 
-/**
- * D의 기본 추천 사유는 구조화된 순위 문장이다. 영어 화면에서 번역 API 응답이
- * 지연되거나 구버전 응답이 섞여도, 이 고정 형식만큼은 즉시 자연스럽게 보인다.
- */
-function displayRecommendationReason(reason: string, language: Language): string {
-  if (language !== "en") return reason;
-  const matched = reason.match(/^날씨·운영시간·거리 조건을 종합한 (\d+)순위 추천이에요\.?$/);
-  if (matched) return `Recommended #${matched[1]} based on weather, opening hours, and distance.`;
-  return reason;
-}
-
 export function PlaceCard({
   item,
   rank,
@@ -164,9 +160,6 @@ export function PlaceCard({
             <MapPin size={10} /> {travelValue(item, language)}
           </p>
           <p className="mt-1 text-[11px] text-muted">{hoursRemainingLabel(item, language)}</p>
-          <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">
-            {displayRecommendationReason(item.recommendation_reason, language)}
-          </p>
           {item.warnings.length > 0 && (
             <p className="mt-1 truncate text-[11px] text-gold">{item.warnings[0]}</p>
           )}

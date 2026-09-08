@@ -1,7 +1,9 @@
 /*
  * 역할: 추천 API 응답을 채팅 메시지 안에서 장소 카드 목록으로 렌더링한다.
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
- * 출력: 추천 결과 메시지와 PlaceCard 목록.
+ * 출력: 추천 결과 메시지와 PlaceCard 목록 — **줄은 언제나 하나다**("추천 장소").
+ *   운영시간을 확인하지 못한 후보(원문이 없거나 지금 폐점)도 이 줄에 함께
+ *   들어간다(2026-09-08, 아래 rankedRecommendations 주석).
  *
  * **동작 버튼과 취향 표는 여기 없다.** 각각 RecommendationActionsMessage와
  * PreferenceTagSummaryTable이 별도 메시지로 그린다 — 버튼은 다음 발화가 나가면
@@ -53,34 +55,45 @@ export function RecommendationResultMessage({
           summary: "Here are some places that match your preferences.",
           noResults: "We couldn’t find a place that matches those conditions.",
           recommendations: "Recommended places",
-          closed: "Places that are currently closed",
-          hoursUnknown: "Places with unavailable opening hours",
         }
       : {
           summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
           noResults: "조건에 맞는 장소를 찾지 못했어요.",
           recommendations: "추천 장소",
-          closed: "현재 운영시간이 아닌 장소",
-          hoursUnknown: "운영시간을 확인할 수 없는 장소",
         };
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
   );
   const { savedPlaceIds, toggleSaved } = useSavedPlaces();
-  // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
-  // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
-  // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
-  // 분리한다.
-  const closedRecommendations = unverifiedRecommendations.filter(
-    (item) => item.operating_hours_display,
-  );
-  const unknownHoursRecommendations = unverifiedRecommendations.filter(
-    (item) => !item.operating_hours_display,
-  );
-  const hasNoResults =
-    recommendations.length === 0 &&
-    closedRecommendations.length === 0 &&
-    unknownHoursRecommendations.length === 0;
+  /*
+   * **줄은 하나다**(2026-09-08). 전에는 세 줄이었다 — "추천 장소",
+   * "현재 운영시간이 아닌 장소"(운영시간 원문은 있지만 지금 닫힌 후보),
+   * "운영시간을 확인할 수 없는 장소"(원문조차 없는 후보). 뒤 둘을 차례로
+   * 이 줄에 합쳤다.
+   *
+   * **캡션이 하던 말을 카드가 이미 한다.** 운영시간 자리에 "확인 불가" 또는
+   * "19:00~23:00 (현재 운영시간 아님)"이 찍히고(PlaceCard의 hoursRemainingLabel),
+   * 그 아래 경고 줄에 "방문 전에 운영 여부를 확인해주세요." 또는 "지금은
+   * 운영시간이 아니에요. 방문 전에 다시 확인해주세요."가 붙는다
+   * (domain/scoring.py의 _UNVERIFIED_WARNING·_CLOSED_NOW_WARNING). 캡션은 그
+   * 말을 한 번 더 하면서 줄을 갈랐다.
+   *
+   * **줄 분리는 mintee가 4cab841a에서 넣은 것이고 이 변경이 그걸 덮는다**
+   * (사용자 결정, 2026-09-08). 다만 그 커밋의 핵심 의도인 "폐점 후보의 실제
+   * 운영시간을 보존해 00:00~00:00 표기를 제거"는 그대로 산다 — 그건 줄 분리가
+   * 아니라 카드가 operating_hours_display를 읽는 방식이다.
+   *
+   * **순위 번호가 이어 붙는다**(사용자 결정). 검증된 후보가 5개면 나머지는 6·7위로
+   * 보인다. 백엔드는 원래 검증·미확인을 한 목록에서 함께 줄 세워 rank를 매기지만
+   * (domain/scoring.py의 `rank=index + 1`) 그 값을 응답에 싣지 않으므로,
+   * 화면의 번호는 배열 순서로 다시 붙인 것이다 — 실제로 3위였던 미확인 후보가
+   * 6위로 보일 수 있다. 검증된 후보가 하나도 없으면 미확인 후보가 1위 자리에 온다.
+   *
+   * 순서는 백엔드가 준 그대로다. 각 목록 안은 점수 내림차순이므로 합치면
+   * "검증된 것들(점수순) → 확인 못 한 것들(점수순)"이 된다.
+   */
+  const rankedRecommendations = [...recommendations, ...unverifiedRecommendations];
+  const hasNoResults = rankedRecommendations.length === 0;
 
   return (
     <article className="mr-auto flex w-full flex-col gap-3">
@@ -101,43 +114,13 @@ export function RecommendationResultMessage({
         </div>
       ) : (
         <>
-          {recommendations.length > 0 && (
+          {rankedRecommendations.length > 0 && (
             <PlaceCardRow caption={text.recommendations}>
-              {recommendations.map((item, index) => (
+              {rankedRecommendations.map((item, index) => (
                 <PlaceCard
                   key={item.place_id}
                   item={item}
                   rank={index + 1}
-                  language={language}
-                  isSaved={savedPlaceIds.has(item.place_id)}
-                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
-                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                />
-              ))}
-            </PlaceCardRow>
-          )}
-
-          {closedRecommendations.length > 0 && (
-            <PlaceCardRow caption={text.closed}>
-              {closedRecommendations.map((item) => (
-                <PlaceCard
-                  key={item.place_id}
-                  item={item}
-                  language={language}
-                  isSaved={savedPlaceIds.has(item.place_id)}
-                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
-                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                />
-              ))}
-            </PlaceCardRow>
-          )}
-
-          {unknownHoursRecommendations.length > 0 && (
-            <PlaceCardRow caption={text.hoursUnknown}>
-              {unknownHoursRecommendations.map((item) => (
-                <PlaceCard
-                  key={item.place_id}
-                  item={item}
                   language={language}
                   isSaved={savedPlaceIds.has(item.place_id)}
                   onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}

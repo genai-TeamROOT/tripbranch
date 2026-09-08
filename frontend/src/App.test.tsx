@@ -241,8 +241,10 @@ test("user chat hides condition debug card and shows recommendations", async () 
   expect(
     within(screen.getByRole("complementary")).getByRole("button", { name: "로그인" }),
   ).toBeInTheDocument();
+  /* 운영시간을 모르는 후보도 추천 장소 줄에 함께 들어간다(2026-09-08) — 전에는
+     "운영시간을 확인할 수 없는 장소" 캡션으로 줄이 하나 더 그려졌다. */
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
-  expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
+  expect(screen.queryByText("운영시간을 확인할 수 없는 장소")).not.toBeInTheDocument();
 });
 
 test("streamed recommendation renders template, cards, then the LLM tip", async () => {

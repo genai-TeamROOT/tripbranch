@@ -26,6 +26,7 @@ import {
   MapPinCheck,
   MapPinned,
   Navigation,
+  Pencil,
   Search,
   Star,
   Trash2,
@@ -45,11 +46,25 @@ import {
 } from "../components/layout/LocationPurposeModal";
 import { useFavorites } from "../hooks/useFavorites";
 import { useLocationSettings } from "../hooks/useLocationSettings";
-import { loadRecentSearches, rememberRecentSearch } from "../state/recentSearchesStorage";
+import {
+  forgetRecentSearch,
+  loadRecentSearches,
+  rememberRecentSearch,
+} from "../state/recentSearchesStorage";
 import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
 const MAX_FAVORITES = 10;
+
+/*
+ * 즐겨찾기 줄 안의 아이콘 버튼. **아이콘은 15px인데 누를 자리는 32px이다** —
+ * 크기를 안 주면 아이콘 크기가 곧 터치 타깃이 되어 14px밖에 안 됐다(2026-09-08
+ * 실측). 색은 각 버튼이 정한다 — 여기에 text-muted를 넣으면 "이름 저장"의
+ * text-brand와 같은 specificity로 부딪혀 어느 쪽이 이길지 클래스 순서가 아니라
+ * 생성된 CSS 순서로 갈린다.
+ */
+const ROW_ACTION_CLASS =
+  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors";
 
 export function LocationPage() {
   const state = useTripState();
@@ -372,15 +387,94 @@ export function LocationPage() {
                 : "현재 위치 사용"}
           </span>
         </button>
+        {/* 서울 안내를 칩 위로 올렸다(2026-09-08). 이건 한 번 읽고 마는 고정
+            안내인데 위쪽에서 그 자리를 차지하고 있으면, 정작 지금 무엇이 잡혀
+            있는지를 말하는 칩이 밀려 내려간다. 칩은 바로 아래 즐겨찾기·최근
+            검색과 붙어 있는 편이 낫다 — 그 목록을 눌러 바뀌는 값이 칩이다.
+
+            **박스를 걷고 회색 글자로 바꾼다**(2026-09-08). 전에는 `bg-sky-light`
+            박스에 `text-brand-deep`이었는데, 그 대비가 "지금 눌러야 할 것"처럼
+            읽혔다 — 실제로는 바뀌지 않는 고정 안내다. 이 화면이 이미 쓰는 평문
+            한 줄 형식(`px-1 text-xs text-muted`, 아래 "현재 위치 · N분 전")을
+            그대로 따른다. **`Info` 아이콘은 남긴다** — 걷어낸 것은 박스와 강한
+            대비지, 이 줄이 안내라는 표시까지는 아니다.
+
+            정렬은 `items-center`다. `items-start`+`mt-0.5`로는 아이콘 중심이 글자
+            중심보다 **1.3px 위**였다(실측: 아이콘 200.5 vs 글자 glyph 201.8) —
+            `leading-relaxed`가 만든 19.5px 줄 상자 안에서 12px 글자가 2.5px
+            내려앉기 때문이고, `mt`는 2px 단위라 딱 맞는 값이 없다.
+
+            가운데 정렬은 **문구가 한 줄일 때만** 옳다(두 줄이면 아이콘이 줄 사이로
+            내려간다). 이 문구는 지원 하한인 320px에서도 한 줄이다 — 글자에 주어지는
+            폭 261px에 한국어 205px, 영어 244px(실측). 문구가 이보다 길어지면 다시
+            `items-start`로 돌리고 첫 줄 중심에 맞춰야 한다. */}
+        <p className="flex items-center gap-1.5 px-1 text-xs leading-relaxed text-muted">
+          <Info size={13} className="shrink-0" />
+          <span>
+            {isEn ? "We currently only recommend places in Seoul" : "현재 서울 지역 장소만 추천해 드리고 있어요"}
+          </span>
+        </p>
+
+        {state.device_location && (
+          /* 좌표를 그대로 보여주면 사용자에게는 숫자 두 개일 뿐이다. 주소로 바꾸는
+             역지오코딩은 아직 없으므로 "현재 위치"라고만 말한다. */
+          <p className="px-1 text-xs text-muted">
+            {isEn ? "Current location" : "현재 위치"}
+            {ageMinutes === null
+              ? ""
+              : isEn
+                ? ` · checked ${ageMinutes} min ago`
+                : ` · ${ageMinutes}분 전에 확인했어요`}
+          </p>
+        )}
+        {errorMessage && (
+          <p role="alert" className="px-1 text-xs text-rust">
+            {errorMessage}
+          </p>
+        )}
+
         {/* 지금 정해져 있는 두 값. 서로 다른 질문의 답이라 칩을 따로 두되, 사이에
             화살표를 넣어 "여기서 출발해 저기 주변을 찾는다"는 관계를 보인다.
 
             줄바꿈하지 않는다 — 칩이 아래로 내려가면 화살표만 줄 끝에 남는다. 대신
             칩은 제 내용만큼만 차지하고, 한 줄에 정말 안 들어갈 때만 이름을 자른다.
             반씩 나눠 가지면 "현재 위치에서 출발"처럼 짧은 쪽이 남는 자리를 붙들고
-            있어서, 긴 이름 쪽이 자리가 있는데도 먼저 잘린다. */}
-        <div className="flex items-center gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+            있어서, 긴 이름 쪽이 자리가 있는데도 먼저 잘린다.
+
+            **눈에 띄게 하는 일을 크기·채움이 아니라 테두리에 맡긴다**(2026-09-08).
+            `border border-brand` 한 줄이고, 글자(`text-xs`)와 채움(`bg-chip`)은
+            원래 값이다. 오는 길에 두 가지를 시도했다 —
+
+            ① 글자를 14px로(헤더 칩과 같게) 키웠더니 기본 문구가 **칩마다 4px씩**
+               잘렸다. 줄 343px에 칩 143+170, 화살표 14, 간격 16이 정확히 꽉 찬
+               상태였다(실측). padding·간격을 깎아 5px을 남겨 맞출 수는 있었지만,
+               헤더와 같게 하려던 것이 헤더와 다른 padding으로 끝났다.
+            ② 채움을 `bg-brand`+흰 글자로 했더니 눈에는 확실히 띄는데, 칩 안
+               `X` 버튼의 `hover:text-rust`(지우기)가 파란 바탕에서 탁해져 색의
+               뜻을 잃었다.
+
+            테두리는 둘 다 건드리지 않는다 — 폭이 칩마다 2px만 늘고, 안쪽
+            아이콘·X의 색 규칙도 그대로 산다.
+
+            채움은 `bg-white` + `shadow-resting`이다 — **취향 설정 화면의 칩과 같은
+            값이다**(PreferencesPage의 미선택 상태 `bg-white text-ink shadow-resting`).
+            `bg-chip`(연한 회청)일 때는 테두리만으로 떠 있고 면은 배경에 가까웠는데,
+            흰 면 + 그림자가 되면 칩이 종이처럼 얹힌다. 두 화면의 칩이 같은 물성을
+            쓰게 된 것이 덤이다.
+
+            위 안내 문구와의 간격은 컨테이너 `gap-3`(12px)에 `mt-4`를 더해 **28px**이다 —
+            안내는 한 번 읽고 마는 글이고 칩은 지금 값이라, 12px로 붙어 있으면 안내가
+            칩의 설명처럼 한 덩어리로 읽혔다. 20px(`mt-2`)과 28px을 렌더해 보고
+            골랐다. **부작용이 하나 있다** — 안내가 위쪽 "현재 위치 사용" 버튼과는
+            12px, 아래 칩과는 28px이 되어 위로 붙어 읽힌다. 안내를 양쪽 다 띄우려면
+            안내에도 위 여백을 줘야 하는데, 이번 요청은 아래 간격이라 손대지 않았다.
+
+            줄은 `justify-center`다. 375px에서는 칩이 줄을 거의 채워 좌우 여백이
+            얼마 안 남지만, 넓은 화면(900px 기준 좌우 129px)에서는 뚜렷하다.
+
+            화살표는 칩 **밖**(페이지 배경 위)이라 `text-muted`다. */}
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-brand bg-white px-3 py-1.5 text-xs text-ink shadow-resting">
             <Navigation size={13} className="shrink-0 text-brand" aria-hidden />
             <span className="truncate">
               {isEn
@@ -399,7 +493,7 @@ export function LocationPage() {
             )}
           </span>
           <ArrowRight size={14} aria-hidden className="shrink-0 text-muted" />
-          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-brand bg-white px-3 py-1.5 text-xs text-ink shadow-resting">
             {/* 핀이 아니라 바닥 원이 깔린 핀이다 — 이 칩은 "그 지점"이 아니라
                 "그 자리 주변"을 뒤진다는 뜻이라서다. */}
             <MapPinned size={13} className="shrink-0 text-brand" aria-hidden />
@@ -424,31 +518,6 @@ export function LocationPage() {
           </span>
         </div>
 
-        {state.device_location && (
-          /* 좌표를 그대로 보여주면 사용자에게는 숫자 두 개일 뿐이다. 주소로 바꾸는
-             역지오코딩은 아직 없으므로 "현재 위치"라고만 말한다. */
-          <p className="px-1 text-xs text-muted">
-            {isEn ? "Current location" : "현재 위치"}
-            {ageMinutes === null
-              ? ""
-              : isEn
-                ? ` · checked ${ageMinutes} min ago`
-                : ` · ${ageMinutes}분 전에 확인했어요`}
-          </p>
-        )}
-        {errorMessage && (
-          <p role="alert" className="px-1 text-xs text-rust">
-            {errorMessage}
-          </p>
-        )}
-
-        <div className="flex items-start gap-2 rounded-xl bg-sky-light px-3.5 py-2.5">
-          <Info size={14} className="mt-0.5 shrink-0 text-brand-deep" />
-          <p className="text-xs leading-relaxed text-brand-deep">
-            {isEn ? "We currently only recommend places in Seoul" : "현재 서울 지역 장소만 추천해 드리고 있어요"}
-          </p>
-        </div>
-
         <div className="mt-2 flex items-center justify-between">
           <h2 className="text-xs font-bold text-label">{isEn ? "Favorites" : "즐겨찾기"}</h2>
           <span className="text-xs font-bold text-muted">
@@ -462,8 +531,17 @@ export function LocationPage() {
             </p>
           ) : (
             favorites.map((favorite) => (
-              /* 줄 전체가 "이 장소를 쓰겠다"는 버튼이다 — 글자는 이름 바꾸기,
-                 휴지통은 삭제라 각자 제 일이 있고, 그 사이 빈 자리를 눌러 고른다.
+              /* 줄 전체가 "이 장소를 쓰겠다"는 버튼이다 — **이름·주소를 포함해
+                 어디를 눌러도** 모달이 열린다(2026-09-08).
+
+                 처음 설계는 달랐다: 글자가 이름 바꾸기였고 그 오른쪽 빈 자리만
+                 모달을 열었다(jjinsword, 2026-09-03의 "글자는 이름 바꾸기,
+                 그 사이 빈 자리를 눌러 고른다"). 실제로 재 보니 **375px 줄에서
+                 이름은 94px, 빈 자리가 189px**였다 — 넓은 쪽이 이름 편집도 아닌
+                 빈 공간에 걸려 있고, 정작 이름을 누르면 편집이 열렸다. 장소를
+                 고르는 일이 이름을 고치는 일보다 훨씬 잦으므로 줄 전체를 선택에
+                 주고, 이름 편집은 연필 아이콘으로 옮겼다.
+
                  핀은 지금 기준으로 잡혀 있는지만 보여주는 표시로 남는다. */
               <div
                 key={favorite.id}
@@ -475,13 +553,23 @@ export function LocationPage() {
                 onKeyDown={(event) => {
                   /* 줄 자체에 포커스가 있을 때만 연다. 이 줄 안에는 이름 입력창과
                      버튼이 있어서, 안 걸러내면 이름을 고치다 스페이스만 눌러도
-                     모달이 뜬다. */
+                     모달이 뜬다. 이름이 버튼이 아니게 된 뒤에도 입력창이 남아
+                     있으므로 이 가드는 그대로 필요하다. */
                   if (event.target !== event.currentTarget) return;
                   if (event.key !== "Enter" && event.key !== " ") return;
                   event.preventDefault();
                   setPendingPlace(favorite.searchCenterName ?? favorite.label);
                 }}
-                className="-mx-4 flex cursor-pointer items-center gap-2.5 px-4 py-3 transition-colors hover:bg-chip"
+                /* hover 배경을 구분선과 같은 폭으로 맞추고 둥글게 한다(2026-09-08).
+                   전에는 `-mx-4 px-4`로 줄을 화면 폭까지 늘려서, 배경이 구분선보다
+                   **좌우 16px씩(합 32px) 넓게** 삐져나온 각진 사각형이었다
+                   (실측: 줄 0~375px vs 구분선 16~359px).
+
+                   좌우 padding은 0이다. 4px만 줘도 핀이 20px로 밀리는데, 헤더
+                   "즐겨찾기"·검색창·칩이 전부 16px 레일에 서 있어서 이 줄만
+                   어긋난다. 배경 왼쪽 끝과 핀 왼쪽 끝이 맞닿지만, 핀은 세로
+                   가운데라 12px 곡률이 닿지 않는 자리다. */
+                className="flex cursor-pointer items-center gap-2.5 rounded-xl py-3 transition-colors hover:bg-chip"
               >
                 <span
                   aria-hidden
@@ -512,24 +600,20 @@ export function LocationPage() {
                     className="min-w-0 flex-1 rounded-lg border border-brand px-2 py-1 text-sm text-ink outline-none"
                   />
                 ) : (
-                  <button
-                    type="button"
-                    aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      startRename(favorite.id, favorite.label);
-                    }}
-                    className="min-w-0 shrink text-left"
-                  >
+                  /* 버튼이 아니라 그냥 글자다 — 눌리는 것은 줄 전체다. 예전에는
+                     여기가 이름 바꾸기 버튼이었고, 그래서 남는 가로를 빈
+                     스페이서(`min-h-6 flex-1`)로 따로 두어야 했다. 이름이 가로를
+                     다 먹으면 어디를 눌러도 이름 편집이 됐기 때문이다. 지금은 그
+                     전제가 없어져 스페이서를 걷고 이름이 남는 가로를 받는다. */
+                  <div className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-ink">{favorite.label}</span>
                     {favorite.address && (
                       <span className="block truncate text-xs text-muted">{favorite.address}</span>
                     )}
-                  </button>
+                  </div>
                 )}
-                {/* 남는 가로. 글자에 닿지 않고 줄을 누를 수 있는 자리다 — 이름
-                    버튼이 flex-1로 가로를 다 먹으면 어디를 눌러도 이름 편집이 된다. */}
-                <span aria-hidden className="min-h-6 flex-1 self-stretch" />
+                {/* 이름을 고치는 중에는 저장 하나만 남긴다 — 연필은 이미 누른
+                    버튼이고, 휴지통은 이름을 다 쓰고 누르려다 지우는 사고가 난다. */}
                 {renamingId === favorite.id ? (
                   <button
                     type="button"
@@ -539,22 +623,36 @@ export function LocationPage() {
                       event.stopPropagation();
                       commitRename();
                     }}
-                    className="shrink-0 text-brand"
+                    className={`${ROW_ACTION_CLASS} text-brand`}
                   >
                     <Check size={15} />
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    aria-label={isEn ? `Delete ${favorite.label} from favorites` : `${favorite.label} 즐겨찾기 삭제`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
-                    }}
-                    className="shrink-0 text-muted transition-colors hover:text-rust"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <>
+                    {/* 휴지통 왼쪽이다 — 이름 편집이 글자에서 여기로 옮겨왔다. */}
+                    <button
+                      type="button"
+                      aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startRename(favorite.id, favorite.label);
+                      }}
+                      className={`${ROW_ACTION_CLASS} text-muted hover:text-brand`}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={isEn ? `Delete ${favorite.label} from favorites` : `${favorite.label} 즐겨찾기 삭제`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
+                      }}
+                      className={`${ROW_ACTION_CLASS} text-muted hover:text-rust`}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </>
                 )}
               </div>
             ))
@@ -569,15 +667,54 @@ export function LocationPage() {
             </p>
           ) : (
             recentSearches.map((keyword) => (
-              <button
-                type="button"
+              /* 즐겨찾기 줄과 같은 구조·같은 규칙이다.
+
+                 hover 배경: 여기는 더 어긋나 있었다 — `-mx-4`에 `w-full`이 같이
+                 붙어 폭은 부모(343px) 그대로인 채 위치만 왼쪽으로 밀려서, 배경이
+                 왼쪽으로만 16px 넘치고 오른쪽은 16px 모자랐다(실측: 줄 0~343px vs
+                 구분선 16~359px). 즐겨찾기 줄은 `div`라 양쪽으로 늘어났으니,
+                 **같은 클래스가 두 목록에서 다르게 동작하고 있었다.**
+
+                 `<button>`이던 줄을 `div role="button"`으로 바꿨다(2026-09-08) —
+                 휴지통을 넣으려면 버튼 안에 버튼이 들어가야 해서다. 즐겨찾기 줄이
+                 먼저 같은 이유로 이 모양이었고, aria-label을 줄에 직접 주는 것도
+                 그쪽과 같다(안 주면 줄 이름에 휴지통 라벨까지 딸려 붙는다). */
+              <div
                 key={keyword}
+                role="button"
+                tabIndex={0}
+                aria-label={isEn ? `Search ${keyword} again` : `${keyword} 다시 검색`}
                 onClick={() => void runSearch(keyword)}
-                className="-mx-4 flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-chip"
+                onKeyDown={(event) => {
+                  /* 줄 자체에 포커스가 있을 때만 검색한다 — 휴지통에서 누른
+                     스페이스가 위로 올라가면 지우면서 검색까지 나간다. */
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  void runSearch(keyword);
+                }}
+                className="flex cursor-pointer items-center gap-2.5 rounded-xl py-3 text-left transition-colors hover:bg-chip"
               >
-                <Search size={14} className="shrink-0 text-muted" />
+                <Search size={16} className="shrink-0 text-muted" />
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">{keyword}</span>
-              </button>
+                {/* 즐겨찾기와 달리 연필은 없다 — 최근 검색은 사용자가 친 말
+                    그대로가 값이라 고칠 것이 없다. 다시 검색하면 새로 남는다. */}
+                <button
+                  type="button"
+                  aria-label={
+                    isEn
+                      ? `Remove ${keyword} from recent searches`
+                      : `${keyword} 최근 검색에서 삭제`
+                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRecentSearches(forgetRecentSearch(keyword));
+                  }}
+                  className={`${ROW_ACTION_CLASS} text-muted hover:text-rust`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             ))
           )}
         </div>
