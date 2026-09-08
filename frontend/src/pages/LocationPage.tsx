@@ -502,7 +502,16 @@ export function LocationPage() {
                   event.preventDefault();
                   setPendingPlace(favorite.searchCenterName ?? favorite.label);
                 }}
-                className="-mx-4 flex cursor-pointer items-center gap-2.5 px-4 py-3 transition-colors hover:bg-chip"
+                /* hover 배경을 구분선과 같은 폭으로 맞추고 둥글게 한다(2026-09-08).
+                   전에는 `-mx-4 px-4`로 줄을 화면 폭까지 늘려서, 배경이 구분선보다
+                   **좌우 16px씩(합 32px) 넓게** 삐져나온 각진 사각형이었다
+                   (실측: 줄 0~375px vs 구분선 16~359px).
+
+                   좌우 padding은 0이다. 4px만 줘도 핀이 20px로 밀리는데, 헤더
+                   "즐겨찾기"·검색창·칩이 전부 16px 레일에 서 있어서 이 줄만
+                   어긋난다. 배경 왼쪽 끝과 핀 왼쪽 끝이 맞닿지만, 핀은 세로
+                   가운데라 12px 곡률이 닿지 않는 자리다. */
+                className="flex cursor-pointer items-center gap-2.5 rounded-xl py-3 transition-colors hover:bg-chip"
               >
                 <span
                   aria-hidden
