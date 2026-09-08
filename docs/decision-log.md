@@ -2403,6 +2403,17 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 ### D-074 — 만료된 익명 세션·이력을 30일 기준으로 정리한다 (TP-134)
 
 - 상태: `Accepted` — 구현 완료.
+- **정정(2026-09-08)**: 아래 결정 2의 대상 테이블 목록이 낡았다. 그때는 네
+  테이블이었지만 지금 `_delete_one()`은 **여섯**을 지운다 —
+  `session_messages`(TP-222 후속 화면 기록)와 `saved_places`(SCHEDULE-12 보관함)가
+  뒤에 세션 수명에 묶였다. 삭제 순서도 `condition_change_logs` → `trace_records`
+  → `session_messages` → `recommendation_histories` → `saved_places` →
+  `agent_states`로 늘었고, `agent_states`를 마지막에 둔다는 원칙(결정 3)은
+  그대로다. **`session_messages`가 들어온 것이 이 결정의 무게를 바꿨다** — 그
+  테이블에는 사용자 원문 발화와 화면에 나간 응답이 담기므로(계약 5.6절
+  "화면 기록은 원문 금지의 예외다"), 기본 30일은 이제 저장 용량 정책이 아니라
+  **사실상의 개인정보 보관 기간**이다. 값 자체는 그대로 두고 성격만 정정한다.
+  결정 2의 `response_feedback` 제외는 유효하다.
 - 배경: 세션 TTL(30분, `session.py::SESSION_TTL`)은 그 세션이 다시 조회될 때만
   상태를 `expired`로 바꾸는 lazy 판정이라, 실제 행을 지우지 않는다.
   `agent_states`/`recommendation_histories`/`condition_change_logs`/

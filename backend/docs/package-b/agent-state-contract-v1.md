@@ -19,6 +19,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 - 저장소는 인메모리를 기준으로 한다. (서버 재시작 시 상태 소멸)
 - 로그인이 없으며 모든 세션은 익명이다.
 - 사용자 원문 발화와 LLM 원문 응답은 저장하지 않는다.
+  **단 화면 기록(`session_messages`)은 예외다 — 5.6절 참고.**
 - B는 자연어의 의미를 해석하지 않는다. A가 해석한 결과를 적용만 한다.
 - 조건 데이터는 출처에 따라 `user_conditions`와 `api_context`로 분리 저장한다.
 
@@ -49,7 +50,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (17개 필드)
+### 1.2 user_conditions (18개 필드)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
 
@@ -72,8 +73,10 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 15 | `concentration_intent` | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
 | 16 | `taste_query` | string \| null | 단일 | 취향 발화 원문(2026-08-19 신설). 벡터 검색 질의로 쓴다 — `special_requirements`와 달리 일정·교통 조건을 섞지 않는다 |
 | 17 | `travel_origin` | string \| null | 단일 | 이동시간의 출발점 판정(2026-08-22 신설, D-071). `"user_location"` \| `"search_center"`. "안국역에서 10분"처럼 조사가 출발점을 확정할 때만 `"search_center"` |
+| 18 | `accessibility_needs` | list[string] | 복수 | 무장애 요구(2026-09-02 신설, `14fb1d3`). A의 추출 프롬프트가 채운다 |
 
-- 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
+- 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements`,
+  `accessibility_needs` 5개다.
 - **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
 - **B는 각 필드의 허용값을 검증하지 않는다.** 허용값 목록은 패키지 A가 정의한다.
 
@@ -115,6 +118,11 @@ time_available  : 분 단위
 | `gps_location_updated_at` | string \| null | 시스템 | — |
 | `api_weather_updated_at` | string \| null | 시스템 | — |
 | `gps_location_confirmed_at` | string \| null | 시스템 (PR #188, 2026-08-20) | — (A가 30분 기준으로 자체 판정) |
+
+**기기 좌표 세 필드는 DB에 저장되지 않는다 (2026-09-08, `6df2e24`).**
+`gps_location`, `gps_location_updated_at`, `gps_location_confirmed_at`은 요청을
+처리하는 동안에만 상태에 있고 저장 직전에 빠진다. 스키마에서 없앤 것이 아니므로
+이 절의 유효 기간 규칙은 **한 요청 안에서만** 의미가 있다 — 5.6절 "저장 경계" 참고.
 
 **유효 기간 규칙**
 
@@ -167,6 +175,7 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
     "place_tags": [],
     "weather": null,
     "weather_intent": null,
+    "concentration_intent": null,
     "transport": null,
     "max_travel_time": null,
     "time_available": null,
@@ -175,7 +184,9 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
     "budget": null,
     "exclude_tags": [],
     "special_requirements": [],
-    "taste_query": null
+    "taste_query": null,
+    "accessibility_needs": [],
+    "travel_origin": null
   },
   "api_context": {
     "gps_location": null,
@@ -198,8 +209,8 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
 | 필드 | 설명 |
 | --- | --- |
 | `session_id` | 대화 단위 식별자 (4절) |
-| `user_conditions` | 사용자 발화에서 추출된 현재 조건 16개 |
-| `api_context` | 외부 확보 데이터 4개 |
+| `user_conditions` | 사용자 발화에서 추출된 현재 조건 18개 (1.2절) |
+| `api_context` | 외부 확보 데이터 5개 (1.4절). **그중 기기 좌표 3개는 DB에 저장되지 않는다** — 5.6절 |
 | `condition_version` | `user_conditions` 변경 횟수. 동시 갱신 감지용 |
 | `last_run_id` | 이 상태를 마지막으로 갱신한 실행 식별자 |
 | `last_intent` | 직전 턴의 인텐트. A의 맥락 판정용으로 반환 |
@@ -976,8 +987,9 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장한다**
 
-- `user_conditions` 16개 필드 (구조화된 조건값)
-- `api_context` 4개 필드 (외부 확보 데이터 + 확보 시각)
+- `user_conditions` 18개 필드 (구조화된 조건값)
+- `api_context` 중 **날씨 두 필드만** — `api_weather`, `api_weather_updated_at`.
+  나머지 셋은 기기 좌표라 저장하지 않는다 (아래 "저장 경계")
 - `place_id` (TourAPI `contentid`)
 - `distance_km` / `remaining_minutes` / `environment_type` — COMPARE 전용
   Feature 스냅샷 (3.2절, 3.7절 예외 참고). 일반 장소 상세와는 성격이 다르다.
@@ -992,8 +1004,10 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장하지 않는다**
 
-- 사용자 원문 발화
-- LLM 원문 응답 텍스트
+- 사용자 원문 발화 — **화면 기록은 예외다** (아래 "화면 기록")
+- LLM 원문 응답 텍스트 — **화면 기록은 예외다** (아래 "화면 기록")
+- 기기 좌표 3개 (`gps_location` · `gps_location_updated_at` ·
+  `gps_location_confirmed_at`) — **상태에는 있고 DB에만 없다** (아래 "저장 경계")
 - Chain-of-Thought 등 내부 추론 과정
 - 장소 상세 정보 (이름·주소·좌표·영업시간)
 - `answer_conditions` (병합 결과)
@@ -1032,6 +1046,80 @@ Scoring 세부 근거값을 B가 저장해두면, 최소한 "그때 왜 이 순�
 
 "사용자가 어떤 표현을 썼는가"만 확인할 수 없으며,
 이는 AF-11 평가 Fixture의 영역이다.
+
+**저장 경계 — 상태에 있는 것이 곧 DB에 있는 것은 아니다 (2026-09-08, `6df2e24`)**
+
+`store.for_persistence(state)`가 저장 직전에 사본을 만들어 **기기 좌표 세 필드를
+뺀다** — `gps_location`, `gps_location_updated_at`, `gps_location_confirmed_at`.
+필드를 스키마에서 없앤 것이 아니라 DB에 적지 않는 것이라, 한 요청을 처리하는
+동안에는 그대로 쓴다. 그래서 원본을 건드리지 않고 사본을 만들어 돌려준다.
+
+- **저장소 두 구현이 모두 이 함수를 거친다** (`store.py`의 인메모리,
+  `supabase_store.py`). 인메모리만 값을 계속 들고 있으면, 저장이 사라져 깨지는
+  경로를 테스트가 통과시킨다
+- 뺄 수 있는 근거는 화면이 매 턴 좌표를 실어 보낸다는 점이다. 서버 사본은
+  "요청에 없을 때를 위한 여벌"이었는데 실제로는 매번 온다. 그 여벌을 읽던 자리는
+  둘(Runtime의 도구 조회 GPS, INFO 도보시간)이고 둘 다 없으면 이번 턴 값만 쓴다.
+  `gps_location_confirmed_at`은 채우는 코드도 읽는 코드도 없다 — 30분 재확인은
+  화면이 `sessionStorage`의 시각으로 판정한다
+- 개인정보가 이유다. 로그아웃해도 남고 세션마다 한 벌씩 쌓여 2026-09-07 기준
+  1,800건 이상이었다
+- **장소 이름(`current_location` · `search_center`)은 남긴다.** 함께 빼려다
+  되돌렸다 — 되묻기 버튼이 세션에 저장된 조건을 베껴 재실행하는데 이름이 사라지면
+  위치가 빈 채로 돌아 또 되묻기로 끝난다. 이름까지 빼려면 그 재실행 경로를 먼저
+  요청값 기준으로 고쳐야 한다 (TP-256)
+
+**이 절이 상태 스키마와 1:1이 아니게 된 것 자체가 계약이다.** 이 문서를 읽는
+사람은 "상태에 있으면 DB에도 있다"를 가정하면 안 된다 — `api_context`의 좌표 세
+필드가 반례다.
+
+**화면 기록은 원문 금지의 예외다 (`session_messages`, PR #354)**
+
+위 "저장하지 않는다"의 첫 두 항목(사용자 원문 발화 · LLM 원문 응답 텍스트)과
+3.2절의 "B는 `place_id`만 저장한다"를 **`session_messages`가 여는 자리다.**
+
+- `user_input` — 그 턴의 사용자 원문 발화. `payload` 안에도 있지만 밖으로 꺼내
+  두었다(목록을 훑을 때 `payload` 전체를 열지 않으려는 것)
+- `payload` — A의 `AgentResponse`를 직렬화한 그대로. **B는 열어보지 않는다.**
+  파싱하면 A의 스키마가 바뀔 때마다 B가 따라가야 하고, 지금 B는 `app.schemas`에
+  의존하지 않는다 (`trace_records`의 `step`을 다루는 방식과 같다)
+
+**원칙을 지우지 않는 이유.** 원문 금지가 지키려던 것은 "과거 정보가 현재 정보로
+오인되는" 상황이고, 그것은 저장이 아니라 **표시**에서 지킨다 — 운영시간처럼 시간이
+지나면 틀리는 값은 복원 화면에서 다시 그리지 않는다. 그래서 원칙은 `agent_states`에
+그대로 살아 있고, 예외는 화면 기록 한 곳이다.
+
+`recent_turns`와 겸하지 않는다. 저것은 모델에 넣을 맥락이라
+`MAX_RECENT_TURNS`(=5)에서 잘리고, 이것은 사람이 다시 볼 화면이라 자르지 않는다.
+추천 이력과도 다르다 — 그것은 "다음 추천에서 뺄 곳"이라 대화를 이어갈 때 비워진다.
+
+**보관 기간 — 사실상의 개인정보 보관 기간이다 (D-074, 기본 30일)**
+
+`agent_states.last_active_at`이 기준 일수(기본 30일, `--days`로 조정)보다 오래되면
+그 세션에 딸린 행을 전부 지운다
+(`backend/scripts/cleanup_expired_sessions.py`). 원문이 남는 자리가 생긴 뒤로는
+이 값이 **개인정보 보관 기간**이다 — CLI 인자 기본값으로만 존재한다는 사실과
+그것이 정책값이라는 사실은 다르다.
+
+수명은 "무엇에 딸려 있나"로 갈린다.
+
+| 대화에 딸림 — 30일에 사라진다 | 정리 대상이 아니다 |
+| --- | --- |
+| `agent_states` | `saved_schedules` |
+| `recommendation_histories` | `user_preferences` |
+| `condition_change_logs` | `user_favorites` |
+| `trace_records` | `response_feedback` |
+| `session_messages` | |
+| `saved_places` | |
+
+오른쪽 셋은 **사람에 딸려 있어** 대화를 지워도 남는다(라우트가
+`RequiredPrincipal`을 쓰고 세션 TTL과 무관하다). `response_feedback`은 세션
+생애주기와 무관한 분석 데이터라 제외됐다(D-074 결정 2).
+
+**D-074 결정 2의 대상 목록이 낡았다.** 그때는 네 테이블이었고 지금은
+`session_messages`(TP-222 후속) · `saved_places`(SCHEDULE-12)가 더 있다 —
+`_delete_one()`이 여섯을 지운다. decision-log D-074에 정정을 덧붙였다.
+
 
 ## 6. A → B 전달 계약 초안
 

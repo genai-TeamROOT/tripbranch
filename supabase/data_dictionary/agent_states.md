@@ -4,6 +4,8 @@
 
 `public.agent_states`는 대화 세션(`session_id`) 1개의 현재 상태를 담는 테이블입니다. Package B(Agent State/Memory) 소유이며, `session_id`가 PK입니다. 행 단위 부분 갱신이 아니라 애플리케이션이 상태를 통째로 읽고(`get_state`) 통째로 다시 쓰는(`save_state`) 방식으로 갱신됩니다. 클라이언트(anon/authenticated)는 직접 접근할 수 없고 FastAPI 서버(secret key)를 통해서만 사용합니다.
 
+**이 테이블에는 상태에 있는 필드가 그대로 들어오지 않습니다** — `store.for_persistence(state)`가 저장 직전에 사본을 만들어 기기 좌표 세 필드를 뺍니다(2026-09-08, `6df2e24`). 아래 "기기 좌표는 저장되지 않는다" 절을 먼저 보세요.
+
 `user_conditions`/`api_context`는 여러 하위 값을 한 번에 담는 JSONB 객체 컬럼입니다 — 하위 필드는 이 문서의 "user_conditions 하위 필드"/"api_context 하위 필드" 표를 참고하세요.
 
 | 필드 | 타입 | NULL 허용 | 정의 | 값 예시 | 활용 예시 |
@@ -24,6 +26,9 @@
 | `created_at` | timestamptz | 아니오(기본값 `now()`) | 세션이 처음 생성된 시각입니다. | `2026-08-20T09:00:00+09:00` | 세션 생애주기 분석, 만료 정리 스크립트의 기준일 계산 등에 사용합니다. |
 | `updated_at` | timestamptz | 아니오(기본값 `now()`) | 조건이 바뀌는 등 상태가 갱신된 시각입니다. GPS 갱신처럼 `last_active_at`만 건드리고 이 컬럼은 안 건드리는 경우도 있어, 자동 갱신 트리거를 달지 않고 애플리케이션이 필드별로 다르게 관리합니다. | `2026-08-25T09:05:00+09:00` | 조건이 실제로 바뀐 마지막 시점을 확인합니다. |
 | `last_active_at` | timestamptz | 아니오(기본값 `now()`) | 이 세션이 마지막으로 활동한 시각입니다(조건 변경뿐 아니라 GPS 갱신 등도 포함). 30분 세션 TTL 판정과 만료 세션 정리 스크립트(`cleanup_expired_sessions.py`, D-074, 30일 기준)의 기준 컬럼입니다. | `2026-08-25T09:10:00+09:00` | 세션 만료 여부 판정, 만료 세션 정리 대상 선별에 사용합니다. |
+
+| `title` | text | 예 | 대화 목록에 보여줄 이름(마이그레이션 `202609030002_add_agent_states_title.sql`). 기존 행은 `recent_turns[0].user_input`의 앞 200자로 채워졌습니다. `(user_id, last_active_at desc)` 부분 인덱스가 함께 만들어졌습니다(`user_id is not null`). | `홍대 반나절 코스 짜줘` | 사이드바 채팅 히스토리 목록에 표시합니다. |
+| `location` | text | 예 | 대화 목록에 보여줄 장소(마이그레이션 `202609030004_add_agent_states_location.sql`). 기존 행은 `user_conditions.search_center`의 앞 200자로 채워졌습니다. | `마포구 홍대입구역` | 목록 한 줄에 어디 얘기였는지 함께 보여줍니다. |
 
 ### user_conditions 하위 필드
 
@@ -46,16 +51,38 @@
 | `special_requirements` | string[] | 기타 특수 요구사항. 기본값 빈 배열. |
 | `taste_query` | string \| null | 취향 근거 검색용 자유 텍스트 질의(Package D의 RAG 파이프라인 입력). |
 | `travel_origin` | string \| null | 이동시간 기준점 판정. `user_location` 또는 `search_center` 중 하나(B는 값을 검증하지 않음, D-071). |
+| `accessibility_needs` | list[string] | 무장애 요구(2026-09-02 신설, `14fb1d3`). A의 추출 프롬프트가 채웁니다. 복수 필드이므로 기본값은 빈 배열입니다. |
 
 ### api_context 하위 필드
 
 | 필드 | 타입 | 정의 |
 | --- | --- | --- |
-| `gps_location` | string \| null | 마지막으로 확보한 GPS 좌표 문자열. |
+| `gps_location` | string \| null | 마지막으로 확보한 GPS 좌표 문자열. **DB에 저장되지 않습니다** — 아래 절 참고. |
 | `api_weather` | string \| null | 외부 날씨 API로 확보한 원문 값. |
-| `gps_location_updated_at` | datetime \| null | GPS 값이 갱신된 시각(기술적 TTL 판정용, 1시간). |
+| `gps_location_updated_at` | datetime \| null | GPS 값이 갱신된 시각(기술적 TTL 판정용, 1시간). **DB에 저장되지 않습니다.** |
 | `api_weather_updated_at` | datetime \| null | 날씨 값이 갱신된 시각. |
-| `gps_location_confirmed_at` | datetime \| null | 사용자가 "현재 위치 다시 가져오기"로 실제 재확인한 시각(PR #188). `gps_location_updated_at`과 별개 — "N분 전 위치로 계속"을 선택하면 이 값은 갱신되지 않습니다. 기존 세션은 null(최초 재확인 대상). |
+| `gps_location_confirmed_at` | datetime \| null | 사용자가 "현재 위치 다시 가져오기"로 실제 재확인한 시각(PR #188). `gps_location_updated_at`과 별개 — "N분 전 위치로 계속"을 선택하면 이 값은 갱신되지 않습니다. 기존 세션은 null(최초 재확인 대상). **DB에 저장되지 않습니다 — 채우는 코드도 읽는 코드도 없습니다.** |
+
+### 기기 좌표는 저장되지 않는다 (2026-09-08, `6df2e24`)
+
+`api_context`의 세 필드는 **상태에는 있고 이 테이블에는 없습니다.**
+
+```
+gps_location              저장 안 함
+gps_location_updated_at   저장 안 함
+gps_location_confirmed_at 저장 안 함
+api_weather               저장함
+api_weather_updated_at    저장함
+```
+
+`store.for_persistence(state)`가 저장 직전에 사본을 만들어 셋을 `null`로 비웁니다. **필드를 스키마에서 없앤 것이 아니라 DB에 적지 않는 것**이라, 한 요청을 처리하는 동안에는 그대로 씁니다 — 그래서 원본을 건드리지 않고 사본을 만들어 돌려줍니다.
+
+- **저장소 두 구현이 모두 이 함수를 거칩니다**(`store.py`의 인메모리, `supabase_store.py`). 인메모리만 값을 계속 들고 있으면 저장이 사라져 깨지는 경로를 테스트가 통과시킵니다
+- 개인정보가 이유입니다. 로그아웃해도 남고 세션마다 한 벌씩 쌓여 2026-09-07 기준 1,800건 이상이었습니다
+- 뺄 수 있는 근거는 **화면이 매 턴 좌표를 실어 보낸다**는 점입니다. 서버 사본은 "요청에 없을 때를 위한 여벌"이었는데 실제로는 매번 옵니다. 그 여벌을 읽던 자리는 둘(Runtime의 도구 조회 GPS, INFO 도보시간)이고 둘 다 없으면 이번 턴 값만 씁니다. 30분 재확인은 화면이 `sessionStorage`의 시각으로 판정합니다(`utils/locationRefresh.ts`)
+- **장소 이름(`user_conditions.current_location` · `search_center`)은 남습니다.** 함께 빼려다 되돌렸습니다 — 되묻기 버튼이 세션 조건을 베껴 재실행하는데 이름이 사라지면 위치가 빈 채로 돌아 또 되묻기로 끝납니다. 이름까지 빼려면 그 재실행 경로를 먼저 요청값 기준으로 고쳐야 합니다(TP-256)
+
+**이 테이블을 조회해 좌표를 기대하는 쿼리는 이제 전부 `null`을 받습니다.** 1.4절의 유효 기간 규칙(1시간 TTL)은 한 요청 안에서만 의미가 있습니다. 계약 문서는 `agent-state-contract-v1.md` 5.6절 "저장 경계"를 보세요.
 
 ### recent_turns 원소 / situation_state 하위 필드
 
