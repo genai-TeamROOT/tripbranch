@@ -265,6 +265,49 @@ def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
     return "clarification_required"
 
 
+# 조건을 발화에서 뽑아 오는 턴. 이 둘만 `llm_output.recommend`로 조건을 나른다 —
+# MODIFY는 `modify` 페이로드를 쓰고 INFO·GENERAL·COMPARE는 조건을 안 나른다.
+# 근거는 state_transform.py가 병합 대상을 이 둘로 좁힌 것이다.
+_CONDITION_BEARING_INTENTS = (Intent.RECOMMEND, Intent.SCHEDULE)
+
+# llm_interpret 단계의 error_type 값. 조건을 나르는 턴인데 페이로드가 통째로
+# 없을 때만 쓴다.
+CONDITION_PAYLOAD_MISSING = "condition_payload_missing"
+
+
+def _condition_intake_error(llm_output: LLMOutput) -> str | None:
+    """이번 턴 해석이 조건을 실어 오지 못했으면 그 사유 코드를 돌려준다.
+
+    **왜 필요한가.** `llm_output.recommend`가 None이면 state_transform이 조건 병합을
+    통째로 건너뛴다(services/interpret/state_transform.py의 병합 조건). 오류도
+    로그도 없이 지나가므로 조건이 하나도 없는 채로 추천·편성이 돌아가고, 사용자에게는
+    자기가 말한 조건이 무시된 결과가 나간다.
+
+    **실제로 일어나고 있었다.** 2026-08-18(`89b5bdf`)부터 주 추출 모델이
+    `gemini-3.5-flash-lite`인데, 일정 발화에서 이 모델이 `recommend`를 통째로 비워
+    보내는 회차가 3분의 1이었다(2026-09-08 실측: 흔들림 6/18 · 기대 불일치 9/18).
+    같은 프롬프트를 `gemini-3.5-flash`로 돌리면 18/18 전부 고정·전부 일치다.
+    증상이 "엔드포인트마다 결과가 다르다"로 보여 열흘 넘게 원인 미확정으로 남았던
+    이유가 이 경로의 침묵이다 — 세는 곳이 있었으면 지표에서 바로 보였다
+    (`scripts/verify_schedule_condition_extraction.py`로 확정).
+
+    **`metrics`가 아니라 `error_type`을 쓴다.** TP-242가 도메인 지표를 기존 단계에
+    얹지 않기로 정했고 그 분리를 잠그는 테스트가 있다(schedule/metrics.py 머리말).
+    이건 지표가 아니라 **이 단계가 제 일을 못 했다는 사실**이라 계약 2절의
+    `error_type`("실패 시 오류 분류")이 맞는 자리다 — 단계 이름이 `llm_interpret`,
+    즉 전송이 아니라 해석이라는 점이 근거다. HTTP 호출은 성공했지만 해석은 실패했다.
+
+    **조건이 전부 null인 것은 실패로 세지 않는다.** "일정 짜줘"처럼 조건을 하나도
+    말하지 않은 발화에서는 그게 옳은 결과다. 페이로드 자체가 없는 것과 뜻이 다르다.
+    """
+
+    if llm_output.intent not in _CONDITION_BEARING_INTENTS:
+        return None
+    if llm_output.recommend is not None:
+        return None
+    return CONDITION_PAYLOAD_MISSING
+
+
 def _record_trace_safely(
     *,
     session_id: str,
@@ -3346,11 +3389,15 @@ async def _run_agent_flow(
 
     # 2단계(LLM 호출) trace는 여기서 기록한다 — run_id/session_id가 apply() 안에서
     # 발급되므로 2단계 시점엔 아직 없다. latency만 미리 재뒀다가 여기서 기록.
+    condition_intake_error = _condition_intake_error(llm_output)
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
         step="llm_interpret",
         latency_ms=llm_latency_ms,
+        # 조건을 나르는 턴인데 페이로드가 통째로 비어 왔으면 이 단계의 실패로
+        # 남긴다 — 이유는 _condition_intake_error() 참고.
+        error_type=condition_intake_error,
         # 이번 턴이 실제로 사용한 슬롯의 버전을 남긴다
         # (예: router.classify@2.0.0+info.extract@3.0.0).
         # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
@@ -3362,6 +3409,19 @@ async def _run_agent_flow(
         token_usage=consumed_tokens(),
         store=store,
     )
+
+    # 조건이 비어 온 턴은 로그에도 남긴다. trace의 error_type이 집계용이고 이
+    # 줄은 지금 무슨 일이 일어났는지 그 자리에서 보이게 하려는 것이다 — 이
+    # 경로가 조용했던 것이 원인 규명을 열흘 넘게 막았다.
+    if condition_intake_error is not None:
+        logger.warning(
+            "조건 페이로드가 비어 왔다 — 이번 턴은 조건 없이 진행된다: "
+            "intent=%s status=%s session_id=%s run_id=%s",
+            llm_output.intent.value,
+            llm_output.status.value,
+            state_response.session_id,
+            state_response.run_id,
+        )
 
     # 되묻기 버튼이 "조회할 것 없는 확인성 선택지"로 해소된 경우(예: "지금 장소가
     # 마음에 들어요", "새로 시작할게요") — 조건 병합(soft reset 등)은 이미 위에서
@@ -4892,6 +4952,7 @@ async def _run_schedule_branch(
             target_orders=sorted(set(llm_output.modify.target_indices)),
             candidates=schedule_candidates,
             conditions=agent_conditions,
+            # 항상 None이다 — 이유는 SchedulePlanningRequest.visit_datetime 주석.
             visit_datetime=None,
             pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
@@ -4922,6 +4983,7 @@ async def _run_schedule_branch(
             # 턴이라 담아둔 장소를 그 자리에 밀어넣을 이유가 없다.
             must_include_place_ids=saved_place_ids,
             conditions=agent_conditions,
+            # 항상 None이다 — 이유는 SchedulePlanningRequest.visit_datetime 주석.
             visit_datetime=None,
             pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
@@ -4979,6 +5041,7 @@ async def _run_schedule_branch(
                 SchedulePlanningRequest(
                     candidates=schedule_candidates,
                     conditions=agent_conditions,
+                    # 항상 None이다 — 이유는 SchedulePlanningRequest 주석.
                     visit_datetime=None,
                     pairwise_distances_km=schedule_pairwise_km,
                 ),

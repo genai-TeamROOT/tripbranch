@@ -209,6 +209,20 @@ class _LLMProviderForcingCompareWithFewShown(_LLMProviderWithGeneralAnswer):
         return await super().classify_intent(user_input, **kwargs)
 
 
+class _LLMProviderDroppingConditionPayload(_LLMProviderWithGeneralAnswer):
+    """조건 추출이 `recommend`를 통째로 비워 보내는 상황을 만든다.
+
+    운영에서 실제로 일어나는 일이다 — 주 추출 모델이 `gemini-3.5-flash-lite`인
+    동안 일정 발화 3분의 1이 이렇게 왔다(2026-09-08 실측). Fake 추출기는 늘
+    페이로드를 채우므로 평범한 시드로는 이 경로를 지나갈 수 없다.
+    """
+
+    async def extract_recommend_conditions(self, user_input, **kwargs):
+        result = await super().extract_recommend_conditions(user_input, **kwargs)
+        result.data.recommend = None
+        return result
+
+
 class _CountingToolProvider:
     """실제 FakeToolProvider를 감싸서 호출 횟수를 세고, 마지막 요청을 검사용으로 보관한다."""
 
@@ -559,6 +573,95 @@ async def test_needs_clarification_records_only_llm_trace() -> None:
     assert response.llm_output.status is OutputStatus.NEEDS_CLARIFICATION
     traces = store.get_traces(response.state.session_id)
     assert [trace.step for trace in traces] == ["llm_interpret"]
+
+
+@pytest.mark.asyncio
+async def test_empty_condition_payload_is_recorded_as_interpret_failure() -> None:
+    """조건 페이로드가 비어 오면 llm_interpret 단계의 실패로 남는다. (함정 12 후속)
+
+    **이 경로가 조용했던 것이 문제였다.** `llm_output.recommend`가 None이면
+    state_transform이 조건 병합을 통째로 건너뛰는데, 오류도 로그도 없어서 조건이
+    하나도 없는 채로 추천이 돌아간다. 2026-08-18부터 실제로 일어나고 있었고
+    열흘 넘게 원인 미확정으로 남았던 이유가 그 침묵이다.
+
+    `metrics`가 아니라 `error_type`에 남기는 이유는 TP-242가 도메인 지표를 기존
+    단계에 얹지 않기로 정했기 때문이다 — 아래 테스트가 그 분리를 함께 잠근다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderDroppingConditionPayload()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.recommend is None
+
+    by_step = {trace.step: trace for trace in store.get_traces(response.state.session_id)}
+    assert by_step["llm_interpret"].error_type == "condition_payload_missing"
+    # 지표 쪽은 건드리지 않는다 — TP-242의 분리를 여기서도 지킨다.
+    assert by_step["llm_interpret"].metrics is None
+
+
+@pytest.mark.asyncio
+async def test_conditions_that_arrive_empty_are_not_an_interpret_failure() -> None:
+    """조건을 하나도 말하지 않은 발화는 실패가 아니다.
+
+    대조군이다. 페이로드가 **있는데 안이 빈 것**과 페이로드 **자체가 없는 것**은
+    뜻이 다르다 — "일정 짜줘"처럼 조건을 안 말한 발화에서는 전자가 옳은 결과다.
+    이 구분을 지우면 위 판정이 정상 발화까지 실패로 세기 시작한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.recommend is not None
+
+    by_step = {trace.step: trace for trace in store.get_traces(response.state.session_id)}
+    assert by_step["llm_interpret"].error_type is None
+
+
+@pytest.mark.asyncio
+async def test_condition_free_intents_are_not_interpret_failures() -> None:
+    """조건을 안 나르는 턴은 페이로드가 없어도 실패가 아니다.
+
+    GENERAL·INFO·COMPARE는 `recommend`가 없는 것이 **정상**이다 — 조건을
+    `recommend`로 나르는 것은 RECOMMEND·SCHEDULE 둘뿐이다(state_transform이 병합
+    대상을 그 둘로 좁힌 것과 같은 기준).
+
+    이 대조군이 없으면 인텐트 제한을 지워도 아무 테스트가 안 깨진다(실제로
+    돌연변이로 확인했다 — 4,191건 전부 통과했다). 그러면 모든 잡담 턴이
+    "조건 유실"로 집계되면서 지표가 통째로 무의미해진다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(user_input="트리비는 뭐 할 수 있어?", session_id=None),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent is Intent.GENERAL
+    assert response.llm_output.recommend is None
+
+    by_step = {trace.step: trace for trace in store.get_traces(response.state.session_id)}
+    assert by_step["llm_interpret"].error_type is None
 
 
 @pytest.mark.asyncio
