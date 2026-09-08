@@ -1,7 +1,9 @@
 /*
  * 역할: 추천 API 응답을 채팅 메시지 안에서 장소 카드 목록으로 렌더링한다.
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
- * 출력: 추천 결과 메시지와 PlaceCard 목록.
+ * 출력: 추천 결과 메시지와 PlaceCard 목록 — **줄은 최대 두 개다**(추천 장소 /
+ *   현재 운영시간이 아닌 장소). 운영시간 원문조차 없는 후보는 추천 장소 줄에
+ *   함께 들어간다(2026-09-08, 아래 rankedRecommendations 주석).
  *
  * **동작 버튼과 취향 표는 여기 없다.** 각각 RecommendationActionsMessage와
  * PreferenceTagSummaryTable이 별도 메시지로 그린다 — 버튼은 다음 발화가 나가면
@@ -54,14 +56,12 @@ export function RecommendationResultMessage({
           noResults: "We couldn’t find a place that matches those conditions.",
           recommendations: "Recommended places",
           closed: "Places that are currently closed",
-          hoursUnknown: "Places with unavailable opening hours",
         }
       : {
           summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
           noResults: "조건에 맞는 장소를 찾지 못했어요.",
           recommendations: "추천 장소",
           closed: "현재 운영시간이 아닌 장소",
-          hoursUnknown: "운영시간을 확인할 수 없는 장소",
         };
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
@@ -77,6 +77,22 @@ export function RecommendationResultMessage({
   const unknownHoursRecommendations = unverifiedRecommendations.filter(
     (item) => !item.operating_hours_display,
   );
+  /*
+   * **운영시간을 모르는 후보를 추천 장소와 같은 줄에 둔다**(2026-09-08). 전에는
+   * "운영시간을 확인할 수 없는 장소"라는 캡션을 달아 아래에 따로 한 줄을 더
+   * 그렸다. 캡션이 없어도 그 사실은 카드가 이미 말한다 — 운영시간 자리에
+   * "확인 불가"가 찍힌다(PlaceCard의 hoursRemainingLabel).
+   *
+   * 폐점 후보(closedRecommendations)는 계속 따로 둔다. 그 분리는 mintee가
+   * 4cab841a에서 "폐점 후보의 실제 운영시간을 보존"하려고 만든 것이고, 이 변경은
+   * 거기를 건드리지 않는다.
+   *
+   * **순위 번호가 이어 붙는다**(사용자 결정). 그래서 검증된 후보가 5개면 이 후보는
+   * 6·7위로 보인다. D의 순위는 "날씨·운영시간·거리 조건을 종합한" 것이라 운영시간을
+   * 모르는 후보는 그 기준으로 줄 세운 것이 아닌데도 같은 번호 체계에 들어간다는
+   * 뜻이다. 검증된 후보가 하나도 없으면 이 후보가 1위 자리에 온다.
+   */
+  const rankedRecommendations = [...recommendations, ...unknownHoursRecommendations];
   const hasNoResults =
     recommendations.length === 0 &&
     closedRecommendations.length === 0 &&
@@ -101,9 +117,9 @@ export function RecommendationResultMessage({
         </div>
       ) : (
         <>
-          {recommendations.length > 0 && (
+          {rankedRecommendations.length > 0 && (
             <PlaceCardRow caption={text.recommendations}>
-              {recommendations.map((item, index) => (
+              {rankedRecommendations.map((item, index) => (
                 <PlaceCard
                   key={item.place_id}
                   item={item}
@@ -120,21 +136,6 @@ export function RecommendationResultMessage({
           {closedRecommendations.length > 0 && (
             <PlaceCardRow caption={text.closed}>
               {closedRecommendations.map((item) => (
-                <PlaceCard
-                  key={item.place_id}
-                  item={item}
-                  language={language}
-                  isSaved={savedPlaceIds.has(item.place_id)}
-                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
-                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                />
-              ))}
-            </PlaceCardRow>
-          )}
-
-          {unknownHoursRecommendations.length > 0 && (
-            <PlaceCardRow caption={text.hoursUnknown}>
-              {unknownHoursRecommendations.map((item) => (
                 <PlaceCard
                   key={item.place_id}
                   item={item}
