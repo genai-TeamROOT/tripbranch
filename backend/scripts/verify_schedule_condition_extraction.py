@@ -76,6 +76,21 @@ CASES: tuple[tuple[str, str, str | None, int | str | None], ...] = (
     # --- ④ 대조군. RECOMMEND 발화는 흔들리지 않아야 한다 ---
     ("대조군", "경복궁 근처 카페 추천해줘", "경복궁", None),
     ("대조군", "종로에서 15분 이내 카페 추천해줘", "종로", None),
+    # --- ⑤ 담을 칸이 없는 조건. 그 값이 옆 조건을 흔드는지 본다 ---
+    # 시작 시각("오후 2시부터")과 경유 출발지("A에서 B로"의 A)는 조건 스키마에
+    # 필드가 없어 어디에도 담기지 않는다. 그래서 **그 값 자체는 판정할 수
+    # 없다** — 여기서 재는 것은 옆에 있던 조건이 살아남는가 하나다.
+    #
+    # 각 발화는 문제되는 조건만 뺀 대조군과 짝을 이룬다. 짝에서만 값이
+    # 살아나면 원인이 그 조건으로 좁혀진다.
+    #
+    # search_center 기대값은 location_rules.md가 정한 대로다 — "~~로"는
+    # 목적지이므로 "인사동"이다. 여기서 "홍대입구"가 나오면 모델이 목적지
+    # 대신 출발지를 골랐다는 뜻이고, 그것도 별개의 관측 결과다.
+    ("칸없음", "토요일 오후 2시부터 5시간 코스 짜줘", None, 300),
+    ("칸없음", "5시간 코스 짜줘", None, 300),
+    ("칸없음", "홍대입구에서 인사동으로 이동하는 5시간 코스", "인사동", 300),
+    ("칸없음", "인사동 근처 5시간 코스", "인사동", 300),
 )
 
 
@@ -189,10 +204,10 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
 
     header = (
         f"{'흔들림':<8} {'일치':<6} {'search_center':<24} "
-        f"{'time_available':<18} {'응답모델':<26} 발화"
+        f"{'time_available':<18} {'응답모델':<26} {'지연':<8} 발화"
     )
     print(f"\n{header}")
-    print("-" * 140)
+    print("-" * 150)
     current_group = None
     for r in rows:
         if r["그룹"] != current_group:
@@ -222,12 +237,21 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
 
         print(
             f"{'⚠️  흔들림' if not stable else '  고정':<8} {match_mark:<5} "
-            f"{_fmt(centers):<24} {_fmt(times):<18} {_fmt(models):<26} {r['발화']}"
+            f"{_fmt(centers):<24} {_fmt(times):<18} {_fmt(models):<26} "
+            f"{str(r['ms_평균']) + 'ms':<8} {r['발화']}"
         )
         for error in set(r["오류"]):  # type: ignore[arg-type]
             print(f"{'':>16} ⚠️  {error}")
 
     print(f"\n{'=' * 70}")
+    # 모델을 바꿀지 정하려면 품질만으로는 부족하다 — 느려지는 정도가 반대편
+    # 근거이므로 같은 표에서 함께 본다. 값은 이미 모으고 있었고 출력만 없었다.
+    all_ms = sorted(int(r["ms_평균"]) for r in rows)  # type: ignore[arg-type]
+    median_ms = all_ms[len(all_ms) // 2]
+    print(
+        f"지연  중앙값 {median_ms}ms · 평균 {round(sum(all_ms) / len(all_ms))}ms · "
+        f"최소 {all_ms[0]}ms · 최대 {all_ms[-1]}ms"
+    )
     print(f"반복 {repeat}회 기준")
     print(f"  흔들린 케이스        {len(unstable)}/{len(rows)}건")
     for r in unstable:
