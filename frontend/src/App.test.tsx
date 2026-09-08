@@ -1183,6 +1183,9 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
             },
           ],
           center_name: "성수동",
+          /* 홈에서 사진부터 올리면 세션이 없어서 서버가 여기서 발급한다.
+             화면이 이 값을 저장해야 이어지는 발화가 같은 대화로 붙는다. */
+          session_id: "photo-session-1",
           candidate_count: 12,
           truncated_count: 0,
           elapsed_ms: 400,
@@ -1205,6 +1208,58 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
   // 결과는 메시지로 쌓이므로 /chat으로 넘어가야 보인다.
   expect(await screen.findByText("감성 카페")).toBeInTheDocument();
   expect(screen.getByPlaceholderText("트리비에게 물어보세요")).toBeInTheDocument();
+  // 사진만 덩그러니 두지 않는다 — 무엇을 요청한 턴인지가 화면에 남아야 한다.
+  expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeInTheDocument();
+});
+
+test("사진으로 시작한 대화에 이어 말하면 같은 세션으로 붙는다", async () => {
+  /*
+   * 서버가 발급한 session_id를 화면이 저장하지 않으면 이어지는 발화가 또 새
+   * 대화를 시작해, 방금 한 사진 검색이 혼자 남는다.
+   */
+  const base = mockFetch();
+  const sentBodies: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json({
+          places: [
+            {
+              content_id: "photo-place-1",
+              title: "감성 카페",
+              similarity: 0.82,
+              photo_count: 3,
+              address: "서울 성동구",
+              image_url: null,
+            },
+          ],
+          center_name: "성수동",
+          session_id: "photo-session-1",
+          candidate_count: 12,
+          truncated_count: 0,
+          elapsed_ms: 400,
+        });
+      }
+      sentBodies.push(String(init?.body ?? ""));
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  fireEvent.change(screen.getByTestId("photo-gallery-input"), { target: { files: [file] } });
+  await screen.findByText("감성 카페");
+
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "그중에 첫 번째");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  await waitFor(() =>
+    expect(sentBodies.some((body) => body.includes("photo-session-1"))).toBe(true),
+  );
 });
 
 /*
@@ -1370,3 +1425,295 @@ test("좌표가 있으면 홈 화면 칩도 깜빡인다", async () => {
 
   await waitFor(() => expect(container.querySelector(".animate-ping")).not.toBeNull());
 });
+
+// --- 사진 검색의 위치 정하기 -------------------------------------------------
+
+/*
+ * 위치를 정하는 규칙은 일반 채팅과 같다. 다른 것은 텍스트냐 사진이냐뿐이다 —
+ * 위치 설정의 검색 기준 → 출발지 → 기기 GPS 순으로 쓴다.
+ */
+
+function photoFetch(onPhotoRequest?: (form: FormData) => void) {
+  const base = mockFetch();
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/places/similar-by-photo")) {
+      onPhotoRequest?.(init?.body as FormData);
+      return Response.json({
+        places: [
+          {
+            content_id: "photo-place-1",
+            title: "감성 카페",
+            similarity: 0.82,
+            photo_count: 3,
+            address: "서울 성동구",
+            image_url: null,
+          },
+        ],
+        center_name: "성수동",
+        session_id: "photo-session-1",
+        candidate_count: 12,
+        truncated_count: 0,
+        elapsed_ms: 400,
+      });
+    }
+    return base(input);
+  });
+}
+
+async function uploadPhoto() {
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  fireEvent.change(screen.getByTestId("photo-gallery-input"), { target: { files: [file] } });
+}
+
+test("위치 설정에서 정한 검색 기준으로 사진을 찾는다", async () => {
+  /* 예전에는 위치 설정을 아예 안 읽어서, 검색 기준을 정해 둔 사용자가 사진을
+     올려도 그 값이 요청에 실리지 않았다. 서버도 알 길이 없어(세션 조건은 채팅을
+     보내야 채워진다) 위치를 정했는데도 "어디 근처에서 찾을까요?"가 나왔다. */
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  setLocationCenter("성수동");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(sentForm?.get("location_query")).toBe("성수동");
+});
+
+test("검색 기준이 없으면 출발지를 쓴다", async () => {
+  /* 서버의 사진 경로도 search_center → current_location 순으로 찾는다. */
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  setLocationOrigin("안국역");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(sentForm?.get("location_query")).toBe("안국역");
+});
+
+test("지명을 정해 뒀으면 사진을 올려도 위치 권한을 묻지 않는다", async () => {
+  /* 채팅과 같은 판단이다(TP-256) — 필요도 없는 권한 팝업을 띄우지 않는다. */
+  const getCurrentPosition = vi.fn();
+  vi.stubGlobal("navigator", { geolocation: { getCurrentPosition } });
+  vi.stubGlobal("fetch", photoFetch());
+  setLocationCenter("성수동");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(getCurrentPosition).not.toHaveBeenCalled();
+});
+
+test("지명이 없으면 사진을 올릴 때 기기 위치를 물어본다", async () => {
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalled();
+  expect(sentForm?.get("latitude")).toBe("37.5788");
+});
+
+test("위치가 하나도 없으면 요청하지 않고 위치를 정하도록 안내한다", async () => {
+  /* 보내봐야 서버가 location_required로 되돌려줄 뿐이고, 그것은 오류 배너로 나와서
+     사용자가 할 수 있는 일이 없었다. */
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+        error({
+          code: 1,
+          message: "User denied Geolocation",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      ),
+    },
+  });
+  let photoRequests = 0;
+  vi.stubGlobal("fetch", photoFetch(() => (photoRequests += 1)));
+  await renderApp();
+
+  await uploadPhoto();
+
+  expect(await screen.findByText(/위치를 정하고 사진을 다시 올려/)).toBeInTheDocument();
+  expect(photoRequests).toBe(0);
+  /* 오류 배너로 띄우지 않는다 — 실패가 아니라 아직 답하지 않은 물음이다. */
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("안내의 위치 정하기를 누르면 위치 설정 화면으로 간다", async () => {
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+        error({
+          code: 1,
+          message: "User denied Geolocation",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      ),
+    },
+  });
+  vi.stubGlobal("fetch", photoFetch());
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText(/위치를 정하고 사진을 다시 올려/);
+  await userEvent.click(screen.getByRole("button", { name: "위치 정하기" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/location"));
+});
+
+test("사진으로 시작한 대화가 바로 채팅 히스토리에 올라간다", async () => {
+  /*
+   * 예전에는 사진 검색이 phase를 안 건드려 초기값 idle에 머물렀다. 사이드바가
+   * 목록을 다시 받는 조건이 "phase가 ready이고 session_id가 있을 때"라
+   * (SideDrawerContent), 다음 발화가 ready로 바꿀 때까지 목록에 안 나타났다.
+   */
+  const sessionListCalls: string[] = [];
+  const base = mockFetch();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json({
+          places: [
+            {
+              content_id: "photo-place-1",
+              title: "감성 카페",
+              similarity: 0.82,
+              photo_count: 3,
+              address: "서울 성동구",
+              image_url: null,
+            },
+          ],
+          center_name: "성수동",
+          session_id: "photo-session-1",
+          candidate_count: 12,
+          truncated_count: 0,
+          elapsed_ms: 400,
+        });
+      }
+      if (url.endsWith("/sessions")) {
+        sessionListCalls.push(url);
+        return Response.json({
+          sessions: sessionListCalls.length > 1
+            ? [
+                {
+                  session_id: "photo-session-1",
+                  title: "성수동 사진으로 찾은 곳",
+                  location: "성수동",
+                  last_active_at: "2026-09-09T09:00:00+09:00",
+                },
+              ]
+            : [],
+        });
+      }
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  /* 발화를 하나도 더 보내지 않았는데 목록을 다시 받아야 한다. */
+  await waitFor(() => expect(sessionListCalls.length).toBeGreaterThan(1));
+  expect(await screen.findAllByText("성수동 사진으로 찾은 곳")).not.toHaveLength(0);
+});
+
+test("창을 새로 열고 사진이 첫 턴인 대화를 열어도 화면이 살아 있다", async () => {
+  /*
+   * 사진 검색 기록은 payload가 AgentResponse가 아니다. 복원이 그것을 모르고
+   * buildAgentMessages에 넘기면 llm_output을 읽다가 터져 화면이 통째로 죽는다.
+   */
+  const base = mockFetch();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/sessions")) {
+        return Response.json({
+          sessions: [
+            {
+              session_id: "photo-session-1",
+              title: "성수동 사진으로 찾은 곳",
+              location: "성수동",
+              last_active_at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/sessions/photo-session-1/resume")) {
+        return Response.json({
+          session_id: "photo-session-1",
+          title: "성수동 사진으로 찾은 곳",
+          turns: [
+            {
+              user_input: "이 사진과 비슷한 장소 추천해줘",
+              assistant_message: "성수동 주변에서 분위기가 닮은 곳 1곳을 찾았어요.",
+              intent: null,
+              question_type: null,
+              place_names: ["감성 카페"],
+              offered_action: null,
+              at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+          recommendations: [],
+          messages: [
+            {
+              session_id: "photo-session-1",
+              run_id: null,
+              user_id: null,
+              user_input: "이 사진과 비슷한 장소 추천해줘",
+              payload: {
+                kind: "photo_similar",
+                session_id: "photo-session-1",
+                center_name: "성수동",
+                candidate_count: 12,
+                truncated_count: 0,
+                elapsed_ms: 400,
+                places: [
+                  {
+                    content_id: "photo-place-1",
+                    title: "감성 카페",
+                    similarity: 0.82,
+                    photo_count: 3,
+                    address: "서울 성동구",
+                    image_url: null,
+                  },
+                ],
+              },
+              recorded_at: "2026-09-09T09:00:00+09:00",
+            },
+          ],
+          restore_from_messages: true,
+          last_active_at: "2026-09-09T09:00:00+09:00",
+          resumable: true,
+        });
+      }
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  const entries = await screen.findAllByText("성수동 사진으로 찾은 곳");
+  await userEvent.click(entries[0]);
+
+  /* 되돌아온 화면이 그려져야 한다 — 터지면 여기서 아무것도 못 찾는다. */
+  expect(await screen.findByText("감성 카페")).toBeInTheDocument();
+  expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeInTheDocument();
+  expect(screen.getByText("[사용자 입력 사진]")).toBeInTheDocument();
+});
+

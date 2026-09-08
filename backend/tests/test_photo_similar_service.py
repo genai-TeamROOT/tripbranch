@@ -523,3 +523,25 @@ async def test_rerank_keeps_places_the_model_did_not_return(patched) -> None:
     )
 
     assert [row.content_id for row in result.places] == ["c", "a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_좌표로만_찾으면_기준점_이름이_현재_위치다(patched) -> None:
+    """`center_name`은 화면에 그대로 실린다.
+
+    도메인 값("기기 GPS 위치")을 그대로 내면 화면이 "기기 GPS 위치 주변에서
+    분위기가 닮은 곳이에요"가 된다. 저장소의 다른 곳도 좌표뿐인 기준점을
+    "현재 위치"라고 부른다(domain/explanation.py).
+    """
+    mood = _RecordingMood(matches=(_match("a", 0.9),))
+    details = _RecordingDetails({"a": _Detail("a", "장소 a")})
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=10),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert result.center_name == "현재 위치"

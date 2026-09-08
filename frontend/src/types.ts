@@ -160,8 +160,17 @@ export interface PhotoSimilarPlace {
 
 export interface PhotoSimilarPlacesResponse {
   places: PhotoSimilarPlace[];
-  /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여줄 때 쓴다. */
+  /**
+   * 어디를 중심으로 찾았는지. "{center_name} 주변에서 분위기가 닮은 곳이에요"로
+   * 보여준다. 지역명 없이 좌표로만 찾았으면 "현재 위치"다.
+   */
   center_name: string;
+  /**
+   * 이 검색이 속한 대화. **세션 없이 보내도 채워져서 돌아온다** — 홈에서 발화
+   * 없이 사진부터 올리면 이 응답이 그 대화의 시작이라 서버가 발급한다. 받아서
+   * 저장하지 않으면 이어지는 발화가 또 새 대화를 시작한다.
+   */
+  session_id: string;
   /** 하드 필터를 통과해 사진 검색에 넘어간 후보 수. 0이면 볼 곳 자체가 없었다는 뜻이다. */
   candidate_count: number;
   /** 후보 상한에 걸려 잘린 수. 0이 아니면 반경을 좁히는 편이 낫다. */
@@ -519,14 +528,27 @@ export type ChatMessage =
        */
       imageUrl: string | null;
       /**
+       * 지난 대화를 되돌려 그린 말풍선인지. 참이면 사진 자리에 "사진은 저장하지
+       * 않아 못 보여준다"는 안내를 대신 놓는다.
+       *
+       * **imageUrl이 비었다는 것만으로는 갈라낼 수 없다.** 실시간에도 브라우저가
+       * 못 여는 형식(HEIC 등)이면 축소본이 없는데, 그때 "저장하지 않아서"라고
+       * 말하면 틀린 설명이 된다.
+       */
+      restored?: boolean;
+      /**
        * 검색이 끝나기 전에는 places가 없다. 사진만 먼저 띄우고 "찾는 중"을
        * 보여주기 위해서다 — 응답이 1~2초라 아무것도 없으면 멈춘 것처럼 보인다.
        *
        * failed는 요청이 실패한 경우다. 사유는 바로 뒤에 붙는 turn_error가 말하므로
        * 여기서는 올린 사진만 남긴다 — 채팅이 실패해도 사용자 발화를 남기는 것과
        * 같은 규칙이다(TP-245).
+       *
+       * location_required는 보낼 위치가 없어 요청을 아예 하지 않은 경우다. 실패와
+       * 나누는 이유는 사용자가 할 일이 다르기 때문이다 — 실패는 다시 해보면 되고,
+       * 이쪽은 위치를 먼저 정해야 한다.
        */
-      status: "loading" | "done" | "failed";
+      status: "loading" | "done" | "failed" | "location_required";
       /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여준다. */
       centerName: string;
       places: PhotoSimilarPlace[];

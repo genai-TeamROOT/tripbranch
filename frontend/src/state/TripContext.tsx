@@ -39,8 +39,10 @@ import type {
 } from "../types";
 import {
   buildAgentMessages,
+  buildPhotoSimilarMessage,
   buildRecommendationMessages,
   createMessageId,
+  isPhotoSimilarRecord,
 } from "./agentMessages";
 import { hasTimeGap } from "./timeSeparator";
 import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
@@ -182,6 +184,8 @@ type TripAction =
       type: "RESOLVE_PHOTO_SIMILAR";
       payload: {
         messageId: string;
+        /* 서버가 발급했을 수 있다 — 홈에서 발화 없이 사진부터 올린 경우가 그렇다. */
+        sessionId: string;
         centerName: string;
         places: PhotoSimilarPlace[];
         candidateCount: number;
@@ -190,6 +194,9 @@ type TripAction =
     }
   /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
   | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
+  /* 보낼 위치가 없어 요청을 아예 하지 않았을 때. 실패와 나누는 이유는 사용자가
+     할 일이 달라서다 — 이쪽은 위치를 먼저 정해야 한다. */
+  | { type: "PHOTO_SIMILAR_NEEDS_LOCATION"; payload: { messageId: string } }
   /*
    * 실패한 턴을 대화에 한 줄로 남긴다(TP-245). SET_ERROR와 달리 state.error를
    * 건드리지 않는다 — 채팅 화면에서 오류가 배너와 메시지 두 곳으로 갈리면
@@ -420,6 +427,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       if (action.payload.restore_from_messages) {
         const lastIndex = action.payload.messages.length - 1;
         action.payload.messages.forEach((record, index) => {
+          /*
+           * 사진 검색 턴은 AgentResponse가 아니다 — 조건 병합을 타지 않아 그
+           * 턴의 응답이 그대로 들어 있다. 여기서 가르지 않으면 아래
+           * buildAgentMessages가 llm_output을 읽다가 터져 대화 전체가 복원되지
+           * 않는다.
+           *
+           * 발화 말풍선을 따로 만들지 않는 이유는 컴포넌트가 사진 자리 아래에
+           * 그 문구를 직접 그리기 때문이다 — 여기서도 만들면 두 번 나온다.
+           */
+          if (isPhotoSimilarRecord(record.payload)) {
+            restored.push(buildPhotoSimilarMessage(record.payload));
+            return;
+          }
           if (record.user_input) {
             restored.push({
               id: createMessageId("user"),
@@ -874,6 +894,21 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "RESOLVE_PHOTO_SIMILAR":
       return {
         ...state,
+        /*
+         * 서버가 발급한 세션을 여기서 받는다. 홈에서 발화 없이 사진부터 올리면
+         * 보낼 때는 세션이 없고 이 응답이 그 대화의 시작이다 — 저장하지 않으면
+         * 이어지는 발화가 또 새 대화를 만들어 사진 턴이 혼자 남는다.
+         */
+        session_id: action.payload.sessionId,
+        /*
+         * 사진 검색도 끝난 턴이다. phase를 그대로 두면 사진으로 시작한 대화가
+         * 사이드바 목록에 안 나타난다 — 목록을 다시 받는 조건이 "phase가 ready이고
+         * session_id가 있을 때"라(SideDrawerContent), 초기값 idle에 머물러 있으면
+         * 다음 발화가 ready로 바꿀 때까지 갱신이 안 걸린다.
+         *
+         * 입력창에는 영향이 없다. isLoading은 interpreting·recommending만 본다.
+         */
+        phase: "ready" as const,
         messages: state.messages.map((message) =>
           message.id === action.payload.messageId && message.type === "photo_similar_result"
             ? {
@@ -884,6 +919,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 candidateCount: action.payload.candidateCount,
                 elapsedMs: action.payload.elapsedMs,
               }
+            : message,
+        ),
+      };
+    case "PHOTO_SIMILAR_NEEDS_LOCATION":
+      /*
+       * 오류 배너(FAIL_TURN)를 띄우지 않는다. 이것은 실패가 아니라 아직 답하지
+       * 않은 물음이고, 무엇을 하라는 안내는 사진 바로 아래에 붙어야 읽힌다.
+       */
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, status: "location_required" as const }
             : message,
         ),
       };

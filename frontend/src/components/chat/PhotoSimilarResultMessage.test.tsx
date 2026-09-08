@@ -152,4 +152,110 @@ describe("PhotoSimilarResultMessage", () => {
     expect(container.textContent).toContain("40곳을 봤는데");
     expect(container.textContent).toContain("아직 사진을 모으지 못한 지역");
   });
+
+  it("사진과 함께 무엇을 요청한 턴인지 보여준다", () => {
+    /* 사진만 있으면 지난 대화를 되돌렸을 때 사진 한 장이 맥락 없이 놓인다.
+       서버도 같은 문장을 대화 기록에 남긴다(PHOTO_SEARCH_USER_INPUT). */
+    render(
+      <PhotoSimilarResultMessage centerName="성수동" candidateCount={40} places={[place()]} />,
+    );
+
+    expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeTruthy();
+  });
+
+  it("사진이 없어도 발화 문구는 남는다", () => {
+    /* 복원 화면이 이렇다 — 사진은 서버에 안 남기므로 문구만 되돌아온다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        centerName="현재 위치"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeTruthy();
+    expect(screen.queryByAltText("올린 사진")).toBeNull();
+  });
+
+  it("위치를 몰라 멈췄으면 무엇을 해야 하는지 알려준다", () => {
+    /* 실패와 나누는 이유는 사용자가 할 일이 달라서다 — 실패는 다시 해보면
+       되고, 이쪽은 위치를 먼저 정해야 한다. */
+    const onSetLocation = vi.fn();
+    render(
+      <PhotoSimilarResultMessage
+        status="location_required"
+        centerName=""
+        candidateCount={0}
+        places={[]}
+        onSetLocation={onSetLocation}
+      />,
+    );
+
+    expect(screen.getByText(/위치를 정하고 사진을 다시 올려/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "위치 정하기" }));
+    expect(onSetLocation).toHaveBeenCalled();
+  });
+
+  it("위치를 몰라 멈췄어도 결과 문구는 안 그린다", () => {
+    /* centerName이 비어 있어서 "주변에서 분위기가 닮은 곳이에요"를 그리면
+       "  주변에서..."가 된다. */
+    render(
+      <PhotoSimilarResultMessage
+        status="location_required"
+        centerName=""
+        candidateCount={0}
+        places={[]}
+      />,
+    );
+
+    expect(screen.queryByText(/분위기가 닮은 곳이에요/)).toBeNull();
+  });
+
+  it("되돌린 대화에서는 사진 자리에 왜 없는지를 적는다", () => {
+    /* 빈 자리만 두면 사진이 사라진 것인지 원래 없던 것인지 알 수 없다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        restored
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByText("[사용자 입력 사진]")).toBeTruthy();
+    expect(screen.getByText(/따로 저장하지 않아서/)).toBeTruthy();
+  });
+
+  it("실시간에 축소본만 없는 경우에는 그 안내를 하지 않는다", () => {
+    /* 브라우저가 못 여는 형식(HEIC 등)이면 실시간에도 축소본이 없다. 그때
+       "저장하지 않아서"라고 말하면 틀린 설명이 된다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.queryByText("[사용자 입력 사진]")).toBeNull();
+    expect(screen.queryByText(/따로 저장하지 않아서/)).toBeNull();
+  });
+
+  it("사진이 있으면 그 안내를 하지 않는다", () => {
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl="data:image/jpeg;base64,x"
+        restored
+        centerName="성수동"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByAltText("올린 사진")).toBeTruthy();
+    expect(screen.queryByText("[사용자 입력 사진]")).toBeNull();
+  });
 });

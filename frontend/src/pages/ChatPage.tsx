@@ -478,6 +478,7 @@ export function ChatPage() {
           // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
           // 것과 같은 경로로 분류를 태운다.
           onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
+          onSetLocation={() => navigate("/location")}
           onRetryTurn={(input) => void requestSend(input)}
           onToggleTravelOrigin={(toggle) => {
             const label =
