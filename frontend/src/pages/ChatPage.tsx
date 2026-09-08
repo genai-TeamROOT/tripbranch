@@ -11,6 +11,7 @@
  * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
+import { motion } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
@@ -18,7 +19,7 @@ import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
-import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
+import { SavedPlacesChip } from "../components/chat/SavedPlacesChip";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
 import { useVisualViewportHeight } from "../hooks/useVisualViewportHeight";
@@ -96,8 +97,13 @@ export function ChatPage() {
      함께 스크롤되어 밀려 올라가는 대신, 아래에서 <main> 자체의 높이를 줄인다. */
   const visualViewportHeight = useVisualViewportHeight();
   useAutoScrollToBottom(messagesContainerRef, isLoading);
-  const { isNearTop, isScrollable, scrollToTop, scrollToBottom } =
-    useScrollEdgeButton(messagesContainerRef);
+  const {
+    isVisible: isScrollButtonVisible,
+    direction: scrollButtonDirection,
+    isScrollable,
+    scrollToTop,
+    scrollToBottom,
+  } = useScrollEdgeButton(messagesContainerRef);
   const [pendingLocationRefresh, setPendingLocationRefresh] =
     useState<PendingLocationRefresh | null>(null);
 
@@ -430,7 +436,19 @@ export function ChatPage() {
       className="flex h-full flex-col overflow-y-auto"
       style={visualViewportHeight != null ? { height: visualViewportHeight } : undefined}
     >
-      <AppHeader location={locationChip} />
+      {/* 담은 장소가 있으면 헤더 오른쪽에 "N곳 일정 짜기"가 뜬다. 전에는 이
+          동작이 입력창 바로 위(SavedPlacesBar)에 있어서, 하트를 누른 뒤 맨
+          아래까지 내려가야 보였다 — 카드를 보며 담는 동안에는 안 보인다. */}
+      <AppHeader
+        location={locationChip}
+        trailing={
+          <SavedPlacesChip
+            onPlanFromSaved={planFromSaved}
+            isLoading={isLoading}
+            language={state.language}
+          />
+        }
+      />
 
       <div
         ref={messagesContainerRef}
@@ -480,26 +498,45 @@ export function ChatPage() {
           progress={state.agentProgress}
           language={state.language}
         />
-
-        <SavedPlacesBar
-          onPlanFromSaved={planFromSaved}
-          isLoading={isLoading}
-          language={state.language}
-        />
       </div>
 
-      {isScrollable && (
-        <div className="pointer-events-none sticky bottom-20 z-30 mx-auto flex w-full max-w-2xl justify-end px-4 md:bottom-24">
-          <button
-            type="button"
-            onClick={isNearTop ? scrollToBottom : scrollToTop}
-            aria-label={isNearTop ? "대화 맨 아래로 이동" : "대화 맨 위로 이동"}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80"
-          >
-            {isNearTop ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
-          </button>
-        </div>
-      )}
+      {/* **움직일 때만 뜨고, 움직인 방향으로 간다**(2026-09-08). 전에는 상시로
+          떠 있으면서 방향을 "지금 맨 위 근처인가"로 정했다 — 버튼이 늘 본문을
+          가렸고, 위로 올리는 중인데 아래로 가는 버튼이 보이는 경우가 있었다.
+          판정은 useScrollEdgeButton에 있다.
+
+          **버튼을 붙였다 떼지 않는다.** 이 래퍼는 sticky라 스크롤 흐름에서
+          자리를 차지하는데, 조건부로 렌더하면 뜰 때마다 scrollHeight가 40px
+          늘고 사라질 때 40px 줄었다(실측 4691 ↔ 4731). 맨 아래에 있으면 줄어든
+          만큼 브라우저가 scrollTop을 깎고(3879 → 3839) 그 이벤트가 "위로
+          올렸다"로 읽혀, 버튼이 다시 뜨고 또 사라지는 고리가 됐다. 지금은 항상
+          두고 opacity로만 보이거나 숨긴다 — 높이가 흔들리지 않는다.
+
+          그래서 `h-0 items-end`다. 래퍼가 흐름 높이를 0으로 두고 버튼은 그
+          바닥선에서 위로 자라므로, 짧은 대화에서 빈 자리 40px이 생기지 않고
+          버튼 위치도 전과 같다.
+
+          숨을 때 aria-hidden과 tabIndex=-1을 함께 준다 — 보이지 않는 버튼이
+          스크린리더에 읽히거나 탭 순서에 남지 않게. */}
+      <div className="pointer-events-none sticky bottom-20 z-30 mx-auto flex h-0 w-full max-w-2xl items-end justify-end px-4 md:bottom-24">
+        <motion.button
+          type="button"
+          animate={{
+            opacity: isScrollable && isScrollButtonVisible ? 1 : 0,
+            scale: isScrollable && isScrollButtonVisible ? 1 : 0.9,
+          }}
+          transition={{ duration: 0.18 }}
+          aria-hidden={!(isScrollable && isScrollButtonVisible)}
+          tabIndex={isScrollable && isScrollButtonVisible ? 0 : -1}
+          onClick={scrollButtonDirection === "up" ? scrollToTop : scrollToBottom}
+          aria-label={scrollButtonDirection === "up" ? "대화 맨 위로 이동" : "대화 맨 아래로 이동"}
+          className={`flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 ${
+            isScrollable && isScrollButtonVisible ? "pointer-events-auto" : "pointer-events-none"
+          }`}
+        >
+          {scrollButtonDirection === "up" ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+        </motion.button>
+      </div>
 
       <ChatComposer
         disabled={isLoading}

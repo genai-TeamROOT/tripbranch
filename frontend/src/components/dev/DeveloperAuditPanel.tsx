@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from "react";
 import { scheduleTravelLabel } from "../../utils/scheduleTravel";
+import { PLACE_CATEGORY_LABELS } from "../../utils/placeCategory";
 import type {
   CandidateConcentrationDebug,
   DeveloperAuditTurn,
@@ -128,14 +129,8 @@ type ConditionSummaryEntry = {
 const CONDITION_LABEL_BY_KEY = new Map(CONDITION_LABELS);
 
 const CONDITION_VALUE_LABELS: Partial<Record<keyof UserConditions, Record<string, string>>> = {
-  place_types: {
-    attraction: "관광지",
-    cultural_facility: "문화시설",
-    festival: "행사·축제",
-    leisure: "레저",
-    shopping: "쇼핑",
-    restaurant: "음식점",
-  },
+  // 분류 칩(상세 모달)과 같은 표를 쓴다 — 같은 코드가 화면마다 다른 말로 불리면 안 된다.
+  place_types: PLACE_CATEGORY_LABELS,
   place_tags: {
     cafe: "카페",
     museum: "박물관",
@@ -186,9 +181,7 @@ const CONDITION_VALUE_LABELS: Partial<Record<keyof UserConditions, Record<string
 };
 
 function isDefaultIntentValue(key: keyof UserConditions, value: unknown) {
-  return (
-    key === "weather_intent" && (value === "NO_MENTION" || value === "IGNORE")
-  );
+  return key === "weather_intent" && (value === "NO_MENTION" || value === "IGNORE");
 }
 
 function hasConditionValue(value: unknown) {
@@ -395,8 +388,8 @@ function ToolProviderCards({ providers }: { providers: ToolProviderDebug[] }) {
   if (!providers.length) {
     return (
       <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-        Provider 호출 기록이 없습니다. C가 모든 항목을 캐시로 처리했거나 조회 전에 종료된 요청일
-        수 있습니다.
+        Provider 호출 기록이 없습니다. C가 모든 항목을 캐시로 처리했거나 조회 전에 종료된 요청일 수
+        있습니다.
       </p>
     );
   }
@@ -428,9 +421,7 @@ function CandidateConcentrationRows({ rows }: { rows: CandidateConcentrationDebu
   const proxyCount = rows.filter((row) => row.is_proxy).length;
   return (
     <>
-      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">
-        후보별 혼잡도 출처
-      </h4>
+      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">후보별 혼잡도 출처</h4>
       <p className="text-xs text-gray-500 dark:text-gray-400">
         {proxyCount > 0
           ? `근사치 ${proxyCount}건 — 집중률 매핑이 없어 인근 매핑 장소의 값을 빌렸어요. 후보 본인의 혼잡도가 아니에요.`
@@ -453,9 +444,7 @@ function CandidateConcentrationRows({ rows }: { rows: CandidateConcentrationDebu
             <p className="mt-0.5 text-[11px] text-gray-600 dark:text-gray-300">
               {row.is_proxy
                 ? `근사치 ← ${row.proxy_place_name ?? "알 수 없음"}${
-                    row.proxy_distance_km !== null
-                      ? ` (${row.proxy_distance_km.toFixed(2)}km)`
-                      : ""
+                    row.proxy_distance_km !== null ? ` (${row.proxy_distance_km.toFixed(2)}km)` : ""
                   }`
                 : row.status === "success"
                   ? "직접 조회"
@@ -616,7 +605,7 @@ function TimingCard({
                 call.operation === "generate_schedule_plan" ||
                 call.operation === "generate_schedule_fill",
             )
-        : [];
+          : [];
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
@@ -715,7 +704,9 @@ function TimingSection({
       <section className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-900 dark:bg-indigo-950/30">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-indigo-950 dark:text-indigo-50">이번 요청 총 소요</h3>
+            <h3 className="text-sm font-semibold text-indigo-950 dark:text-indigo-50">
+              이번 요청 총 소요
+            </h3>
             <p className="mt-0.5 text-xs text-indigo-700 dark:text-indigo-300">
               서버 기준 {formatDuration(total)} · 단계 합계 {formatDuration(measured)}
             </p>
@@ -965,8 +956,14 @@ export function DeveloperAuditPanel({
                   <DetailRow label="Session ID" value={selectedTurn.sessionId} />
                   <DetailRow label="Run ID" value={selectedTurn.runId} />
                   <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />
-                  <DetailRow label="클라이언트 소요" value={formatDuration(selectedTurn.elapsedMsClient)} />
-                  <DetailRow label="서버 소요" value={formatDuration(selectedTurn.serverElapsedMs)} />
+                  <DetailRow
+                    label="클라이언트 소요"
+                    value={formatDuration(selectedTurn.elapsedMsClient)}
+                  />
+                  <DetailRow
+                    label="서버 소요"
+                    value={formatDuration(selectedTurn.serverElapsedMs)}
+                  />
                   <DetailRow
                     label={isScheduleTurn(selectedTurn) ? "일정 결과" : "추천 결과"}
                     value={
@@ -977,11 +974,17 @@ export function DeveloperAuditPanel({
                   />
                   <DetailRow
                     label="LLM 응답 모델"
-                    value={llmExecution?.calls.map((call) => call.served_model ?? "실패").join(", ")}
+                    value={llmExecution?.calls
+                      .map((call) => call.served_model ?? "실패")
+                      .join(", ")}
                   />
                   <DetailRow
                     label="LLM 폴백"
-                    value={llmExecution?.calls.some((call) => call.attempted_models.length > 1) ? "시도됨" : "없음"}
+                    value={
+                      llmExecution?.calls.some((call) => call.attempted_models.length > 1)
+                        ? "시도됨"
+                        : "없음"
+                    }
                   />
                   {selectedTurn.failure && (
                     <>
@@ -1018,71 +1021,96 @@ export function DeveloperAuditPanel({
               </div>
             )}
 
-            {activeTab === "state" && (
-              selectedTurn.response ? <div className="flex flex-col gap-3">
-                <section className="rounded-md border border-gray-200 p-3 dark:border-gray-800">
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    이번 턴 조건 변경
-                  </h4>
-                  {conditionChanges.length === 0 ? (
-                    <p className="mt-2 text-sm text-gray-500">변경된 누적 조건이 없습니다.</p>
-                  ) : (
-                    <dl className="mt-3 grid gap-2">
-                      {conditionChanges.map((change) => (
-                        <div key={change.key} className="rounded bg-gray-100 p-2 text-xs dark:bg-gray-900">
-                          <dt className="font-semibold text-gray-700 dark:text-gray-200">
-                            {change.label}
-                          </dt>
-                          <dd className="mt-1 text-gray-600 dark:text-gray-300">
-                            {formatValue(change.before)} → {formatValue(change.after)}
-                          </dd>
-                        </div>
-                      ))}
-                    </dl>
-                  )}
-                </section>
-                <JsonBlock
-                  value={{
-                    user_conditions: selectedTurn.response.state.user_conditions,
-                    applied_operations: selectedTurn.response.state.applied_operations ?? [],
-                    ignored_operations: selectedTurn.response.state.ignored_operations ?? [],
-                    reset_applied: selectedTurn.response.state.reset_applied,
-                    condition_changed: selectedTurn.response.state.condition_changed,
-                  }}
-                />
-              </div> : <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">LLM 또는 HTTP 오류로 B 상태 병합 전 요청이 중단됐습니다.</p>
-            )}
+            {activeTab === "state" &&
+              (selectedTurn.response ? (
+                <div className="flex flex-col gap-3">
+                  <section className="rounded-md border border-gray-200 p-3 dark:border-gray-800">
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      이번 턴 조건 변경
+                    </h4>
+                    {conditionChanges.length === 0 ? (
+                      <p className="mt-2 text-sm text-gray-500">변경된 누적 조건이 없습니다.</p>
+                    ) : (
+                      <dl className="mt-3 grid gap-2">
+                        {conditionChanges.map((change) => (
+                          <div
+                            key={change.key}
+                            className="rounded bg-gray-100 p-2 text-xs dark:bg-gray-900"
+                          >
+                            <dt className="font-semibold text-gray-700 dark:text-gray-200">
+                              {change.label}
+                            </dt>
+                            <dd className="mt-1 text-gray-600 dark:text-gray-300">
+                              {formatValue(change.before)} → {formatValue(change.after)}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </section>
+                  <JsonBlock
+                    value={{
+                      user_conditions: selectedTurn.response.state.user_conditions,
+                      applied_operations: selectedTurn.response.state.applied_operations ?? [],
+                      ignored_operations: selectedTurn.response.state.ignored_operations ?? [],
+                      reset_applied: selectedTurn.response.state.reset_applied,
+                      condition_changed: selectedTurn.response.state.condition_changed,
+                    }}
+                  />
+                </div>
+              ) : (
+                <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">
+                  LLM 또는 HTTP 오류로 B 상태 병합 전 요청이 중단됐습니다.
+                </p>
+              ))}
 
-            {activeTab === "tools" && (
-              selectedTurn.response ? <div className="flex flex-col gap-3">
-                <dl className="grid grid-cols-2 gap-2">
-                  <DetailRow label="검색 중심" value={selectedTurn.afterConditions?.search_center} />
-                  <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />
-                  <DetailRow label="API 날씨 캐시" value={selectedTurn.response.state.api_context?.api_weather} />
-                  <DetailRow label="GPS 만료" value={selectedTurn.response.state.api_context?.gps_expired} />
-                  <DetailRow label="날씨 만료" value={selectedTurn.response.state.api_context?.weather_expired} />
-                  <DetailRow
-                    label="혼잡도 보강 대상"
-                    value={
-                      selectedTurn.intent === "RECOMMEND" &&
-                      (selectedTurn.afterConditions?.concentration_intent === "SEEK" ||
-                        selectedTurn.afterConditions?.concentration_intent === "AVOID")
-                        ? "대상 (실행 결과는 현재 미표시)"
-                        : "미대상"
+            {activeTab === "tools" &&
+              (selectedTurn.response ? (
+                <div className="flex flex-col gap-3">
+                  <dl className="grid grid-cols-2 gap-2">
+                    <DetailRow
+                      label="검색 중심"
+                      value={selectedTurn.afterConditions?.search_center}
+                    />
+                    <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />
+                    <DetailRow
+                      label="API 날씨 캐시"
+                      value={selectedTurn.response.state.api_context?.api_weather}
+                    />
+                    <DetailRow
+                      label="GPS 만료"
+                      value={selectedTurn.response.state.api_context?.gps_expired}
+                    />
+                    <DetailRow
+                      label="날씨 만료"
+                      value={selectedTurn.response.state.api_context?.weather_expired}
+                    />
+                    <DetailRow
+                      label="혼잡도 보강 대상"
+                      value={
+                        selectedTurn.intent === "RECOMMEND" &&
+                        (selectedTurn.afterConditions?.concentration_intent === "SEEK" ||
+                          selectedTurn.afterConditions?.concentration_intent === "AVOID")
+                          ? "대상 (실행 결과는 현재 미표시)"
+                          : "미대상"
+                      }
+                    />
+                  </dl>
+                  <ToolExecutionSection
+                    executions={
+                      selectedTurn.response.tool_executions?.length
+                        ? selectedTurn.response.tool_executions
+                        : selectedTurn.response.tool_execution
+                          ? [selectedTurn.response.tool_execution]
+                          : []
                     }
                   />
-                </dl>
-                <ToolExecutionSection
-                  executions={
-                    selectedTurn.response.tool_executions?.length
-                      ? selectedTurn.response.tool_executions
-                      : selectedTurn.response.tool_execution
-                        ? [selectedTurn.response.tool_execution]
-                        : []
-                  }
-                />
-              </div> : <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">LLM 단계에서 실패해 C Tool은 호출되지 않았습니다.</p>
-            )}
+                </div>
+              ) : (
+                <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">
+                  LLM 단계에서 실패해 C Tool은 호출되지 않았습니다.
+                </p>
+              ))}
 
             {activeTab === "scoring" && isScheduleTurn(selectedTurn) && (
               <div className="flex flex-col gap-3">
@@ -1120,7 +1148,9 @@ export function DeveloperAuditPanel({
                               item.travel_to_next_measured,
                             )}`}
                         </p>
-                        <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{item.reason}</p>
+                        <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
+                          {item.reason}
+                        </p>
                         {item.warnings != null && item.warnings.length > 0 && (
                           <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                             warnings: {item.warnings.join(" / ")}
@@ -1137,7 +1167,8 @@ export function DeveloperAuditPanel({
               <div className="flex flex-col gap-3">
                 {getRecommendationItems(selectedTurn).length === 0 ? (
                   <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">
-                    D Scoring 결과가 없습니다. INFO/GENERAL이거나 C 단계에서 후보가 없을 수 있습니다.
+                    D Scoring 결과가 없습니다. INFO/GENERAL이거나 C 단계에서 후보가 없을 수
+                    있습니다.
                   </p>
                 ) : (
                   getRecommendationItems(selectedTurn).map((item, index) => (
@@ -1173,7 +1204,9 @@ export function DeveloperAuditPanel({
               </div>
             )}
 
-            {activeTab === "raw" && <JsonBlock value={selectedTurn.response ?? selectedTurn.failure} />}
+            {activeTab === "raw" && (
+              <JsonBlock value={selectedTurn.response ?? selectedTurn.failure} />
+            )}
           </section>
         )}
       </div>

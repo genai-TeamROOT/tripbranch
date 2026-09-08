@@ -7,6 +7,7 @@
  */
 
 import { ArrowRight, MapPinned, Menu, Navigation } from "lucide-react";
+import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../../utils/cn";
 import type { LocationChipModel } from "../../utils/locationChip";
@@ -24,12 +25,24 @@ interface AppHeaderProps {
    * 시작하는 하위 화면이 쓴다 — 띠가 접히면 제목이 화면 맨 위에 붙는다.
    */
   keepStrip?: boolean;
+  /**
+   * 헤더 오른쪽에 붙는 것. 화면마다 다른 동작이 오므로 헤더는 자리만 내주고
+   * 무엇을 그릴지는 모른다 — 채팅은 "N곳 일정 짜기"(SavedPlacesChip)를 넣는다.
+   *
+   * 왼쪽 묶음과 justify-between으로 갈린다. 안에 든 것이 스스로 접힐 수 있어야
+   * 한다(담은 곳이 없으면 null) — 헤더는 빈 자리를 따로 걷어내지 않는다.
+   */
+  trailing?: ReactNode;
 }
 
 const FROSTED_BUTTON_CLASS =
   "flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80";
 
-export function AppHeader({ location: locationChip = null, keepStrip = false }: AppHeaderProps) {
+export function AppHeader({
+  location: locationChip = null,
+  keepStrip = false,
+  trailing = null,
+}: AppHeaderProps) {
   const { drawerOpen, openDrawer, closeDrawer } = useAppShell();
   const navigate = useNavigate();
 
@@ -47,7 +60,10 @@ export function AppHeader({ location: locationChip = null, keepStrip = false }: 
         // 위치 pill도 없고 띠를 붙잡는 화면도 아닐 때(홈·채팅에서 위치를 아직 못
         // 정한 경우)만 접는다 — 거기서는 데스크톱에 그릴 것이 정말 없다. 모바일은
         // 햄버거가 항상 있어야 하므로 어느 쪽이든 그대로 둔다.
-        !locationChip && !keepStrip && "md:hidden",
+        //
+        // trailing이 있으면 접지 않는다. 접으면 데스크톱에서 "N곳 일정 짜기"가
+        // 통째로 사라진다 — 위치를 아직 못 정한 채로 장소를 담을 수 있다.
+        !locationChip && !keepStrip && !trailing && "md:hidden",
       )}
     >
       <div className="relative flex items-center justify-between px-4 pb-3 pt-6">
@@ -106,6 +122,8 @@ export function AppHeader({ location: locationChip = null, keepStrip = false }: 
             </button>
           )}
         </div>
+
+        {trailing}
       </div>
     </div>
   );

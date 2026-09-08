@@ -298,21 +298,30 @@ class RealRecommendationProvider:
 
         # 폴백 주소도 함께 옮긴다. 작은 썸네일(firstimage2)만 관광공사 서버에서 사라진
         # 장소가 있어(아현시장 등 2% 안팎) 프론트가 실패했을 때 원본으로 갈아탄다.
-        thumbnails = {
-            card.content_id: (card.thumbnail_url, card.fallback_thumbnail_url)
-            for card in result.cards
-        }
+        #
+        # **분류 라벨도 같은 조회에서 나온다**(2026-09-08). 카드가 이미
+        # `category_label`(TourAPI 신분류 중분류명 — 한식·전시시설)을 계산해 담고
+        # 있는데 여기서 버리고 있었다. 응답의 `category`는 대분류 코드라
+        # (`restaurant`·`shopping`) 화면에 영어가 그대로 찍혔다. **추가 조회는
+        # 없다** — 이미 도는 get_cards()에서 필드 하나를 더 꺼낼 뿐이다.
+        cards = {card.content_id: card for card in result.cards}
 
         def attach(item: RecommendationItem) -> RecommendationItem:
-            found = thumbnails.get(item.place_id)
-            if found is None:
+            card = cards.get(item.place_id)
+            if card is None:
                 return item
-            image_url, fallback = found
-            if image_url is None:
+            update: dict[str, object] = {}
+            # 썸네일은 둘 다 있거나 둘 다 없다 — 대표 이미지가 없으면 폴백도 없다.
+            if card.thumbnail_url is not None:
+                update["image_url"] = card.thumbnail_url
+                update["image_url_fallback"] = card.fallback_thumbnail_url
+            # 라벨은 썸네일과 독립이다. 사진 없는 장소(실측 20%)에도 분류는 있으므로
+            # 위 조건에 묶으면 그 장소들이 라벨을 잃는다.
+            if card.category_label is not None:
+                update["category_label"] = card.category_label
+            if not update:
                 return item
-            return item.model_copy(
-                update={"image_url": image_url, "image_url_fallback": fallback}
-            )
+            return item.model_copy(update=update)
 
         return response.model_copy(
             update={
