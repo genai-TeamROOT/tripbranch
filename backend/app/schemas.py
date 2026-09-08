@@ -69,8 +69,13 @@ class PhotoSimilarPlacesResponse(BaseModel):
     """
 
     places: list[PhotoSimilarPlace]
-    # 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여줄 때 쓴다.
+    # 어디를 중심으로 찾았는지. 화면이 "{center_name} 주변에서 분위기가 닮은
+    # 곳이에요"로 보여준다. 지역명 없이 좌표로만 찾았으면 "현재 위치"다.
     center_name: str
+    # 이 검색이 속한 대화. **화면이 세션 없이 보내도 채워져서 돌아온다** — 홈에서
+    # 발화 없이 사진부터 올리면 이 응답이 그 대화의 시작이라 서버가 여기서
+    # 발급한다. 화면은 이 값을 받아 이후 턴을 같은 대화로 이어야 한다.
+    session_id: str
     # 하드 필터를 통과해 사진 검색에 넘어간 후보 수. 0이면 "닮은 곳이 없다"가
     # 아니라 "볼 곳 자체가 없었다"라 화면 문구가 달라져야 한다.
     candidate_count: int
@@ -135,6 +140,14 @@ class RecommendationItem(BaseModel):
     place_id: str
     name: str
     category: str
+    # TourAPI 신분류 중분류명(한식·전시시설·면세점). `category`가 대분류 코드
+    # (`restaurant`·`shopping`)라 화면에 그대로 쓰기 어려워 함께 내려준다.
+    #
+    # **None이 정상 값이다.** 카드 조회가 실패하면 붙지 않고(썸네일과 같은 이유로
+    # 추천 자체는 그대로 살린다), 화면은 그때 `category`로 되돌아간다. 다만 실측에서
+    # 추천 후보 7,448건이 모두 소분류 코드로 해석됐다 — 해석 실패 0건, 라벨 41종
+    # (2026-09-08, places 스냅샷).
+    category_label: str | None = None
     distance_km: float
     remaining_minutes: int | None
     # 그 후보에 실제로 적용된 당일 운영 구간("09:00~18:00"). 프론트가

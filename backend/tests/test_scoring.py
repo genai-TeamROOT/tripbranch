@@ -146,9 +146,7 @@ def test_prepare_candidates_can_include_closed_place_with_override_warning() -> 
     prepared = result.eligible_candidates[0]
     assert prepared.remaining_minutes is None
     assert prepared.is_unverified is True
-    assert prepared.warnings == (
-        "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요.",
-    )
+    assert prepared.warnings == ("지금은 운영시간이 아니에요.",)
 
 
 def test_prepare_candidates_prioritizes_history_reason_over_closed() -> None:
@@ -448,7 +446,7 @@ def test_ignore_operating_hours_includes_closed_place_with_warning() -> None:
     assert [item.place_id for item in result.ranked] == ["p3"]
     ranked = result.ranked[0]
     assert ranked.is_unverified is True
-    assert ranked.warnings == ("지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요.",)
+    assert ranked.warnings == ("지금은 운영시간이 아니에요.",)
     assert ranked.feature_scores["remaining_operating_time"] is None
     assert result.excluded_closed_place_ids == ()
 

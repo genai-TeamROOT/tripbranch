@@ -548,10 +548,15 @@ test("화면 기록이 있으면 그때 본 화면 그대로 펼쳐진다", asyn
   );
 
   expect(await screen.findByText("실내를 찾아볼게요")).toBeInTheDocument();
-  /* 근사치 카드("그때 추천받은 곳")가 아니라 실제 추천 카드다 — 추천 이유까지 나온다. */
+  /* 근사치 카드("그때 추천받은 곳")가 아니라 실제 추천 카드다 — 순위와 담기
+     토글은 실제 카드에만 있다(PastRecommendationMessage는 둘 다 그리지 않는다).
+     전에는 추천 이유 문구로 이걸 가렸는데, 2026-09-08에 카드에서 그 줄을 뺐다. */
   expect(screen.getByText("추천 장소")).toBeInTheDocument();
   expect(screen.getByText("국립중앙박물관")).toBeInTheDocument();
-  expect(screen.getByText("비 오는 날 실내에서 오래 머물기 좋아요")).toBeInTheDocument();
+  expect(screen.getByText("1위")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "국립중앙박물관 보관함에 담기" }),
+  ).toBeInTheDocument();
   expect(screen.queryByText("그때 추천받은 곳")).not.toBeInTheDocument();
 });
 

@@ -1451,3 +1451,65 @@ def test_conversation_memory_defaults_are_empty_for_new_session() -> None:
 
     assert context.recent_turns == []
     assert context.situation_state is None
+
+
+# ---------------------------------------------------- ensure_session (계약 5.2절)
+
+
+class Test세션_확보:
+    """조건 병합을 타지 않는 턴이 세션을 얻는 경로.
+
+    apply()는 A의 해석 결과를 받아야 해서, 병합할 조건이 없는 턴(사진 검색)은
+    부를 수가 없다. 그런 턴도 대화로는 한 턴이라 세션이 있어야 기록이 남는다.
+    """
+
+    def test_세션이_없으면_새로_만든다(self, store) -> None:
+        response = svc.ensure_session(svc.EnsureSessionRequest(), store=store)
+
+        assert response.created is True
+        assert store.get_state(response.session_id) is not None
+
+    def test_있는_세션은_그대로_쓴다(self, store) -> None:
+        first = svc.ensure_session(svc.EnsureSessionRequest(), store=store)
+
+        second = svc.ensure_session(
+            svc.EnsureSessionRequest(session_id=first.session_id), store=store
+        )
+
+        assert second.created is False
+        assert second.session_id == first.session_id
+
+    def test_제목은_비어_있을_때만_채운다(self, store) -> None:
+        """사용자가 사이드바에서 바꾼 이름을 뒤 턴이 뺏어가면 안 된다."""
+        first = svc.ensure_session(
+            svc.EnsureSessionRequest(title="성수동 사진으로 찾은 곳"), store=store
+        )
+        svc.ensure_session(
+            svc.EnsureSessionRequest(session_id=first.session_id, title="다른 이름"),
+            store=store,
+        )
+
+        assert store.get_state(first.session_id).title == "성수동 사진으로 찾은 곳"
+
+    def test_신원을_연결한다(self, store) -> None:
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        response = svc.ensure_session(
+            svc.EnsureSessionRequest(), principal=principal, store=store
+        )
+
+        assert store.get_state(response.session_id).user_id == "user-1"
+
+    def test_남의_세션은_거부한다(self, store) -> None:
+        """session_id만 알면 남의 대화에 기록을 붙일 수 있으면 안 된다(D-073)."""
+        owner = Principal(user_id="user-원래주인", is_anonymous=False)
+        mine = svc.ensure_session(
+            svc.EnsureSessionRequest(), principal=owner, store=store
+        )
+
+        with pytest.raises(SessionOwnershipError):
+            svc.ensure_session(
+                svc.EnsureSessionRequest(session_id=mine.session_id),
+                principal=Principal(user_id="user-남", is_anonymous=False),
+                store=store,
+            )

@@ -26,6 +26,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.auth.dependency import OptionalPrincipal
+from app.auth.principal import Principal
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
 from app.providers.factory import (
@@ -40,6 +41,7 @@ from app.providers.factory import (
 from app.schemas import PhotoSimilarPlace, PhotoSimilarPlacesResponse
 from app.services.photo_similar import PhotoSimilarQuery, build_photo_similar_places
 from app.state import service as state_service
+from app.state.schema import ConversationTurn
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,23 @@ _ALLOWED_MIME_TYPES = frozenset(
 
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 30
+
+# 대화에 남길 사용자 발화. **해석하지 않는다** — 사진 검색은 인텐트를 타지 않으므로
+# 이 문장이 분류되는 일은 없다. 화면 말풍선과 최근 대화 맥락에 "무엇을 요청한
+# 턴이었는지"를 남기려고 문장 모양으로 둔 것이다.
+#
+# 자리표시자("[사진으로 장소 찾기]")를 쓰지 않는 이유는 다음 턴 때문이다. 이 값은
+# ConversationTurn.user_input으로 저장돼 다음 턴의 모델 맥락에 실리는데, 그때
+# 사람이 할 법한 문장이어야 "그중에 첫 번째"처럼 이어지는 말이 풀린다.
+#
+# 화면에도 같은 문장이 나간다(PhotoSimilarResultMessage.tsx). 고칠 때 함께 고친다.
+PHOTO_SEARCH_USER_INPUT = "이 사진과 비슷한 장소 추천해줘"
+
+# 화면 기록(SessionMessage.payload)이 사진 검색임을 알리는 표시. 화면 기록은
+# 원래 AgentResponse만 담았고 복원 화면이 그 모양을 가정한다 — 표시가 없으면
+# 사진 검색 기록을 AgentResponse로 읽다가 터진다. 옛 기록에는 이 키가 없으므로
+# **없으면 AgentResponse**로 읽는 쪽이 하위 호환이다.
+PHOTO_SEARCH_RECORD_KIND = "photo_similar"
 
 
 @router.post("/places/similar-by-photo", response_model=PhotoSimilarPlacesResponse)
@@ -79,7 +98,10 @@ async def similar_by_photo(
     **지역명이 좌표를 이긴다** — 사용자가 적은 쪽이 의도이고 좌표는 적지 않았을
     때의 기본값이다. 둘 다 없으면 `location_required`로 되묻는다.
 
-    사진은 저장하지 않는다. 요청 메모리에서 임베딩만 하고 버린다.
+    사진은 저장하지 않는다. 요청 메모리에서 임베딩만 하고 버린다. 다만 **이 턴이
+    있었다는 사실은 대화에 남긴다** — 남기지 않으면 다음 턴의 모델 맥락에서
+    사진 검색만 빠져 "그중에 첫 번째"가 안 풀리고, 지난 대화를 되돌릴 때도 이
+    턴만 사라진다.
     """
     mime_type = (image.content_type or "").split(";", maxsplit=1)[0].strip().lower()
     if mime_type not in _ALLOWED_MIME_TYPES:
@@ -137,7 +159,18 @@ async def similar_by_photo(
             reranker=get_place_mood_reranker(client),
         )
 
-    return PhotoSimilarPlacesResponse(
+    # 검색이 성사된 뒤에 세션을 확보한다. 위치를 못 잡아 위에서 422로 끝난 요청은
+    # 여기 도달하지 않으므로 빈 대화가 남지 않는다 — 일반 발화도 해석이 끝난
+    # 자리(agent_runtime의 apply 호출)에서 세션을 발급하는 것과 같은 규칙이다.
+    session = state_service.ensure_session(
+        state_service.EnsureSessionRequest(
+            session_id=session_id,
+            title=_session_title(result.center_name, used_location_query=bool(resolved_query)),
+        ),
+        principal=principal,
+    )
+
+    response = PhotoSimilarPlacesResponse(
         places=[
             PhotoSimilarPlace(
                 content_id=row.content_id,
@@ -149,13 +182,94 @@ async def similar_by_photo(
             for row in result.places
         ],
         center_name=result.center_name,
+        session_id=session.session_id,
         candidate_count=result.candidate_count,
         truncated_count=result.truncated_count,
         elapsed_ms=int((time.perf_counter() - started) * 1000),
     )
 
+    _record_turn(session.session_id, response)
+    return response
 
-def _session_location(session_id: str | None, principal: object) -> str | None:
+
+def _session_title(center_name: str, *, used_location_query: bool) -> str:
+    """사진으로 시작한 대화의 제목.
+
+    **기준점 이름은 지역명으로 찾았을 때만 넣는다.** 좌표로만 찾은 경우 이름이
+    "현재 위치"인데, 그 말은 목록에서 나중에 다시 볼 때 아무것도 가리키지 않는다.
+    좌표를 동네 이름으로 바꿔 넣지 않는 이유는 그것이 검색지 이름을 DB에 적는
+    일이라, 서버가 위치를 저장하지 않기로 한 방향과 반대이기 때문이다.
+
+    발화(PHOTO_SEARCH_USER_INPUT)를 제목으로 쓰지 않는다 — 문장이 고정이라
+    사진으로 시작한 대화가 목록에서 전부 같은 이름이 된다.
+    """
+    if used_location_query and center_name:
+        return f"{center_name} 사진으로 찾은 곳"
+    return "사진으로 찾은 곳"
+
+
+def _record_turn(session_id: str, response: PhotoSimilarPlacesResponse) -> None:
+    """사진 검색 한 턴을 대화에 남긴다.
+
+    **두 기록을 함께 남긴다.** 최근 대화(모델 맥락)와 화면 기록은 목적이 다르지만,
+    복원 판정이 "화면 기록 수 >= 최근 대화 수"라서(state/service.py의
+    _to_session_detail) 한쪽만 남기면 그 세션이 통째로 옛 복원 방식으로 떨어진다.
+
+    **실패는 삼킨다.** chat.py의 _record_transcript와 같은 이유다 — 기록은 이미
+    사용자에게 다 보여준 결과의 부가 기능이라, 저장 장애가 완결된 턴을 뒤집으면
+    안 된다.
+
+    **사진은 담지 않는다.** 원본은 임베딩만 하고 버렸고 축소본은 브라우저에만
+    있다. 복원 화면은 사진 없이 문구와 결과만 다시 그린다.
+    """
+    try:
+        state_service.append_conversation_turn(
+            state_service.AppendConversationTurnRequest(
+                session_id=session_id,
+                turn=ConversationTurn(
+                    user_input=PHOTO_SEARCH_USER_INPUT,
+                    assistant_message=_assistant_summary(response),
+                    # intent는 비운다. 사진 검색은 인텐트를 타지 않아 분류된 값이
+                    # 없고, 없는 값을 지어내면 다음 턴이 그것을 근거로 삼는다.
+                    place_names=[place.title for place in response.places],
+                ),
+            )
+        )
+        state_service.record_session_message(
+            state_service.RecordSessionMessageRequest(
+                session_id=session_id,
+                user_input=PHOTO_SEARCH_USER_INPUT,
+                payload={
+                    "kind": PHOTO_SEARCH_RECORD_KIND,
+                    **response.model_dump(mode="json"),
+                },
+            )
+        )
+    except Exception:
+        logger.warning("사진 검색 기록 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
+
+
+def _assistant_summary(response: PhotoSimilarPlacesResponse) -> str:
+    """그 턴에 화면으로 나간 답변을 한 문장으로 옮긴다.
+
+    화면 문구(PhotoSimilarResultMessage.tsx)와 같은 갈래를 탄다 — 결과가 있을
+    때와 후보 자체가 없었을 때, 후보는 있는데 비교할 사진이 없었을 때가 다르다.
+    다음 턴의 모델이 "왜 아무것도 못 찾았는지"까지 알아야 이어지는 말을 푼다.
+    """
+    if response.places:
+        return (
+            f"{response.center_name} 주변에서 분위기가 닮은 곳 "
+            f"{len(response.places)}곳을 찾았어요."
+        )
+    if response.candidate_count == 0:
+        return f"{response.center_name} 주변에서 지금 갈 수 있는 곳을 찾지 못했어요."
+    return (
+        f"{response.center_name} 주변 {response.candidate_count}곳을 봤는데 "
+        "사진과 비교할 수 있는 곳이 없었어요."
+    )
+
+
+def _session_location(session_id: str | None, principal: Principal | None) -> str | None:
     """대화가 이미 잡은 검색 중심점을 가져온다.
 
     순서는 기존 추천과 같다 — `search_center` → `current_location`. B가 병합한

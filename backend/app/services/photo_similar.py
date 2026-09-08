@@ -72,6 +72,13 @@ _KST = ZoneInfo("Asia/Seoul")
 # 4배면 10곳을 채우는 데 40곳을 훑는 셈이고, 상세 조회는 DB라 값이 싸다.
 _OVERFETCH_FACTOR = 4
 
+# 지역명 없이 기기 좌표로만 찾았을 때 화면에 보여줄 기준점 이름.
+# `ResolvedLocation.resolved_name`("기기 GPS 위치")을 그대로 쓰지 않는다 — 그것은
+# 위치를 어디서 얻었는지 나타내는 도메인 값이라, 화면에 나가면 "기기 GPS 위치
+# 주변에서 분위기가 닮은 곳이에요"가 된다. 저장소의 다른 곳도 좌표뿐인 기준점을
+# "현재 위치"라고 부른다(domain/explanation.py, domain/evidence.py).
+_GPS_CENTER_DISPLAY_NAME = "현재 위치"
+
 
 @dataclass(frozen=True)
 class PhotoSimilarQuery:
@@ -118,7 +125,8 @@ class PhotoSimilarPlaceRow:
 @dataclass(frozen=True)
 class PhotoSimilarResult:
     places: tuple[PhotoSimilarPlaceRow, ...]
-    # 어디를 중심으로 찾았는지. 화면이 "내 주변에서 찾았어요"를 보여줄 때 쓴다.
+    # 어디를 중심으로 찾았는지. 화면이 "{center_name} 주변에서 분위기가 닮은
+    # 곳이에요"로 보여준다. 좌표로만 찾았으면 _GPS_CENTER_DISPLAY_NAME이다.
     center_name: str
     center_latitude: float
     center_longitude: float
@@ -406,7 +414,10 @@ async def _resolve_center(
     result = _gps_location_result(query.latitude, query.longitude)
     location = result.location
     assert location is not None  # 바로 위에서 만든 값이다
-    return _Center(result, location.resolved_name, location.latitude, location.longitude)
+    # 이름만 화면용으로 바꾼다. `result`는 그대로 넘겨 출처(DEVICE_GPS)를 잃지 않는다.
+    return _Center(
+        result, _GPS_CENTER_DISPLAY_NAME, location.latitude, location.longitude
+    )
 
 
 def _gps_location_result(latitude: float, longitude: float) -> ResolveLocationResult:

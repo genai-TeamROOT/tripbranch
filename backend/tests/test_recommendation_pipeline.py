@@ -1553,6 +1553,7 @@ async def test_reranks_carry_every_recommendation_item_field() -> None:
         "taste_evidence": [TasteEvidenceQuote(text="조용해요", similarity=0.7)],
         "image_url": "https://example.test/thumb.jpg",
         "image_url_fallback": "https://example.test/original.jpg",
+        "category_label": "한식",
     }
     base = _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)
     item = base.model_copy(update=sentinels)

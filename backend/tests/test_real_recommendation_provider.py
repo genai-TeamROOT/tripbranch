@@ -643,12 +643,15 @@ class _FakeCard:
         content_id: str,
         thumbnail_url: str | None,
         fallback_thumbnail_url: str | None = None,
+        category_label: str | None = None,
     ) -> None:
         self.content_id = content_id
         self.thumbnail_url = thumbnail_url
         # 소비 측이 실제로 읽는 필드다. 비워 두면 폴백 배선이 한 줄도 실행되지 않은 채
         # 테스트만 통과한다(이 저장소의 "조용한 fake" 유형).
         self.fallback_thumbnail_url = fallback_thumbnail_url
+        # 같은 이유로 여기도 실제 필드명을 그대로 둔다 — 소비 측이 card.category_label을 읽는다.
+        self.category_label = category_label
 
 
 class _FakeCardResult:
@@ -662,11 +665,13 @@ class _FakeRecommendationCardTool:
 
     def __init__(
         self,
-        thumbnails: dict[str, str],
+        thumbnails: dict[str, str | None],
         fallbacks: dict[str, str] | None = None,
+        category_labels: dict[str, str] | None = None,
     ) -> None:
         self._thumbnails = thumbnails
         self._fallbacks = fallbacks or {}
+        self._category_labels = category_labels or {}
         self.requested_place_ids: list[str] | None = None
 
     async def get_cards(self, content_ids: list[str]) -> _FakeCardResult:
@@ -677,6 +682,7 @@ class _FakeRecommendationCardTool:
                     place_id,
                     self._thumbnails[place_id],
                     self._fallbacks.get(place_id),
+                    self._category_labels.get(place_id),
                 )
                 for place_id in content_ids
                 if place_id in self._thumbnails
@@ -735,6 +741,55 @@ async def test_recommend_attaches_thumbnail_fallback_url() -> None:
     # 대안이 없는 장소는 None이다 — image_url을 복사해 두면 프론트가 같은 404를
     # 두 번 부른다.
     assert by_id["b"].image_url_fallback is None
+
+
+@pytest.mark.asyncio
+async def test_recommend_attaches_category_label() -> None:
+    """분류 라벨도 같은 조회에서 붙인다.
+
+    응답의 `category`는 대분류 코드라(`restaurant`·`shopping`) 화면에 영어가 그대로
+    찍혔다. 카드가 이미 계산해 두는 중분류명(한식·전시시설)을 함께 내려보낸다 —
+    이미 도는 get_cards()에서 필드 하나를 더 꺼낼 뿐이라 추가 조회는 없다.
+    """
+    cards = _FakeRecommendationCardTool(
+        {"a": "https://img.test/a.jpg", "b": "https://img.test/b.jpg"},
+        category_labels={"a": "한식"},
+    )
+    provider = RealRecommendationProvider(recommendation_cards=cards)
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a", "b"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    by_id = {
+        item.place_id: item
+        for item in [*result.recommendations, *result.unverified_recommendations]
+    }
+    assert by_id["a"].category_label == "한식"
+    # 라벨이 없으면 지어내지 않는다. 화면은 그때 category로 되돌아간다.
+    assert by_id["b"].category_label is None
+
+
+@pytest.mark.asyncio
+async def test_recommend_attaches_category_label_without_thumbnail() -> None:
+    """사진이 없는 장소에도 라벨은 붙는다.
+
+    둘을 한 조건에 묶으면 사진 없는 장소(실측 844건 중 169건, 20%)가 분류까지
+    잃는다. 라벨과 썸네일은 서로 독립이다.
+    """
+    cards = _FakeRecommendationCardTool(
+        {"a": None},
+        category_labels={"a": "전시시설"},
+    )
+    provider = RealRecommendationProvider(recommendation_cards=cards)
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    item = [*result.recommendations, *result.unverified_recommendations][0]
+    assert item.image_url is None
+    assert item.category_label == "전시시설"
 
 
 @pytest.mark.asyncio

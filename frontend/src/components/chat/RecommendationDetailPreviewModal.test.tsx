@@ -5,7 +5,7 @@
  * 대표 이미지 한 장이 그대로 나오는지가 갤러리 자체만큼 중요하다.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
@@ -216,6 +216,72 @@ it("목록에서 고른 사진이 큰 사진으로 바뀐다", async () => {
   const main = screen.getByRole("img", { name: "경복궁 사진 2번째" });
   expect(main).toHaveAttribute("src", "https://tong.visitkorea.or.kr/126508-2.jpg");
   expect(screen.getByText("2 / 2")).toBeInTheDocument();
+});
+
+/*
+ * 큰 사진을 손가락으로 밀어도 넘어간다. 작은 사진 줄은 그대로 두는데, 그쪽이
+ * 키보드·스크린리더로 고를 수 있는 유일한 길이기 때문이다 — 스와이프는 덤이다.
+ */
+function swipe(surface: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }) {
+  fireEvent.touchStart(surface, { touches: [{ clientX: from.x, clientY: from.y }] });
+  fireEvent.touchEnd(surface, { changedTouches: [{ clientX: to.x, clientY: to.y }] });
+}
+
+/**
+ * 두 장짜리 갤러리를 띄우고, **밀어도 되는 상태가 될 때까지 기다린 뒤** 미는
+ * 면을 돌려준다.
+ *
+ * 큰 사진이 떴다고 다 끝난 것이 아니다. 상세 응답 뒤에 남은 상태 갱신이 흘러가는
+ * 중에 밀면 그 갱신에 묻혀 첫 장 그대로였다 — 파일 하나만 돌릴 때는 8/8 통과하고
+ * 전체 스위트를 병렬로 돌릴 때만 이따금 깨졌다. userEvent를 쓰는 옆 테스트가
+ * 멀쩡했던 것은 그쪽이 내부적으로 기다려주기 때문이다.
+ */
+async function openTwoPhotoGallery() {
+  renderModal(
+    card({
+      thumbnail_url: null,
+      photos: [
+        { url: "https://tong.visitkorea.or.kr/126508-1.jpg", image_name: null },
+        { url: "https://tong.visitkorea.or.kr/126508-2.jpg", image_name: null },
+      ],
+    }),
+  );
+
+  await screen.findByRole("img", { name: "경복궁 사진 1번째" });
+  await act(async () => {});
+  return screen.getByTestId("photo-swipe-surface");
+}
+
+it("큰 사진을 왼쪽으로 밀면 다음 사진으로 넘어간다", async () => {
+  const surface = await openTwoPhotoGallery();
+
+  swipe(surface, { x: 240, y: 120 }, { x: 120, y: 126 });
+
+  expect(await screen.findByRole("img", { name: "경복궁 사진 2번째" })).toHaveAttribute(
+    "src",
+    "https://tong.visitkorea.or.kr/126508-2.jpg",
+  );
+  expect(screen.getByText("2 / 2")).toBeInTheDocument();
+});
+
+it("마지막 사진에서 더 밀어도 처음으로 돌지 않는다", async () => {
+  const surface = await openTwoPhotoGallery();
+
+  swipe(surface, { x: 240, y: 120 }, { x: 120, y: 120 });
+  await screen.findByRole("img", { name: "경복궁 사진 2번째" });
+
+  // 돌면 사진 위의 "2 / 2"가 갑자기 "1 / 2"로 뛰는 것으로 읽힌다.
+  swipe(surface, { x: 240, y: 120 }, { x: 120, y: 120 });
+  expect(screen.getByText("2 / 2")).toBeInTheDocument();
+});
+
+it("세로로 쓸면 사진을 넘기지 않는다", async () => {
+  const surface = await openTwoPhotoGallery();
+
+  // 가로 30px, 세로 140px — 시트를 스크롤하려던 손짓이다.
+  swipe(surface, { x: 240, y: 260 }, { x: 210, y: 120 });
+
+  expect(screen.getByText("1 / 2")).toBeInTheDocument();
 });
 
 /*
