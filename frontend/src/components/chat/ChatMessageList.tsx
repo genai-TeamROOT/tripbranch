@@ -275,7 +275,18 @@ export function ChatMessageList({
   language = "ko",
 }: ChatMessageListProps) {
   return (
-    <div className="flex flex-1 flex-col gap-4">
+    /*
+     * 메시지 사이 간격은 24px이다(2026-09-07, 16px에서 넓혔다).
+     *
+     * 말풍선을 쓰는 쪽은 사용자 발화뿐이고 어시스턴트의 말은 배경 없이 흐르므로
+     * (ClarificationMessage 주석), 블록을 갈라 주는 것이 배경이 아니라 이 간격
+     * 하나다. 16px일 때는 질문과 답이 한 덩어리로 붙어 읽혔다.
+     *
+     * 값은 계산이 아니라 16·24px을 실제로 렌더해 보고 골랐다. 한 턴 안의
+     * 답변·피드백·후속 질문 사이도 같이 넓어지는데, 24px에서는 아직 한 묶음으로
+     * 읽혀 흩어지지 않았다.
+     */
+    <div className="flex flex-1 flex-col gap-6">
       {messages
         .filter((message) => showDebug || message.type !== "condition_debug")
         .map((message, index, renderedMessages) => {
@@ -304,7 +315,18 @@ export function ChatMessageList({
 
           if (message.type === "user_text") {
             return (
-              <div key={message.id} className="flex justify-end">
+              /*
+               * **묻고 나서 한 번 쉰다.** 목록의 공통 간격(24px) 위에 16px을 더해
+               * 사용자 발화와 그 답변 사이만 40px로 벌린다(2026-09-07).
+               *
+               * 나머지 사이를 다 같이 넓히는 것으로는 이 자리가 해결되지 않았다 —
+               * 한 턴은 "질문 하나 + 답변·피드백·후속 질문"이라, 간격이 균일하면
+               * 어디서 턴이 갈리는지가 사라져 대화가 한 줄기로 흐른다. 여기가
+               * 턴의 경계이므로 여기만 더 받는다.
+               *
+               * 값은 32·40px을 실제로 렌더해 보고 골랐다.
+               */
+              <div key={message.id} className="flex justify-end pb-4">
                 <p className="max-w-[80%] rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm text-white">
                   {message.text}
                 </p>

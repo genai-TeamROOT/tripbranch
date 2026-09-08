@@ -57,21 +57,42 @@ vi.mock("../../api/trip", async (importOriginal) => {
   };
 });
 
+/*
+ * **저장 시각을 "오늘"로 만든다**(2026-09-08). 목록이 오늘 날짜로 필터된 채
+ * 열리게 바뀌어서(SavedScheduleList), 고정 날짜를 쓰면 아래 테스트 대부분이
+ * "저장한 일정이 하나도 없는" 화면을 보게 된다.
+ *
+ * 시각을 정오·오전으로 박아 두 항목이 항상 **같은 날**에 떨어지게 한다 —
+ * `new Date()`에서 몇 시간을 빼는 식으로 만들면 자정 무렵에 돌릴 때 둘이 다른
+ * 날로 갈려 필터에 하나만 걸린다.
+ */
+function todayAt(hour: number, minute: number): string {
+  const at = new Date();
+  at.setHours(hour, minute, 0, 0);
+  return at.toISOString();
+}
+
 const SEED = [
   {
     id: "sched-1",
     title: "종로 반나절",
     session_id: "chat-1",
-    created_at: "2026-08-31T14:30:00+09:00",
-    updated_at: "2026-08-31T14:30:00+09:00",
+    created_at: todayAt(14, 30),
+    updated_at: todayAt(14, 30),
   },
   {
     id: "sched-2",
     title: "성수 저녁 코스",
     session_id: "chat-2",
-    created_at: "2026-09-01T18:00:00+09:00",
-    updated_at: "2026-09-01T18:00:00+09:00",
+    created_at: todayAt(18, 0),
+    updated_at: todayAt(18, 0),
   },
+];
+
+/* 달력 필터는 날짜가 갈려야 확인된다 — 그 테스트만 고정 날짜를 쓴다. */
+const WEEK_SEED = [
+  { ...SEED[0], created_at: "2026-08-31T14:30:00+09:00", updated_at: "2026-08-31T14:30:00+09:00" },
+  { ...SEED[1], created_at: "2026-09-01T18:00:00+09:00", updated_at: "2026-09-01T18:00:00+09:00" },
 ];
 
 beforeEach(() => {
@@ -234,26 +255,36 @@ test("검색어에 맞는 일정이 없으면 안내만 뜨고 목록은 비운�
 });
 
 /*
- * 달력 띠에서 날짜를 고르면 그 날 저장한 일정만 남는다. `SEED`의 두 날짜가
+ * 달력 띠에서 날짜를 고르면 그 날 저장한 일정만 남는다. `WEEK_SEED`의 두 날짜가
  * 같은 주(8/30 일~9/5 토)에 들도록 "지금"을 그 주 안으로 고정한다 — 실제
  * 오늘 기준이면 기본 화면이 다른 주를 보여줘 두 점이 안 보인다.
+ *
+ * 목록은 오늘(=8/31로 고정한 날) 것만 보인 채 열리므로, 8/31을 누르는 첫 단언은
+ * 이미 그 상태를 확인하는 셈이고 두 번째(선택 해제)가 전체 보기를 확인한다.
  */
 test("달력에서 날짜를 고르면 그 날 저장한 일정만 남는다", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-08-31T09:00:00+09:00"));
-  server.schedules = [...SEED];
+  server.schedules = [...WEEK_SEED];
   const user = userEvent.setup();
   renderList();
   await screen.findByText("종로 반나절");
 
-  await user.click(screen.getByRole("button", { name: "8월 31일, 저장한 일정 있음" }));
+  const aug31 = screen.getByRole("button", { name: "8월 31일, 저장한 일정 있음" });
 
-  expect(screen.getByText("종로 반나절")).toBeInTheDocument();
+  /* 열자마자 오늘(고정한 8/31) 것만 보이고, 그 날짜가 눌린 상태로 시작한다. */
+  expect(aug31).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByText("성수 저녁 코스")).not.toBeInTheDocument();
 
-  /* 같은 날짜를 다시 누르면 선택이 풀린다. */
-  await user.click(screen.getByRole("button", { name: "8월 31일, 저장한 일정 있음" }));
+  /* 눌린 날짜를 다시 누르면 선택이 풀려 다른 날 것도 보인다. */
+  await user.click(aug31);
+  expect(aug31).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByText("성수 저녁 코스")).toBeInTheDocument();
+
+  /* 다시 고르면 그 날 저장한 것만 남는다. */
+  await user.click(aug31);
+  expect(screen.getByText("종로 반나절")).toBeInTheDocument();
+  expect(screen.queryByText("성수 저녁 코스")).not.toBeInTheDocument();
 
   vi.useRealTimers();
 });

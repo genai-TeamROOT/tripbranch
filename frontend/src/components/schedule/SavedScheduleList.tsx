@@ -53,7 +53,17 @@ export function SavedScheduleList() {
   const identity = session ? identityDisplay(session, isEn ? "en" : "ko") : null;
   const [query, setQuery] = useState("");
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
-  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
+  /*
+   * **목록은 오늘 날짜로 시작한다**(2026-09-08). 전에는 필터가 풀린 채로 열려서
+   * 며칠에 걸쳐 저장한 것이 한꺼번에 쏟아졌다 — 일정 탭을 여는 사람이 가장 자주
+   * 찾는 것은 오늘 쓸 일정인데, 그게 지난 것들 사이에 섞여 있었다.
+   *
+   * 오늘 저장한 것이 없으면 "조건에 맞는 저장한 일정이 없어요."가 뜬다. 빈 화면이
+   * 아니라 달력 띠와 검색창은 그대로 남으므로, 다른 날짜를 누르거나 **선택된
+   * 날짜를 한 번 더 눌러**(ScheduleCalendarStrip이 그때 null을 준다) 전체 보기로
+   * 돌아갈 수 있다.
+   */
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(() => toDateKey(new Date()));
 
   /*
    * 서버 목록은 훅이 들고, 여기서는 그것을 지역 상태로 받아 **낙관적 편집**(이름
