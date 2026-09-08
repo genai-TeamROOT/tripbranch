@@ -1804,7 +1804,7 @@ export function RecommendationDetailPreviewModal({
                 없으면 대분류를 한글로 옮긴다 — 전에는 category를 그대로 찍어
                 화면에 `restaurant`가 나왔다(utils/placeCategory). */}
             {categoryLabel && (
-              <span className="w-fit rounded-full bg-chip px-2.5 py-1 text-xs font-bold text-brand">
+              <span className="w-fit rounded-full border border-brand bg-white px-2.5 py-1 text-xs font-bold text-brand">
                 {categoryLabel}
               </span>
             )}
