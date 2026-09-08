@@ -14,23 +14,19 @@ it("보여준 문구를 뒤에 이어 붙인다", () => {
   expect(merged).toEqual(["다른 곳도 보여줘", "이 장소들로 일정 짜줘"]);
 });
 
-it("상한 안에서는 이전 턴 문구도 함께 남는다", () => {
-  /* 직전 턴이 두 개만 냈으면 그 앞 턴의 문구 하나가 자리에 남는다 — 매번 최신 한
-     벌로 갈아치우지 않는다. */
+it("직전 턴만이 아니라 그 이전 턴의 문구도 남긴다", () => {
+  /* 세 개를 하나씩 눌러 가며 세 턴을 보내면 첫 턴 문구가 네 번째 턴에 다시 나오는
+     것이 원래 문제였다. 매번 최신 한 벌로 갈아치우면 그게 그대로 남는다. */
   let merged = mergeRecentFollowUps([], ["A", "B", "C"]);
   merged = mergeRecentFollowUps(merged, ["D", "E"]);
 
-  expect(merged).toEqual(["C", "D", "E"]);
+  expect(merged).toEqual(["A", "B", "C", "D", "E"]);
 });
 
 it("같은 문구가 또 나오면 한 벌만 남긴다", () => {
   const merged = mergeRecentFollowUps(["A", "B"], ["B", "C"]);
 
   expect(merged).toEqual(["A", "B", "C"]);
-});
-
-it("상한이 세 개다 - 직전 턴에 보여준 버튼 전부에 해당한다", () => {
-  expect(MAX_RECENT_FOLLOW_UPS).toBe(3);
 });
 
 it("띄어쓰기와 물음표만 다른 문구도 같은 것으로 본다", () => {
