@@ -1423,3 +1423,151 @@ test("좌표가 있으면 홈 화면 칩도 깜빡인다", async () => {
 
   await waitFor(() => expect(container.querySelector(".animate-ping")).not.toBeNull());
 });
+
+// --- 사진 검색의 위치 정하기 -------------------------------------------------
+
+/*
+ * 위치를 정하는 규칙은 일반 채팅과 같다. 다른 것은 텍스트냐 사진이냐뿐이다 —
+ * 위치 설정의 검색 기준 → 출발지 → 기기 GPS 순으로 쓴다.
+ */
+
+function photoFetch(onPhotoRequest?: (form: FormData) => void) {
+  const base = mockFetch();
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/places/similar-by-photo")) {
+      onPhotoRequest?.(init?.body as FormData);
+      return Response.json({
+        places: [
+          {
+            content_id: "photo-place-1",
+            title: "감성 카페",
+            similarity: 0.82,
+            photo_count: 3,
+            address: "서울 성동구",
+            image_url: null,
+          },
+        ],
+        center_name: "성수동",
+        session_id: "photo-session-1",
+        candidate_count: 12,
+        truncated_count: 0,
+        elapsed_ms: 400,
+      });
+    }
+    return base(input);
+  });
+}
+
+async function uploadPhoto() {
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  fireEvent.change(screen.getByTestId("photo-gallery-input"), { target: { files: [file] } });
+}
+
+test("위치 설정에서 정한 검색 기준으로 사진을 찾는다", async () => {
+  /* 예전에는 위치 설정을 아예 안 읽어서, 검색 기준을 정해 둔 사용자가 사진을
+     올려도 그 값이 요청에 실리지 않았다. 서버도 알 길이 없어(세션 조건은 채팅을
+     보내야 채워진다) 위치를 정했는데도 "어디 근처에서 찾을까요?"가 나왔다. */
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  setLocationCenter("성수동");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(sentForm?.get("location_query")).toBe("성수동");
+});
+
+test("검색 기준이 없으면 출발지를 쓴다", async () => {
+  /* 서버의 사진 경로도 search_center → current_location 순으로 찾는다. */
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  setLocationOrigin("안국역");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(sentForm?.get("location_query")).toBe("안국역");
+});
+
+test("지명을 정해 뒀으면 사진을 올려도 위치 권한을 묻지 않는다", async () => {
+  /* 채팅과 같은 판단이다(TP-256) — 필요도 없는 권한 팝업을 띄우지 않는다. */
+  const getCurrentPosition = vi.fn();
+  vi.stubGlobal("navigator", { geolocation: { getCurrentPosition } });
+  vi.stubGlobal("fetch", photoFetch());
+  setLocationCenter("성수동");
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(getCurrentPosition).not.toHaveBeenCalled();
+});
+
+test("지명이 없으면 사진을 올릴 때 기기 위치를 물어본다", async () => {
+  let sentForm: FormData | undefined;
+  vi.stubGlobal("fetch", photoFetch((form) => (sentForm = form)));
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalled();
+  expect(sentForm?.get("latitude")).toBe("37.5788");
+});
+
+test("위치가 하나도 없으면 요청하지 않고 위치를 정하도록 안내한다", async () => {
+  /* 보내봐야 서버가 location_required로 되돌려줄 뿐이고, 그것은 오류 배너로 나와서
+     사용자가 할 수 있는 일이 없었다. */
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+        error({
+          code: 1,
+          message: "User denied Geolocation",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      ),
+    },
+  });
+  let photoRequests = 0;
+  vi.stubGlobal("fetch", photoFetch(() => (photoRequests += 1)));
+  await renderApp();
+
+  await uploadPhoto();
+
+  expect(await screen.findByText(/위치를 정하고 사진을 다시 올려/)).toBeInTheDocument();
+  expect(photoRequests).toBe(0);
+  /* 오류 배너로 띄우지 않는다 — 실패가 아니라 아직 답하지 않은 물음이다. */
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("안내의 위치 정하기를 누르면 위치 설정 화면으로 간다", async () => {
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+        error({
+          code: 1,
+          message: "User denied Geolocation",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      ),
+    },
+  });
+  vi.stubGlobal("fetch", photoFetch());
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText(/위치를 정하고 사진을 다시 올려/);
+  await userEvent.click(screen.getByRole("button", { name: "위치 정하기" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/location"));
+});

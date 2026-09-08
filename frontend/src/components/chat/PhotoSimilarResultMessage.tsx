@@ -38,11 +38,19 @@ const PHOTO_SEARCH_USER_INPUT = "이 사진과 비슷한 장소 추천해줘";
 interface PhotoSimilarResultMessageProps {
   imageUrl?: string | null;
   /* failed는 요청이 실패한 경우다. 사유는 바로 뒤 turn_error가 말하므로 여기서는
-     올린 사진만 남기고 아래 영역을 그리지 않는다(TP-245). */
-  status?: "loading" | "done" | "failed";
+     올린 사진만 남기고 아래 영역을 그리지 않는다(TP-245).
+
+     location_required는 보낼 위치가 없어 요청을 아예 하지 않은 경우다. 이쪽은
+     반대로 문구를 여기에 그린다 — 실패가 아니라 아직 답하지 않은 물음이라,
+     사용자가 무엇을 해야 하는지가 사진 바로 아래 붙어야 읽힌다. */
+  status?: "loading" | "done" | "failed" | "location_required";
   centerName: string;
   places: PhotoSimilarPlace[];
   candidateCount: number;
+  /* 위치 설정 화면으로 보낸다. 이동은 화면(ChatPage)이 맡는다 — 대화 카드들은
+     전부 표시 전용이라 라우터를 직접 부르지 않는다. 안 넘기면 버튼을 그리지
+     않는다(onRetryTurn과 같은 관례). */
+  onSetLocation?: () => void;
 }
 
 export function PhotoSimilarResultMessage({
@@ -51,6 +59,7 @@ export function PhotoSimilarResultMessage({
   centerName,
   places,
   candidateCount,
+  onSetLocation,
 }: PhotoSimilarResultMessageProps) {
   const [selected, setSelected] = useState<PhotoSimilarPlace | null>(null);
 
@@ -65,7 +74,23 @@ export function PhotoSimilarResultMessage({
         {PHOTO_SEARCH_USER_INPUT}
       </p>
 
-      {status === "failed" ? null : (
+      {status === "location_required" ? (
+        <div className="mr-auto max-w-full text-sm text-ink">
+          <p className="mb-3">
+            어디 근처에서 찾을지 몰라서 아직 못 찾았어요. 위치를 정하고 사진을 다시 올려
+            주세요.
+          </p>
+          {onSetLocation && (
+            <button
+              type="button"
+              onClick={onSetLocation}
+              className="rounded-full border border-border px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-mist"
+            >
+              위치 정하기
+            </button>
+          )}
+        </div>
+      ) : status === "failed" ? null : (
         <div className="mr-auto max-w-full text-sm text-ink">
           {status === "loading" ? (
             <p className="flex items-center gap-2 text-muted">

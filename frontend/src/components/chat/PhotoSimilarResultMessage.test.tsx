@@ -177,4 +177,38 @@ describe("PhotoSimilarResultMessage", () => {
     expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeTruthy();
     expect(screen.queryByAltText("올린 사진")).toBeNull();
   });
+
+  it("위치를 몰라 멈췄으면 무엇을 해야 하는지 알려준다", () => {
+    /* 실패와 나누는 이유는 사용자가 할 일이 달라서다 — 실패는 다시 해보면
+       되고, 이쪽은 위치를 먼저 정해야 한다. */
+    const onSetLocation = vi.fn();
+    render(
+      <PhotoSimilarResultMessage
+        status="location_required"
+        centerName=""
+        candidateCount={0}
+        places={[]}
+        onSetLocation={onSetLocation}
+      />,
+    );
+
+    expect(screen.getByText(/위치를 정하고 사진을 다시 올려/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "위치 정하기" }));
+    expect(onSetLocation).toHaveBeenCalled();
+  });
+
+  it("위치를 몰라 멈췄어도 결과 문구는 안 그린다", () => {
+    /* centerName이 비어 있어서 "주변에서 분위기가 닮은 곳이에요"를 그리면
+       "  주변에서..."가 된다. */
+    render(
+      <PhotoSimilarResultMessage
+        status="location_required"
+        centerName=""
+        candidateCount={0}
+        places={[]}
+      />,
+    );
+
+    expect(screen.queryByText(/분위기가 닮은 곳이에요/)).toBeNull();
+  });
 });

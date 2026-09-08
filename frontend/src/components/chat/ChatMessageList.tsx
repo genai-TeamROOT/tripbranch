@@ -248,6 +248,8 @@ interface ChatMessageListProps {
   onSelectFollowUpSuggestion: (suggestion: string) => void;
   /** 실패한 턴의 "다시 시도". 안 넘기면 버튼 자체를 그리지 않는다. */
   onRetryTurn?: (input: string) => void;
+  /** 사진 검색이 위치를 몰라 멈췄을 때의 "위치 정하기". 안 넘기면 안 그린다. */
+  onSetLocation?: () => void;
   onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   locationRefresh: {
     ageMinutes: number | null;
@@ -269,6 +271,7 @@ export function ChatMessageList({
   onSelectClarificationOption,
   onSelectFollowUpSuggestion,
   onRetryTurn,
+  onSetLocation,
   onToggleTravelOrigin,
   locationRefresh,
   progress,
@@ -483,6 +486,7 @@ export function ChatMessageList({
                 centerName={message.centerName}
                 places={message.places}
                 candidateCount={message.candidateCount}
+                onSetLocation={onSetLocation}
               />
             );
           }

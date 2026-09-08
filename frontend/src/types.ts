@@ -525,8 +525,12 @@ export type ChatMessage =
        * failed는 요청이 실패한 경우다. 사유는 바로 뒤에 붙는 turn_error가 말하므로
        * 여기서는 올린 사진만 남긴다 — 채팅이 실패해도 사용자 발화를 남기는 것과
        * 같은 규칙이다(TP-245).
+       *
+       * location_required는 보낼 위치가 없어 요청을 아예 하지 않은 경우다. 실패와
+       * 나누는 이유는 사용자가 할 일이 다르기 때문이다 — 실패는 다시 해보면 되고,
+       * 이쪽은 위치를 먼저 정해야 한다.
        */
-      status: "loading" | "done" | "failed";
+      status: "loading" | "done" | "failed" | "location_required";
       /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여준다. */
       centerName: string;
       places: PhotoSimilarPlace[];

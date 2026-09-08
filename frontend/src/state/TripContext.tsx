@@ -194,6 +194,9 @@ type TripAction =
     }
   /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
   | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
+  /* 보낼 위치가 없어 요청을 아예 하지 않았을 때. 실패와 나누는 이유는 사용자가
+     할 일이 달라서다 — 이쪽은 위치를 먼저 정해야 한다. */
+  | { type: "PHOTO_SIMILAR_NEEDS_LOCATION"; payload: { messageId: string } }
   /*
    * 실패한 턴을 대화에 한 줄로 남긴다(TP-245). SET_ERROR와 달리 state.error를
    * 건드리지 않는다 — 채팅 화면에서 오류가 배너와 메시지 두 곳으로 갈리면
@@ -907,6 +910,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 candidateCount: action.payload.candidateCount,
                 elapsedMs: action.payload.elapsedMs,
               }
+            : message,
+        ),
+      };
+    case "PHOTO_SIMILAR_NEEDS_LOCATION":
+      /*
+       * 오류 배너(FAIL_TURN)를 띄우지 않는다. 이것은 실패가 아니라 아직 답하지
+       * 않은 물음이고, 무엇을 하라는 안내는 사진 바로 아래에 붙어야 읽힌다.
+       */
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, status: "location_required" as const }
             : message,
         ),
       };
