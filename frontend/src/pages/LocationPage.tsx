@@ -439,9 +439,42 @@ export function LocationPage() {
             줄바꿈하지 않는다 — 칩이 아래로 내려가면 화살표만 줄 끝에 남는다. 대신
             칩은 제 내용만큼만 차지하고, 한 줄에 정말 안 들어갈 때만 이름을 자른다.
             반씩 나눠 가지면 "현재 위치에서 출발"처럼 짧은 쪽이 남는 자리를 붙들고
-            있어서, 긴 이름 쪽이 자리가 있는데도 먼저 잘린다. */}
-        <div className="flex items-center gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+            있어서, 긴 이름 쪽이 자리가 있는데도 먼저 잘린다.
+
+            **눈에 띄게 하는 일을 크기·채움이 아니라 테두리에 맡긴다**(2026-09-08).
+            `border border-brand` 한 줄이고, 글자(`text-xs`)와 채움(`bg-chip`)은
+            원래 값이다. 오는 길에 두 가지를 시도했다 —
+
+            ① 글자를 14px로(헤더 칩과 같게) 키웠더니 기본 문구가 **칩마다 4px씩**
+               잘렸다. 줄 343px에 칩 143+170, 화살표 14, 간격 16이 정확히 꽉 찬
+               상태였다(실측). padding·간격을 깎아 5px을 남겨 맞출 수는 있었지만,
+               헤더와 같게 하려던 것이 헤더와 다른 padding으로 끝났다.
+            ② 채움을 `bg-brand`+흰 글자로 했더니 눈에는 확실히 띄는데, 칩 안
+               `X` 버튼의 `hover:text-rust`(지우기)가 파란 바탕에서 탁해져 색의
+               뜻을 잃었다.
+
+            테두리는 둘 다 건드리지 않는다 — 폭이 칩마다 2px만 늘고, 안쪽
+            아이콘·X의 색 규칙도 그대로 산다.
+
+            채움은 `bg-white` + `shadow-resting`이다 — **취향 설정 화면의 칩과 같은
+            값이다**(PreferencesPage의 미선택 상태 `bg-white text-ink shadow-resting`).
+            `bg-chip`(연한 회청)일 때는 테두리만으로 떠 있고 면은 배경에 가까웠는데,
+            흰 면 + 그림자가 되면 칩이 종이처럼 얹힌다. 두 화면의 칩이 같은 물성을
+            쓰게 된 것이 덤이다.
+
+            위 안내 문구와의 간격은 컨테이너 `gap-3`(12px)에 `mt-4`를 더해 **28px**이다 —
+            안내는 한 번 읽고 마는 글이고 칩은 지금 값이라, 12px로 붙어 있으면 안내가
+            칩의 설명처럼 한 덩어리로 읽혔다. 20px(`mt-2`)과 28px을 렌더해 보고
+            골랐다. **부작용이 하나 있다** — 안내가 위쪽 "현재 위치 사용" 버튼과는
+            12px, 아래 칩과는 28px이 되어 위로 붙어 읽힌다. 안내를 양쪽 다 띄우려면
+            안내에도 위 여백을 줘야 하는데, 이번 요청은 아래 간격이라 손대지 않았다.
+
+            줄은 `justify-center`다. 375px에서는 칩이 줄을 거의 채워 좌우 여백이
+            얼마 안 남지만, 넓은 화면(900px 기준 좌우 129px)에서는 뚜렷하다.
+
+            화살표는 칩 **밖**(페이지 배경 위)이라 `text-muted`다. */}
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-brand bg-white px-3 py-1.5 text-xs text-ink shadow-resting">
             <Navigation size={13} className="shrink-0 text-brand" aria-hidden />
             <span className="truncate">
               {isEn
@@ -460,7 +493,7 @@ export function LocationPage() {
             )}
           </span>
           <ArrowRight size={14} aria-hidden className="shrink-0 text-muted" />
-          <span className="flex min-w-0 items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
+          <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-brand bg-white px-3 py-1.5 text-xs text-ink shadow-resting">
             {/* 핀이 아니라 바닥 원이 깔린 핀이다 — 이 칩은 "그 지점"이 아니라
                 "그 자리 주변"을 뒤진다는 뜻이라서다. */}
             <MapPinned size={13} className="shrink-0 text-brand" aria-hidden />
