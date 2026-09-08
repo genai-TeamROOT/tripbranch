@@ -900,6 +900,15 @@ function tripReducer(state: TripState, action: TripAction): TripState {
          * 이어지는 발화가 또 새 대화를 만들어 사진 턴이 혼자 남는다.
          */
         session_id: action.payload.sessionId,
+        /*
+         * 사진 검색도 끝난 턴이다. phase를 그대로 두면 사진으로 시작한 대화가
+         * 사이드바 목록에 안 나타난다 — 목록을 다시 받는 조건이 "phase가 ready이고
+         * session_id가 있을 때"라(SideDrawerContent), 초기값 idle에 머물러 있으면
+         * 다음 발화가 ready로 바꿀 때까지 갱신이 안 걸린다.
+         *
+         * 입력창에는 영향이 없다. isLoading은 interpreting·recommending만 본다.
+         */
+        phase: "ready" as const,
         messages: state.messages.map((message) =>
           message.id === action.payload.messageId && message.type === "photo_similar_result"
             ? {

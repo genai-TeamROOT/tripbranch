@@ -1571,3 +1571,62 @@ test("안내의 위치 정하기를 누르면 위치 설정 화면으로 간다"
 
   await waitFor(() => expect(window.location.pathname).toBe("/location"));
 });
+
+test("사진으로 시작한 대화가 바로 채팅 히스토리에 올라간다", async () => {
+  /*
+   * 예전에는 사진 검색이 phase를 안 건드려 초기값 idle에 머물렀다. 사이드바가
+   * 목록을 다시 받는 조건이 "phase가 ready이고 session_id가 있을 때"라
+   * (SideDrawerContent), 다음 발화가 ready로 바꿀 때까지 목록에 안 나타났다.
+   */
+  const sessionListCalls: string[] = [];
+  const base = mockFetch();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json({
+          places: [
+            {
+              content_id: "photo-place-1",
+              title: "감성 카페",
+              similarity: 0.82,
+              photo_count: 3,
+              address: "서울 성동구",
+              image_url: null,
+            },
+          ],
+          center_name: "성수동",
+          session_id: "photo-session-1",
+          candidate_count: 12,
+          truncated_count: 0,
+          elapsed_ms: 400,
+        });
+      }
+      if (url.endsWith("/sessions")) {
+        sessionListCalls.push(url);
+        return Response.json({
+          sessions: sessionListCalls.length > 1
+            ? [
+                {
+                  session_id: "photo-session-1",
+                  title: "성수동 사진으로 찾은 곳",
+                  location: "성수동",
+                  last_active_at: "2026-09-09T09:00:00+09:00",
+                },
+              ]
+            : [],
+        });
+      }
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  await uploadPhoto();
+  await screen.findByText("감성 카페");
+
+  /* 발화를 하나도 더 보내지 않았는데 목록을 다시 받아야 한다. */
+  await waitFor(() => expect(sessionListCalls.length).toBeGreaterThan(1));
+  expect(await screen.findAllByText("성수동 사진으로 찾은 곳")).not.toHaveLength(0);
+});
