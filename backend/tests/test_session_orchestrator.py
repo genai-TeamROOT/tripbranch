@@ -38,13 +38,22 @@ async def test_no_session_yet_skips_gps_seeding_even_with_device_location(
 
 
 @pytest.mark.asyncio
-async def test_existing_session_gps_expired_seeds_gps(store: InMemoryStateStore) -> None:
+async def test_device_location_is_not_seeded_into_the_session(
+    store: InMemoryStateStore,
+) -> None:
+    """좌표를 받아도 세션에 심지 않는다.
+
+    예전에는 여기서 세션에 GPS를 심어 다음 턴이 재사용했다. 서버가 사용자 좌표를
+    저장하지 않게 되면서(state/store.py::for_persistence) 심어도 남지 않아 호출
+    자체를 없앴다 — 이번 턴의 좌표는 요청에 실려 와 그대로 쓰이고, 다음 턴은 화면이
+    다시 실어 보낸다.
+    """
     session_id = _existing_session(store)
 
     context = await ensure_current_context(session_id, "37.5788,126.9770", store=store)
 
-    assert context.api_context.gps_location == "37.5788,126.9770"
-    assert context.api_context.gps_expired is False
+    assert context.api_context.gps_location is None
+    assert context.api_context.gps_expired is True
 
 
 @pytest.mark.asyncio
@@ -60,15 +69,18 @@ async def test_existing_session_without_device_location_stays_gps_missing(
 
 
 @pytest.mark.asyncio
-async def test_new_browser_gps_replaces_already_fresh_session_gps(
+async def test_a_second_call_does_not_accumulate_coordinates(
     store: InMemoryStateStore,
 ) -> None:
+    """좌표를 연달아 받아도 세션에는 아무것도 쌓이지 않는다.
+
+    예전에는 새 좌표가 오면 TTL과 무관하게 세션 GPS를 교체했다. 지금은 어느 쪽도
+    남지 않는다 — 매 턴 요청에 실려 오므로 세션에 둘 이유가 없다.
+    """
     session_id = _existing_session(store)
 
     first = await ensure_current_context(session_id, "37.5788,126.9770", store=store)
     second = await ensure_current_context(session_id, "9.9999,9.9999", store=store)
 
-    # 사용자가 브라우저에서 새 위치를 받아 보낸 경우에는 1시간 TTL과 무관하게
-    # 세션 GPS도 즉시 교체해야 다음 턴이 같은 기준점을 재사용한다.
-    assert first.api_context.gps_location == "37.5788,126.9770"
-    assert second.api_context.gps_location == "9.9999,9.9999"
+    assert first.api_context.gps_location is None
+    assert second.api_context.gps_location is None

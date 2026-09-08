@@ -22,7 +22,6 @@ from app.services.interpret import interpret_user_input
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import transform
 from app.state import service as state_service
-from app.state.schema import now_kst
 
 router = APIRouter(tags=["interpret"])
 
@@ -63,17 +62,8 @@ async def interpret(
     # 5) State 적용 및 run_id 발급
     state_result = state_service.apply(apply_request, principal=principal)
 
-    # 6) 최초 턴이면 방금 생성된 세션에 GPS를 심는다.
-    #    ensure_current_context 는 세션을 만들 수 없어 GPS를 못 심는다.
-    valid_gps = _valid_location(request.device_location)
-    if state_result.session_created and valid_gps:
-        state_service.update_api_context(
-            state_service.UpdateApiContextRequest(
-                session_id=state_result.session_id,
-                gps_location=valid_gps,
-                gps_location_updated_at=now_kst(),
-            )
-        )
+    # 6) 최초 턴에 GPS를 심던 자리였다. 서버가 사용자 위치를 저장하지 않게 되면서
+    #    (state/store.py::for_persistence) 심어도 남지 않아 없앴다.
 
     # 7) 응답 조립
     final_context = state_service.get_session_context(

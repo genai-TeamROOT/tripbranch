@@ -990,14 +990,17 @@ class TestUpdateApiContext:
         assert res is not None
         assert res.api_context.gps_location_confirmed_at == confirmed_at
 
-    def test_gps_location만_갱신하면_재확인_시각은_그대로다(self, store):
-        """"N분 전 위치로 계속"처럼 재확인 없이 위치만 갱신되는 경우를 흉내낸다
-        — gps_location_updated_at(기술적 TTL)과 gps_location_confirmed_at
-        (사용자 재확인)이 혼용되면 안 된다."""
+    def test_갱신한_좌표는_이번_응답에만_있고_저장되지_않는다(self, store):
+        """예전에는 위치와 재확인 시각이 세션에 남아 다음 호출까지 이어졌다.
+
+        서버가 사용자 좌표를 저장하지 않게 되면서(state/store.py::for_persistence)
+        갱신 결과는 그 호출의 응답에만 보이고 세션에는 남지 않는다. 두 시각을 혼용하지
+        않는다는 원래 구분은 그대로다 — 다만 어느 쪽도 저장되지 않는다.
+        """
         r = apply(store, session_id=None, operations=[])
         confirmed_at = now_kst()
 
-        svc.update_api_context(
+        first = svc.update_api_context(
             svc.UpdateApiContextRequest(
                 session_id=r.session_id,
                 gps_location="37.5665,126.9780",
@@ -1005,16 +1008,23 @@ class TestUpdateApiContext:
             ),
             store=store,
         )
-        res = svc.update_api_context(
+        second = svc.update_api_context(
             svc.UpdateApiContextRequest(
                 session_id=r.session_id, gps_location="37.6,127.0"
             ),
             store=store,
         )
 
-        assert res is not None
-        assert res.api_context.gps_location == "37.6,127.0"
-        assert res.api_context.gps_location_confirmed_at == confirmed_at
+        # 그 호출의 응답에는 방금 넣은 값이 보인다.
+        assert first is not None
+        assert first.api_context.gps_location == "37.5665,126.9780"
+        assert first.api_context.gps_location_confirmed_at == confirmed_at
+
+        # 다음 호출은 앞의 값을 물려받지 않는다 — 세션에 남지 않았기 때문이다.
+        assert second is not None
+        assert second.api_context.gps_location == "37.6,127.0"
+        assert second.api_context.gps_location_confirmed_at is None
+        assert store.get_state(r.session_id).api_context.gps_location is None
 
     def test_재확인_시각을_생략하면_현재시각으로_채워진다(self, store):
         """gps_location_updated_at과 동일한 관례 — 필드는 전달했지만 값을
@@ -1033,21 +1043,23 @@ class TestUpdateApiContext:
         assert res is not None
         assert res.api_context.gps_location_confirmed_at is not None
 
-    def test_get_session_context에도_재확인_시각이_포함된다(self, store):
+    def test_세션을_다시_읽으면_좌표가_없다(self, store):
+        """되읽는 경로는 저장된 것만 본다 — 좌표는 저장하지 않으므로 비어 있다."""
         r = apply(store, session_id=None, operations=[])
-        confirmed_at = now_kst()
 
         svc.update_api_context(
             svc.UpdateApiContextRequest(
                 session_id=r.session_id,
                 gps_location="37.5665,126.9780",
-                gps_location_confirmed_at=confirmed_at,
+                gps_location_confirmed_at=now_kst(),
             ),
             store=store,
         )
         ctx = svc.get_session_context(r.session_id, store=store)
 
-        assert ctx.api_context.gps_location_confirmed_at == confirmed_at
+        assert ctx.api_context.gps_location is None
+        assert ctx.api_context.gps_location_confirmed_at is None
+        assert ctx.api_context.gps_expired is True
 
 
 # ================================================================ 다중 턴

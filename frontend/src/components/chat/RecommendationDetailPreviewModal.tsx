@@ -36,7 +36,8 @@ import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import { getBrowserDeviceLocation } from "../../utils/geolocation";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
-import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
+import { useNaverDirections } from "../../hooks/useNaverDirections";
+import { openNaverMapSearch } from "../../utils/naverDirections";
 import {
   groupSubwayArrivals,
   parseSubwayArrival,
@@ -1502,9 +1503,11 @@ export function RecommendationDetailPreviewModal({
   const knownImageUrl = item?.image_url ?? card?.thumbnail_url ?? null;
   const expectsNoPhoto = (item != null || card != null) && knownImageUrl == null;
   const showSkeleton = useDelayedSkeleton(isLoading);
-  // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
+  /* 목적지 좌표와 출발점이 모두 있어야 길찾기 딥링크를 만들 수 있다. 출발점은 훅이
+     정한다 — 위치 설정의 출발지가 먼저고, 없으면 기기 좌표다. */
+  const directions = useNaverDirections(device_location);
   const canRoute =
-    detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
+    detailCard?.latitude != null && detailCard?.longitude != null && directions.canRoute;
   /*
    * 상세를 기다리는 동안에도 버튼 자리를 잡아 둔다. 이 버튼은 스크롤 영역 바깥의
    * 하단 고정 바라, 늦게 생기면 그만큼 본문 높이가 줄며 읽던 자리가 밀린다.
@@ -1518,7 +1521,10 @@ export function RecommendationDetailPreviewModal({
    * 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
    * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
    */
-  const needsDeviceLocation = !device_location;
+  /* 출발점을 하나도 못 정할 때만 안내한다. 사용자가 위치 설정에서 출발지를 정해
+     뒀으면 기기 좌표가 없어도 길찾기를 열 수 있으므로, 여기서 좌표만 보면 열 수 있는
+     상황에도 "현재 위치를 받으세요"라고 말하게 된다. */
+  const needsDeviceLocation = !directions.canRoute;
   const showRouteFooter = needsDeviceLocation || canRoute || isLoading;
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
@@ -1891,8 +1897,7 @@ export function RecommendationDetailPreviewModal({
               disabled={!canRoute}
               onClick={() => {
                 if (!canRoute || !detailCard) return;
-                openNaverDirections({
-                  deviceLocation: device_location as string,
+                void directions.openDirections({
                   destLat: detailCard.latitude as number,
                   destLng: detailCard.longitude as number,
                   destName: detailCard.place_name ?? title,

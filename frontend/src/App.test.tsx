@@ -337,6 +337,33 @@ test("sends the search center picked on the location screen with the chat reques
   expect(requestBody.selected_search_center).toBe("안국역");
 });
 
+test("개발자 채팅도 위치 설정을 요청에 싣는다", async () => {
+  /* 두 화면은 같은 session_id를 쓴다. 개발자 화면만 위치를 안 실어 보내면, 그 화면에서
+     한 턴을 돌릴 때 서버에 쌓인 위치 조건이 바뀌고 사용자 화면으로 돌아가면 다시
+     채워지는 일이 반복된다 — 같은 설정으로 물어도 검색 기준이 GPS·검색지·출발지로
+     갈려 보이던 원인이었다(2026-09-08, 원인 추적에 몇 시간이 들었다).
+
+     구조를 합치는 것은 TP-255에서 하고, 여기서는 두 화면이 같은 값을 보내는지만
+     못 박는다. 이 테스트가 없으면 한쪽만 고쳐도 아무것도 깨지지 않는다. */
+  setLocationOrigin("화곡역");
+  setLocationCenter("서대문역");
+  window.history.pushState({}, "", "/dev-chat");
+
+  render(<App />);
+  const composer = await screen.findByPlaceholderText("추가 조건을 입력해 주세요");
+  await userEvent.type(composer, "카페 추천해줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/chat"))).toBe(true),
+  );
+  const chatCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/chat"));
+  const requestBody = JSON.parse(String(chatCall?.[1]?.body));
+  expect(requestBody.selected_current_location).toBe("화곡역");
+  expect(requestBody.selected_search_center).toBe("서대문역");
+});
+
 /*
  * 발화가 정한 위치를 응답에서 되돌려 받는 흐름. 배선이 한쪽뿐이던 시절에는 위치
  * 설정 화면에서 고른 값만 발화에 실려 나가고, 발화가 그 위치를 바꿔도 저장소는
@@ -688,7 +715,10 @@ test("developer audit turn cards remain selectable after multiple turns", async 
   expect(firstTurnCard.className).toContain("border-emerald-500");
 });
 
-test("location permission denial stays on home and shows guidance", async () => {
+test("위치 권한을 거부해도 대화는 좌표 없이 시작된다", async () => {
+  /* 예전에는 홈에 머무르며 "위치 권한이 필요해요"만 띄우고 요청을 아예 안 보냈다.
+     거절한 사용자는 거기서 할 수 있는 게 없었다 — 좌표를 안 보내면 백엔드가 어디서
+     찾을지 되묻고(location_required), 사용자는 그 되묻기에 답해서 계속 갈 수 있다. */
   vi.stubGlobal("navigator", {
     geolocation: {
       getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
@@ -707,11 +737,27 @@ test("location permission denial stays on home and shows guidance", async () => 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText(/위치 권한이 필요해요/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
-  /* 위치 권한이 거부되면 추천 요청 자체가 나가지 않는다. 사이드바 히스토리
-     같은 부수 요청은 이 판단과 무관하므로 채팅 호출만 본다. */
-  expect(chatCalls()).toHaveLength(0);
+  await waitFor(() => expect(chatCalls().length).toBeGreaterThan(0));
+  const requestBody = JSON.parse(String(chatCalls()[0]?.[1]?.body));
+  expect(requestBody.device_location).toBeNull();
+});
+
+test("출발지를 정해 뒀으면 위치 권한을 묻지 않는다", async () => {
+  /* 서버가 이동시간을 재는 출발점은 그 이름이고(D-067) 이름을 좌표로 바꾸는 일은
+     백엔드가 한다. 그러니 기기 좌표는 필요 없다 — 필요도 없는 권한 팝업을 띄우고,
+     거절하면 아무것도 못 하게 만들던 자리였다(TP-256). */
+  const getCurrentPosition = vi.fn();
+  vi.stubGlobal("navigator", { geolocation: { getCurrentPosition } });
+  setLocationOrigin("안국역");
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  await waitFor(() => expect(chatCalls().length).toBeGreaterThan(0));
+  expect(getCurrentPosition).not.toHaveBeenCalled();
+  const requestBody = JSON.parse(String(chatCalls()[0]?.[1]?.body));
+  expect(requestBody.selected_current_location).toBe("안국역");
 });
 
 test("requesting more places sends a follow-up chat turn with the session id", async () => {

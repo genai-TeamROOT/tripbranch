@@ -1315,6 +1315,122 @@ async def test_spoken_location_beats_selected_search_center() -> None:
 
 
 @pytest.mark.asyncio
+async def test_modify_turn_uses_locations_sent_with_this_request() -> None:
+    """조건을 직접 나르지 않는 턴도 이번 요청에 실려 온 위치를 쓴다.
+
+    화면에서 출발지를 바꾸고 "다른 곳 보여줘"라고 하면 MODIFY로 분류되는데, 이
+    경로는 `_apply_selected_locations()`가 손대지 않아 병합된 세션 조건(=1턴의
+    옛 위치)을 그대로 물려받았다. 요청에는 새 위치가 실려 오는데도 무시돼,
+    화면에는 성수동이 떠 있고 실제 검색은 경복궁에서 도는 상태가 됐다
+    (2026-09-07 로컬 실측으로 재현).
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.state.user_conditions.current_location == "안국역"
+    assert first.state.user_conditions.search_center == "경복궁"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="성수동",
+            selected_search_center="성수동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.current_location == "성수동"
+    assert second.state.user_conditions.search_center == "성수동"
+
+
+@pytest.mark.asyncio
+async def test_modify_turn_keeps_session_locations_when_request_sends_none() -> None:
+    """요청이 위치를 안 실어 보내면 세션에 쌓인 조건을 그대로 쓴다.
+
+    위 테스트의 반대편이다 — "이번 요청 값이 있으면 쓴다"를 "없어도 덮어써서
+    조건을 날린다"로 잘못 구현하면 여기서 걸린다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.current_location == "안국역"
+    assert second.state.user_conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_beats_request_locations_on_modify_turn() -> None:
+    """그 턴에 말한 위치는 화면 설정을 이긴다 — MODIFY 턴에서도 같다.
+
+    `_apply_selected_locations()`가 RECOMMEND에서 지키는 규칙
+    (test_spoken_location_beats_selected_search_center)을 새 경로도 똑같이
+    지켜야 한다. 아니면 "창덕궁 근처"라고 말한 턴이 화면에 남아 있던 인사동으로
+    검색된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 근처로 바꿔줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="인사동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.search_center == "창덕궁"
+
+
+@pytest.mark.asyncio
 async def test_blank_selected_search_center_is_ignored() -> None:
     """공백만 온 값은 위치를 고른 것으로 치지 않는다 — 평소 되묻기로 끝나야 한다."""
     store = InMemoryStateStore()
@@ -2546,12 +2662,15 @@ async def test_schedule_continuation_during_pending_clarification_does_not_build
 
 
 @pytest.mark.asyncio
-async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
-    """ensure_current_context()는 세션을 만들 수 없어 최초 턴에는 GPS를 못 심는다.
+async def test_device_location_is_used_this_turn_but_not_kept_for_the_next() -> None:
+    """이번 턴의 좌표는 도구까지 그대로 가고, 다음 턴에는 남지 않는다.
 
-    apply()로 세션이 생긴 직후 run_agent_flow가 update_api_context를 호출해야
-    다음 턴부터 gps_expired가 False가 된다(session_orchestrator.py의 "알려진 한계"
-    후속 처리 — interpret.py의 동일 테스트를 run_agent_flow 기준으로도 고정한다).
+    예전에는 최초 턴 직후 세션에 GPS를 심어 다음 턴이 재사용했다. 서버가 사용자
+    좌표를 저장하지 않게 되면서(state/store.py::for_persistence) 심는 자리를 없앴다.
+
+    **다음 턴이 좌표를 잃는 것이 이 변경의 내용이다.** 화면은 매 턴 좌표를 실어
+    보내므로 실제 사용에서는 빈 채로 가는 일이 드물고, 비면 백엔드가 어디서 찾을지
+    되묻는다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -2576,11 +2695,10 @@ async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
         **providers,
     )
 
-    assert second.state.api_context.gps_expired is False
-    assert second.state.api_context.gps_location == DEVICE_LOCATION
-    assert providers["tool_provider"].last_request.gps_location == Coordinates(
-        latitude=37.5788, longitude=126.9770
-    )
+    # 2턴은 좌표를 안 실어 보냈고 세션에도 남아 있지 않다.
+    assert second.state.api_context.gps_expired is True
+    assert second.state.api_context.gps_location is None
+    assert providers["tool_provider"].last_request.gps_location is None
 
 
 @pytest.mark.asyncio

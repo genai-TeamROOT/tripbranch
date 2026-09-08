@@ -18,7 +18,11 @@ vi.mock("../../api/trip", () => ({
   fetchRecommendationPlaceDetails: vi.fn(),
 }));
 
-vi.mock("../../utils/naverDirections", () => ({
+/* 링크를 여는 두 함수만 가로채고 나머지는 진짜를 쓴다. deviceLocationToOrigin은
+   훅이 "출발점을 정할 수 있는가"를 판단할 때 부르므로, 통째로 가짜를 씌우면 길찾기
+   버튼이 항상 잠긴 채로 테스트된다. */
+vi.mock("../../utils/naverDirections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../utils/naverDirections")>()),
   openNaverMapSearch: vi.fn(),
   openNaverDirections: vi.fn(),
 }));
