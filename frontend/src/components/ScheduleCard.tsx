@@ -2,14 +2,17 @@
  * 역할: 일정에 포함된 장소 하나를 세로 타임라인의 한 정류장으로 렌더링한다(DESIGN_SYSTEM.md §6.7).
  * 입력: ScheduleItem 데이터, 마지막 정류장인지 여부(isLast).
  * 출력: 순서 배지 + 다음 정류장으로 이어지는 세로선(왼쪽), 도착 배지·장소명·배치
- *   이유·머무는 시간(오른쪽 카드). 정류장 사이 이동 시간은 이 컴포넌트가 아니라
- *   ScheduleTravelSegment가 표시한다 — 카드는 "머무는 곳"만, 이동은 카드 사이
- *   별도 구간으로 분리한다(SCHEDULE-08).
+ *   이유·머무는 시간·장소 상세보기(오른쪽 카드). 정류장 사이 이동 시간은 이
+ *   컴포넌트가 아니라 ScheduleTravelSegment가 표시한다 — 카드는 "머무는 곳"만,
+ *   이동은 카드 사이 별도 구간으로 분리한다(SCHEDULE-08).
  * 호출 시점: ScheduleResultMessage가 일정 항목 목록을 표시할 때 호출된다.
  * TODO: 지도 링크, 카드 재배치 액션이 생기면 하위 UI를 확장한다.
  */
 
+import { useState } from "react";
+
 import type { ScheduleItem } from "../types";
+import { RecommendationDetailPreviewModal } from "./chat/RecommendationDetailPreviewModal";
 
 interface ScheduleCardProps {
   item: ScheduleItem;
@@ -25,6 +28,8 @@ interface ScheduleCardProps {
 }
 
 export function ScheduleCard({ item, isLast, linkedToNext = false }: ScheduleCardProps) {
+  const [showDetail, setShowDetail] = useState(false);
+
   return (
     <li className="flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
@@ -64,7 +69,32 @@ export function ScheduleCard({ item, isLast, linkedToNext = false }: ScheduleCar
             ⚠️ {item.warnings.join(" / ")}
           </p>
         )}
+
+        {/* /schedule 페이지에는 있고 채팅 안에만 없던 입구다(ScheduleRoute.tsx).
+            카드 우측 상단이 아니라 아래에 두는 이유는 그 자리를 도착 배지가
+            이미 쓰고 있어서다. 모달은 placeId + placeName만 받는 입구를 쓴다
+            — 사진 검색 결과가 쓰는 것과 같은 최소 인자 경로이고, ScheduleItem이
+            둘 다 갖고 있다. */}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowDetail(true)}
+            className="text-xs font-bold text-brand"
+          >
+            장소 상세보기
+          </button>
+        </div>
       </div>
+
+      {/* 모달은 createPortal로 body에 붙으므로 li 안에서 열어도 목록 마크업을
+          건드리지 않는다. */}
+      {showDetail && (
+        <RecommendationDetailPreviewModal
+          placeId={item.place_id}
+          placeName={item.place_name}
+          onClose={() => setShowDetail(false)}
+        />
+      )}
     </li>
   );
 }
