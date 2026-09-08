@@ -34,6 +34,7 @@ import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "re
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
+import { placeCategoryLabel } from "../../utils/placeCategory";
 import { getBrowserDeviceLocation } from "../../utils/geolocation";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
@@ -1555,6 +1556,7 @@ export function RecommendationDetailPreviewModal({
    * 사진이 1장인지 2장 이상인지는 어느 경로에서도 미리 알 수 없으므로, 작은 사진
    * 줄의 자리 예약(PHOTO_STRIP_HEIGHT)은 그대로 둔다.
    */
+  const categoryLabel = item ? placeCategoryLabel(item) : null;
   const knownImageUrl = item?.image_url ?? card?.thumbnail_url ?? null;
   const expectsNoPhoto = (item != null || card != null) && knownImageUrl == null;
   const showSkeleton = useDelayedSkeleton(isLoading);
@@ -1798,9 +1800,12 @@ export function RecommendationDetailPreviewModal({
           ) : null}
 
           <div className="flex flex-col gap-1.5">
-            {item?.category && (
+            {/* 분류 칩. 백엔드가 주는 중분류 한글명을 먼저 쓰고(한식·전시시설),
+                없으면 대분류를 한글로 옮긴다 — 전에는 category를 그대로 찍어
+                화면에 `restaurant`가 나왔다(utils/placeCategory). */}
+            {categoryLabel && (
               <span className="w-fit rounded-full bg-chip px-2.5 py-1 text-xs font-bold text-brand">
-                {item.category}
+                {categoryLabel}
               </span>
             )}
             {/*
