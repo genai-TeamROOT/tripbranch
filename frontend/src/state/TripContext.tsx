@@ -39,8 +39,10 @@ import type {
 } from "../types";
 import {
   buildAgentMessages,
+  buildPhotoSimilarMessage,
   buildRecommendationMessages,
   createMessageId,
+  isPhotoSimilarRecord,
 } from "./agentMessages";
 import { hasTimeGap } from "./timeSeparator";
 import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
@@ -182,6 +184,8 @@ type TripAction =
       type: "RESOLVE_PHOTO_SIMILAR";
       payload: {
         messageId: string;
+        /* 서버가 발급했을 수 있다 — 홈에서 발화 없이 사진부터 올린 경우가 그렇다. */
+        sessionId: string;
         centerName: string;
         places: PhotoSimilarPlace[];
         candidateCount: number;
@@ -420,6 +424,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       if (action.payload.restore_from_messages) {
         const lastIndex = action.payload.messages.length - 1;
         action.payload.messages.forEach((record, index) => {
+          /*
+           * 사진 검색 턴은 AgentResponse가 아니다 — 조건 병합을 타지 않아 그
+           * 턴의 응답이 그대로 들어 있다. 여기서 가르지 않으면 아래
+           * buildAgentMessages가 llm_output을 읽다가 터져 대화 전체가 복원되지
+           * 않는다.
+           *
+           * 발화 말풍선을 따로 만들지 않는 이유는 컴포넌트가 사진 자리 아래에
+           * 그 문구를 직접 그리기 때문이다 — 여기서도 만들면 두 번 나온다.
+           */
+          if (isPhotoSimilarRecord(record.payload)) {
+            restored.push(buildPhotoSimilarMessage(record.payload));
+            return;
+          }
           if (record.user_input) {
             restored.push({
               id: createMessageId("user"),
@@ -874,6 +891,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "RESOLVE_PHOTO_SIMILAR":
       return {
         ...state,
+        /*
+         * 서버가 발급한 세션을 여기서 받는다. 홈에서 발화 없이 사진부터 올리면
+         * 보낼 때는 세션이 없고 이 응답이 그 대화의 시작이다 — 저장하지 않으면
+         * 이어지는 발화가 또 새 대화를 만들어 사진 턴이 혼자 남는다.
+         */
+        session_id: action.payload.sessionId,
         messages: state.messages.map((message) =>
           message.id === action.payload.messageId && message.type === "photo_similar_result"
             ? {

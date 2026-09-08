@@ -71,6 +71,7 @@ export function usePhotoSimilarSearch() {
           type: "RESOLVE_PHOTO_SIMILAR",
           payload: {
             messageId,
+            sessionId: response.session_id,
             centerName: response.center_name,
             places: response.places,
             candidateCount: response.candidate_count,

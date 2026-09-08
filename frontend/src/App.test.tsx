@@ -1181,6 +1181,9 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
             },
           ],
           center_name: "성수동",
+          /* 홈에서 사진부터 올리면 세션이 없어서 서버가 여기서 발급한다.
+             화면이 이 값을 저장해야 이어지는 발화가 같은 대화로 붙는다. */
+          session_id: "photo-session-1",
           candidate_count: 12,
           truncated_count: 0,
           elapsed_ms: 400,
@@ -1203,6 +1206,58 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
   // 결과는 메시지로 쌓이므로 /chat으로 넘어가야 보인다.
   expect(await screen.findByText("감성 카페")).toBeInTheDocument();
   expect(screen.getByPlaceholderText("트리비에게 물어보세요")).toBeInTheDocument();
+  // 사진만 덩그러니 두지 않는다 — 무엇을 요청한 턴인지가 화면에 남아야 한다.
+  expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeInTheDocument();
+});
+
+test("사진으로 시작한 대화에 이어 말하면 같은 세션으로 붙는다", async () => {
+  /*
+   * 서버가 발급한 session_id를 화면이 저장하지 않으면 이어지는 발화가 또 새
+   * 대화를 시작해, 방금 한 사진 검색이 혼자 남는다.
+   */
+  const base = mockFetch();
+  const sentBodies: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json({
+          places: [
+            {
+              content_id: "photo-place-1",
+              title: "감성 카페",
+              similarity: 0.82,
+              photo_count: 3,
+              address: "서울 성동구",
+              image_url: null,
+            },
+          ],
+          center_name: "성수동",
+          session_id: "photo-session-1",
+          candidate_count: 12,
+          truncated_count: 0,
+          elapsed_ms: 400,
+        });
+      }
+      sentBodies.push(String(init?.body ?? ""));
+      return base(input);
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  fireEvent.change(screen.getByTestId("photo-gallery-input"), { target: { files: [file] } });
+  await screen.findByText("감성 카페");
+
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "그중에 첫 번째");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  await waitFor(() =>
+    expect(sentBodies.some((body) => body.includes("photo-session-1"))).toBe(true),
+  );
 });
 
 /*

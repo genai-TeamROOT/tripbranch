@@ -302,6 +302,32 @@ class SetPendingInfoContextResponse(BaseModel):
     pending_info_context: PendingInfoContext | None
 
 
+class EnsureSessionRequest(BaseModel):
+    """세션을 확보하는 요청. 없으면 새로 만든다. (계약 5.2절)
+
+    **조건 병합(apply)을 타지 않는 경로를 위한 것이다.** 지금까지 세션은 apply()
+    안에서만 발급됐는데, 그 함수는 A의 해석 결과(operations)를 받아야 해서 조건이
+    없는 턴은 부를 수가 없다. 사진 검색이 그런 턴이다 — 인텐트를 타지 않아
+    병합할 조건이 없는데도 대화로는 한 턴이라 세션이 있어야 기록이 남는다.
+
+    **성사된 뒤에만 부른다.** apply()가 LLM 해석이 끝난 자리에서 세션을 발급하는
+    것과 같은 규칙이다. 실패한 요청까지 세션을 만들면 빈 대화가 목록에 쌓인다.
+
+    title은 비어 있을 때만 채워진다(attach_title). 호출부가 그 턴을 무엇이라고
+    부를지 정해서 넘긴다 — B는 이 문자열을 해석하지 않는다.
+    """
+
+    session_id: str | None = None
+    title: str | None = None
+
+
+class EnsureSessionResponse(BaseModel):
+    session_id: str
+    # True면 이번 호출에서 새로 발급됐다. 호출부가 이 값을 응답에 실어
+    # 화면이 이후 턴을 같은 대화로 잇게 해야 한다.
+    created: bool
+
+
 class AppendConversationTurnRequest(BaseModel):
     """방금 끝난 대화 한 턴을 세션에 남기는 요청. (대화층 1단계)
 
@@ -325,8 +351,10 @@ class RecordSessionMessageRequest(BaseModel):
     목적으로 쌓인다.** 저쪽은 모델에 넣을 맥락이라 5턴에서 잘리고, 이쪽은 사람이
     다시 볼 화면이라 자르지 않는다.
 
-    payload는 A의 AgentResponse를 직렬화한 dict다. B는 열어보지 않는다 —
-    파싱하면 A의 스키마 변경을 B가 따라가야 한다.
+    payload는 그 턴에 화면으로 나간 것을 A가 직렬화한 dict다. 대개 AgentResponse
+    이지만 조건 병합을 타지 않는 턴(사진 검색)은 그 턴의 응답 모양이 들어온다.
+    **B는 어느 쪽이든 열어보지 않는다** — 파싱하면 A의 스키마 변경을 B가 따라가야
+    한다. 어느 모양인지 구분하는 것은 이 값을 다시 그리는 화면의 몫이다.
     """
 
     session_id: str
@@ -1058,6 +1086,35 @@ def set_pending_info_context(
         session_id=state.session_id,
         pending_info_context=state.pending_info_context,
     )
+
+
+@_wrap_store_errors
+def ensure_session(
+    request: EnsureSessionRequest,
+    principal: Principal | None = None,
+    store: StateStore | None = None,
+) -> EnsureSessionResponse:
+    """세션을 확보하고 신원과 제목을 붙인다. (계약 5.2절)
+
+    apply()가 세션을 확보할 때 하는 것과 같은 순서다 — 확보 → 소유권 대조 →
+    신원 연결. 소유권 대조를 신원 연결보다 먼저 두는 이유도 같다(방금 만든
+    세션은 user_id가 비어 있어 항상 통과한다).
+
+    제목은 attach_title에 맡긴다 — **비어 있을 때만 채우고 덮어쓰지 않는다.**
+    사용자가 사이드바에서 바꾼 이름이 유지되어야 하고, 이미 발화로 제목이 붙은
+    대화에 뒤늦은 사진 검색이 제목을 뺏어가서도 안 된다.
+    """
+    store = store or get_store()
+
+    state, created = session_module.get_or_create_session(store, request.session_id)
+    session_module.verify_ownership(state, principal)
+    session_module.attach_user_id(state, principal)
+    if request.title:
+        session_module.attach_title(state, request.title)
+    session_module.touch(state)
+    store.save_state(state)
+
+    return EnsureSessionResponse(session_id=state.session_id, created=created)
 
 
 @_wrap_store_errors

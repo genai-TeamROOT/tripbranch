@@ -152,4 +152,29 @@ describe("PhotoSimilarResultMessage", () => {
     expect(container.textContent).toContain("40곳을 봤는데");
     expect(container.textContent).toContain("아직 사진을 모으지 못한 지역");
   });
+
+  it("사진과 함께 무엇을 요청한 턴인지 보여준다", () => {
+    /* 사진만 있으면 지난 대화를 되돌렸을 때 사진 한 장이 맥락 없이 놓인다.
+       서버도 같은 문장을 대화 기록에 남긴다(PHOTO_SEARCH_USER_INPUT). */
+    render(
+      <PhotoSimilarResultMessage centerName="성수동" candidateCount={40} places={[place()]} />,
+    );
+
+    expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeTruthy();
+  });
+
+  it("사진이 없어도 발화 문구는 남는다", () => {
+    /* 복원 화면이 이렇다 — 사진은 서버에 안 남기므로 문구만 되돌아온다. */
+    render(
+      <PhotoSimilarResultMessage
+        imageUrl={null}
+        centerName="현재 위치"
+        candidateCount={40}
+        places={[place()]}
+      />,
+    );
+
+    expect(screen.getByText("이 사진과 비슷한 장소 추천해줘")).toBeTruthy();
+    expect(screen.queryByAltText("올린 사진")).toBeNull();
+  });
 });

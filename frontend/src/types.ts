@@ -151,8 +151,17 @@ export interface PhotoSimilarPlace {
 
 export interface PhotoSimilarPlacesResponse {
   places: PhotoSimilarPlace[];
-  /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여줄 때 쓴다. */
+  /**
+   * 어디를 중심으로 찾았는지. "{center_name} 주변에서 분위기가 닮은 곳이에요"로
+   * 보여준다. 지역명 없이 좌표로만 찾았으면 "현재 위치"다.
+   */
   center_name: string;
+  /**
+   * 이 검색이 속한 대화. **세션 없이 보내도 채워져서 돌아온다** — 홈에서 발화
+   * 없이 사진부터 올리면 이 응답이 그 대화의 시작이라 서버가 발급한다. 받아서
+   * 저장하지 않으면 이어지는 발화가 또 새 대화를 시작한다.
+   */
+  session_id: string;
   /** 하드 필터를 통과해 사진 검색에 넘어간 후보 수. 0이면 볼 곳 자체가 없었다는 뜻이다. */
   candidate_count: number;
   /** 후보 상한에 걸려 잘린 수. 0이 아니면 반경을 좁히는 편이 낫다. */

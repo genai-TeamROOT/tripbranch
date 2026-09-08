@@ -8,6 +8,14 @@
  * 사용자 발화는 `ml-auto`, 응답은 `mr-auto`. 사진은 사용자가 올린 것이므로
  * 오른쪽이 맞다.
  *
+ * **사진 아래에 발화 문구를 함께 둔다.** 사진만 있으면 그 턴에 무엇을 요청한
+ * 것인지가 화면에 안 남아, 지난 대화를 되돌렸을 때 사진 한 장이 맥락 없이
+ * 놓인다. 서버도 같은 문장을 대화 기록에 남긴다(routes/photo_similar.py의
+ * PHOTO_SEARCH_USER_INPUT) — 고칠 때 두 곳을 함께 고친다.
+ *
+ * **이 문장은 해석되지 않는다.** 사진 검색은 인텐트를 타지 않으므로 분류되는
+ * 일이 없다. 사용자가 친 말이 아니라 그 턴을 사람이 읽을 수 있게 옮긴 것이다.
+ *
  * **결과는 가로로 늘어놓는다.** 세로 목록이면 카드 하나가 한 줄을 통째로 쓰면서
  * 오른쪽이 비고, 5곳이면 화면이 그만큼 길어진다. 가로로 두면 사진이 나란히
  * 놓여 분위기를 한눈에 견줄 수 있다 — 이 화면의 목적이 그 비교다.
@@ -23,6 +31,9 @@ import { PlaceThumbnail } from "../PlaceThumbnail";
 
 /** 이 미만이면 벡터가 사진 한 장에 좌우된다(D-087). 표시를 달리한다. */
 const RELIABLE_PHOTO_COUNT = 2;
+
+/** 사진 검색 턴의 사용자 발화. 서버의 PHOTO_SEARCH_USER_INPUT과 같은 문장이다. */
+const PHOTO_SEARCH_USER_INPUT = "이 사진과 비슷한 장소 추천해줘";
 
 interface PhotoSimilarResultMessageProps {
   imageUrl?: string | null;
@@ -48,6 +59,11 @@ export function PhotoSimilarResultMessage({
       {imageUrl && (
         <img src={imageUrl} alt="올린 사진" className="ml-auto max-h-48 rounded-md object-cover" />
       )}
+
+      {/* 사용자 말풍선과 같은 모양이다(ChatMessageList의 user_text). */}
+      <p className="ml-auto max-w-[80%] rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm text-white">
+        {PHOTO_SEARCH_USER_INPUT}
+      </p>
 
       {status === "failed" ? null : (
         <div className="mr-auto max-w-full text-sm text-ink">
