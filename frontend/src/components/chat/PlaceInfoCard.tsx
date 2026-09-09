@@ -563,23 +563,27 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
           />
         </div>
       )}
-      <button
-        type="button"
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-        aria-haspopup="dialog"
-        aria-label={
-          isEn ? `View details for ${card.place_name ?? "place"}` : `${card.place_name ?? "장소"} 상세 보기`
-        }
-        onClick={() => setShowDetail(true)}
-      >
+      {/* 이름 자리는 누를 수 없다 — 상세를 여는 것은 옆의 "상세 보기" 칩뿐이다.
+          장소 이름을 함께 누를 수 있게 하면 카드 안에서 어디를 눌러야 상세가
+          열리는지가 흐려진다. aria-label 이 보이는 글자("상세 보기")보다 긴 것은
+          불일치가 아니다 — WCAG 2.5.3처럼 보이는 글자를 그대로 포함하면서 카드가
+          여러 장 늘어설 때 스크린리더에서 어느 장소의 상세인지 구분하기 위함이다. */}
+      <div className="flex w-full items-center justify-between gap-3 px-4 py-3">
         <span className="min-w-0 text-sm font-bold text-ink">
           {card.place_name ?? (isEn ? "Place details" : "장소 상세 정보")}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-light px-3 py-1 text-xs font-semibold text-brand-deep">
+        <button
+          type="button"
+          className="shrink-0 rounded-full bg-sky-light px-3 py-1 text-xs font-semibold text-brand-deep"
+          aria-haspopup="dialog"
+          aria-label={
+            isEn ? `View details for ${card.place_name ?? "place"}` : `${card.place_name ?? "장소"} 상세 보기`
+          }
+          onClick={() => setShowDetail(true)}
+        >
           {isEn ? "View details" : "상세 보기"}
-          <span aria-hidden="true">↗</span>
-        </span>
-      </button>
+        </button>
+      </div>
 
       {isPublicToiletCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
         <PublicToiletList
