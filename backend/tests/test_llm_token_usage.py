@@ -73,6 +73,15 @@ def test_token_usage_maps_every_field_we_care_about() -> None:
     }
 
 
+def test_token_usage_maps_the_cached_input_share() -> None:
+    """자동 캐싱 적중분. prompt_token_count에 이미 포함돼 오므로 따로 센다."""
+    usage = _token_usage(
+        _Usage(prompt_token_count=5000, cached_content_token_count=4200)
+    )
+
+    assert usage == {"input_tokens": 5000, "cached_tokens": 4200}
+
+
 def test_token_usage_omits_missing_fields_instead_of_zeroing_them() -> None:
     """사고를 안 하는 모델은 thoughts_token_count 자체가 없다.
 
@@ -121,6 +130,19 @@ def test_usage_details_without_thinking_leaves_output_alone() -> None:
     details = _usage_details({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
 
     assert details == {"input": 10, "output": 5, "total": 15}
+
+
+def test_usage_details_reports_cache_without_shrinking_input() -> None:
+    """캐시분을 input에서 빼지 않는다.
+
+    빼면 Langfuse의 입력 토큰 합계가 실제 전송량과 어긋난다. 캐시는 요율의
+    문제이지 전송량의 문제가 아니다 — 별도 키로만 보인다.
+    """
+    details = _usage_details(
+        {"input_tokens": 5000, "cached_tokens": 4200, "output_tokens": 120}
+    )
+
+    assert details == {"input": 5000, "cached": 4200, "output": 120}
 
 
 def test_usage_details_of_nothing_is_none() -> None:

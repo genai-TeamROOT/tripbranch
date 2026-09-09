@@ -220,6 +220,64 @@ async function renderApp() {
   await screen.findByRole("button", { name: "추천 시작하기" });
 }
 
+/*
+ * 컴포저가 스크롤 영역 안에 있으면 iOS에서 소프트 키보드가 뜬 동안 같이 흘러간다
+ * (2026-09-09 실기기 실측 — `sticky bottom-0`이 통째로 죽어 "창바닥 − 컴포저바닥"이
+ * scrollTop과 한 행도 빠짐없이 일치했다). 되돌리기 쉬운 구조라 자리를 잠가 둔다.
+ *
+ * jsdom 은 레이아웃을 하지 않아 실제로 흘러가는지는 볼 수 없다 — 대신 **컴포저와
+ * 스크롤 칸 사이에 조상 관계가 없는지**를 본다. 그것이 이 구조의 전부다.
+ */
+function scrollableAncestorOf(node: HTMLElement): HTMLElement | null {
+  let current = node.parentElement;
+  while (current && current.tagName !== "MAIN" && current.tagName !== "SECTION") {
+    if (/\boverflow-(y-)?auto\b/.test(current.className)) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function composerRoot(): HTMLElement {
+  /* 홈과 채팅이 같은 문구를 쓴다(HomePage/ChatPage text.composer). */
+  return screen
+    .getByPlaceholderText("트리비에게 물어보세요")
+    .closest("div.tb-composer-dock") as HTMLElement;
+}
+
+test("홈 컴포저는 스크롤 칸 밖에 있고 키보드만큼 올라갈 준비가 되어 있다", async () => {
+  await renderApp();
+
+  const composer = composerRoot();
+  expect(composer).not.toBeNull();
+  expect(scrollableAncestorOf(composer)).toBeNull();
+  /* 올리는 것과 아래 여백이 다른 클래스다 — 스크롤 이동 버튼이 올리기만 같이 받는다. */
+  expect(composer.className).toContain("tb-keyboard-lift");
+
+  /* main 자체가 스크롤러이면 컴포저가 다시 그 안에 들어간 것과 같다. */
+  const main = composer.closest("main") as HTMLElement;
+  expect(main.className).toContain("overflow-hidden");
+  expect(main.className).not.toContain("overflow-y-auto");
+
+  /* 컴포저는 스크롤 영역 **위에 겹친다** — 그래야 내용이 유리 뒤로 지나간다.
+     겹치는 만큼 스크롤 영역이 아래를 비워 두지 않으면 마지막 내용이 영영 가린다
+     (실기기에서 "다른 장소 보기" 버튼이 흰 띠에 잘려 보였다, 2026-09-09). */
+  expect(composer.className).toContain("absolute");
+  const scroller = main.querySelector(":scope > div.overflow-y-auto") as HTMLElement;
+  expect(scroller.className).toContain("pb-[var(--tb-composer-h,0px)]");
+});
+
+test("채팅 컴포저도 스크롤 칸 밖에 있다 — 자동 바닥 붙임이 가려 온 자리다", async () => {
+  await renderApp();
+
+  await userEvent.type(screen.getByPlaceholderText("트리비에게 물어보세요"), "비 오는 날 갈 곳");
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  const composer = composerRoot();
+  expect(scrollableAncestorOf(composer)).toBeNull();
+  expect(composer.closest("main")?.className).toContain("overflow-hidden");
+});
+
 test("user chat hides condition debug card and shows recommendations", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   await renderApp();
