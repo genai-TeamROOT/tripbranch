@@ -33,9 +33,8 @@ it("장소별 취향 태그와 문서 단위 언급 수를 표로 표시한다",
   fireEvent.click(sourceButton);
   const sourceNote = screen.getByRole("tooltip");
   expect(sourceButton).toHaveAttribute("aria-expanded", "true");
-  expect(sourceNote).toHaveTextContent(
-    "출처: 네이버 블로그 후기 · 구글 지도 리뷰(장소별 약 30건)",
-  );
+  expect(within(sourceNote).getByText("출처: 네이버 블로그 후기 · 구글 지도 리뷰")).toBeInTheDocument();
+  expect(within(sourceNote).getByText("장소별 약 30건")).toBeInTheDocument();
   expect(table.parentElement).toContainElement(sourceNote);
   expect(within(table).getByText("아키비스트 서촌")).toBeInTheDocument();
   expect(within(table).getByText("조용히 머물기 좋은")).toBeInTheDocument();

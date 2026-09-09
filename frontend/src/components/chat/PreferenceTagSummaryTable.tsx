@@ -37,11 +37,16 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
             {isSourceOpen && (
               <p
                 role="tooltip"
-                className="absolute right-0 top-full z-10 mt-1 w-60 rounded-lg border border-border bg-surface px-2.5 py-2 text-right text-[11px] text-muted shadow-card"
+                className="absolute right-0 top-full z-10 mt-1 w-max max-w-[min(280px,calc(100vw-32px))] break-keep rounded-lg border border-border bg-surface px-2.5 py-2 text-right text-[11px] leading-4 text-muted shadow-card"
               >
-                {language === "en"
-                  ? "Source: Naver Blog posts and Google Maps reviews (about 30 per place)"
-                  : "출처: 네이버 블로그 후기 · 구글 지도 리뷰(장소별 약 30건)"}
+                <span className="block">
+                  {language === "en"
+                    ? "Source: Naver Blog posts and Google Maps reviews"
+                    : "출처: 네이버 블로그 후기 · 구글 지도 리뷰"}
+                </span>
+                <span className="block">
+                  {language === "en" ? "About 30 reviews per place" : "장소별 약 30건"}
+                </span>
               </p>
             )}
           </span>
