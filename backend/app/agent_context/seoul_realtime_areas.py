@@ -46,6 +46,15 @@ class SeoulRealtimeArea:
     name: str
     latitude: float
     longitude: float
+    # 이 지역이 속한 자치구 이름. 카탈로그 파일에 미리 적어 둔 값이다.
+    #
+    # **좌표로 그때그때 계산하지 않고 파일에 적는다.** 계산 자체는 싸지만(121곳 전체
+    # 18ms), 파일에 있으면 어느 지역이 어느 구인지 열어보는 것만으로 보인다 — 중랑구에는
+    # 지원 지역이 하나도 없다거나, 서울대공원이 서울 밖이라 구가 없다는 사실이 코드를
+    # 읽지 않아도 드러난다. 값이 좌표와 어긋나지 않는지는 테스트가 지킨다.
+    #
+    # 서울 경계 밖이거나(서울대공원=과천) 구 경계에 걸친 곳(아차산)은 None이다.
+    district: str | None
 
 
 # 요청 장소 이름이 목록에 그대로(또는 오탈자 한 글자 차이로) 있는데도 중심좌표가
@@ -154,6 +163,7 @@ def _load_areas(path: Path) -> tuple[SeoulRealtimeArea, ...]:
             name=row["name"],
             latitude=float(row["latitude"]),
             longitude=float(row["longitude"]),
+            district=row.get("district"),
         )
         for row in rows
     )
@@ -162,6 +172,23 @@ def _load_areas(path: Path) -> tuple[SeoulRealtimeArea, ...]:
 # 정적 데이터라 프로세스당 한 번만 읽는다.
 POPULATION_AREAS = _load_areas(_POPULATION_PATH)
 COMMERCIAL_AREAS = _load_areas(_COMMERCIAL_PATH)
+
+
+def population_areas_in_district(district_name: str) -> tuple[SeoulRealtimeArea, ...]:
+    """자치구 하나에 속한 실시간 인구 지역을 목록에 실린 순서대로 돌려준다.
+
+    "강서구 지금 사람 많아?"처럼 구 전체를 묻는 발화에 쓴다. 서울시 실시간 인구
+    데이터는 좌표가 아니라 지역 이름으로만 조회하는 장소 단위 데이터라(121곳),
+    "강서구"에 해당하는 값이 따로 있지 않다. 그래서 구에 속한 지역을 모아 각각
+    조회한 뒤 묶어서 답하는 수밖에 없다.
+
+    **개수가 구마다 크게 다르다**(2026-09-09 기준): 종로구 14곳, 중구·용산구·송파구
+    각 10곳인 반면 금천구·성북구·은평구·도봉구·노원구는 1곳뿐이고 중랑구는 하나도
+    없다. 그래서 호출부는 0곳·1곳·여러 곳을 각각 다르게 다뤄야 한다 — 1곳이면 그
+    지역을 물은 것과 사실상 같고, 0곳이면 되묻지 말고 없다고 답해야 한다.
+    """
+
+    return tuple(area for area in POPULATION_AREAS if area.district == district_name)
 
 
 def _select_nearest(

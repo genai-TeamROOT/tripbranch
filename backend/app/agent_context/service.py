@@ -50,6 +50,8 @@ from app.agent_context.info_schemas import (
     CommercialPaymentCategoryInfo,
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
+    DistrictAreaCongestionInfo,
+    DistrictPopulationInfoResult,
     EventInfoResult,
     EventItem,
     InfoContextRequest,
@@ -81,6 +83,7 @@ from app.agent_context.seoul_realtime_areas import (
     COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
     POPULATION_AREAS,
     SeoulRealtimeArea,
+    population_areas_in_district,
     select_nearest_commercial_area,
     select_nearest_population_area,
 )
@@ -205,6 +208,12 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_traffic",
 }
 _PUBLIC_PARKING_QUESTION_TYPE = "realtime_public_parking"
+
+# 구 이름만으로 물어도 구 단위 조회로 답할 수 있는 주차 질문. 서울시 GetParkingInfo가
+# 원래 구 단위 API라, 특정 장소를 못 집어도 답이 나온다.
+_DISTRICT_PARKING_QUESTION_TYPES = frozenset(
+    {"parking", "realtime_parking", _PUBLIC_PARKING_QUESTION_TYPE}
+)
 _PUBLIC_TOILET_QUESTION_TYPE = "public_toilet"
 # 급해서 묻는 질문이라 걸어갈 수 있는 거리만 본다. 1km를 넘기면 "근처"가 아니고,
 # 실측(인사동 기준 1km 내 101곳)상 이 범위 안에서 답이 충분히 나온다.
@@ -360,16 +369,22 @@ class ContextService:
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
-        user_location_task = (
-            asyncio.create_task(
-                self._resolve_user_location(
-                    request,
-                    location_query=location_query,
-                    location_result=location_result,
-                )
+        # **보충 조회에서도 사용자 위치를 구한다.** 이 배치의 `location`(검색 기준점)은
+        # A가 병합에서 버리지만 사용자 위치는 버리지 않는다 — 거리를 재는 기준점이기
+        # 때문이다(domain/ranking_origin.py). 전에는 둘을 함께 껐고, 그래서 첫 배치는
+        # 사용자 위치에서, 보충 배치는 검색 기준점에서 잰 거리가 한 카드 묶음에 섞였다.
+        # GPS를 강남에 두고 "강서구 갈만한곳"을 물으면 같은 응답에서 가막골이 0.21km
+        # (강서구청 기준), 황금내근린공원이 16.07km(강남 기준)로 나왔다(2026-09-09).
+        #
+        # **외부 호출은 늘지 않는 편이 보통이다.** 기기 GPS만 있으면 좌표로 결과를
+        # 만들 뿐 Tool을 부르지 않는다. 발화가 검색 기준점과 다른 출발지를 말했을
+        # 때만 지오코딩 1회가 붙는데, 그 경우엔 그 값이 있어야 거리가 맞다.
+        user_location_task = asyncio.create_task(
+            self._resolve_user_location(
+                request,
+                location_query=location_query,
+                location_result=location_result,
             )
-            if refill_center is None
-            else None
         )
         weather_task = (
             asyncio.create_task(
@@ -620,9 +635,58 @@ class ContextService:
 
         current_activity_candidate = _is_current_activity_candidate(request)
         current_population_candidate = _is_current_population_candidate(request, self._clock())
+        # 구 이름 하나로 주차를 물었나("강서구 공영주차장 자리 있어?"). 그렇다면 지역
+        # 검색으로 관광지 후보를 찾는 대신 행정구역 좌표로 확정한다(아래 skip_local_search).
+        #
+        # **세 유형을 함께 본다.** 전에는 `parking`만 봤는데, 그러면 공영주차장을 명시한
+        # 질문(realtime_public_parking)이 오히려 이 경로에서 빠졌다 — 구 단위
+        # GetParkingInfo를 쓰겠다고 가장 분명히 말한 발화가 되묻기로 끝나고, 되묻기
+        # 선택지가 그 구 이름 하나뿐이라 눌러도 같은 자리로 돌아왔다(TP-261).
         parking_district = (
-            _supported_district_name(place_name) if request.question_type == "parking" else None
+            _supported_district_name(place_name)
+            if request.question_type in _DISTRICT_PARKING_QUESTION_TYPES
+            else None
         )
+        # 구 이름 하나로 혼잡도를 물었나("강서구 지금 사람 많아?").
+        #
+        # **서울시 실시간 인구 데이터에는 구 단위 값이 없다.** 핫스팟 121곳 기준의 장소
+        # 단위라, 구를 지오코딩해 봐야 구청 좌표 하나가 나올 뿐이고 그 둘레 1km 안에
+        # 제공 지역이 없으면 관광지 일 단위 예측으로 내려간다. 실제로는 "강서구"가
+        # 애매한 지명으로 판정돼 되묻기로 끝나고, 선택지가 그 구 이름 하나뿐이라
+        # 눌러도 제자리였다(TP-261).
+        #
+        # 그래서 구에 속한 지역을 목록에서 직접 찾는다. 지오코딩도 지역 검색도 거치지
+        # 않으므로 되묻기가 생길 자리가 없다.
+        concentration_district = (
+            _supported_district_name(place_name)
+            if request.question_type == "concentration"
+            else None
+        )
+        if concentration_district is not None:
+            district_areas = population_areas_in_district(concentration_district)
+            if len(district_areas) == 1:
+                # 1곳뿐인 구(금천구·성북구·은평구·도봉구·노원구)는 그 지역을 물은 것과
+                # 사실상 같다. 기존 한 곳짜리 경로로 보내 12시간 예측과 지도까지
+                # 그대로 살린다 — 여러 곳일 때만 그것들을 못 쓴다.
+                only = district_areas[0]
+                return await self._fetch_realtime_population_or_concentration_info(
+                    request,
+                    place_name=place_name,
+                    resolved_location=_area_resolved_location(only),
+                    location_metadata=(),
+                    # 목록 최신성 탐침은 끈다. 그 탐침은 place_name을 장소 이름으로
+                    # 보고 "우리 목록에 없는데 서울시는 아는 지역인가"를 확인하는데,
+                    # 여기 들어오는 것은 구 이름이라 언제나 다르게 보인다 — 서울시
+                    # API를 한 번 더 부르고 "금천구가 목록에 없다"는 틀린 경고까지
+                    # 남긴다(2026-09-09 실측).
+                    probe_stale_area=False,
+                )
+            return await self._fetch_district_population_info(
+                request,
+                district_name=concentration_district,
+                areas=district_areas,
+            )
+
         is_realtime_citydata_purpose = (
             request.question_type == "realtime_commercial"
             or request.question_type == _PUBLIC_PARKING_QUESTION_TYPE
@@ -873,6 +937,80 @@ class ContextService:
                 kept.append(name)
         return kept
 
+    async def _fetch_district_population_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        district_name: str,
+        areas: tuple[SeoulRealtimeArea, ...],
+    ) -> InfoContextResponse:
+        """구 안 지역들의 현재 혼잡도를 한 번에 모아 돌려준다.
+
+        서울시 실시간 인구 데이터에는 "강서구"에 해당하는 값이 없다. 핫스팟 121곳
+        기준의 장소 단위라(seoul_realtime_areas), 구를 물으면 그 안의 지역을 각각
+        조회해 묶는 수밖에 없다.
+
+        **일부가 실패해도 나머지로 답한다.** 종로구처럼 14곳을 부르는 구에서 한 곳이
+        느리다고 답 전체를 버리면, 사용자가 얻는 것이 없어진다. 대신 몇 곳을 못 봤는지
+        `unavailable_area_count`로 남겨 숨기지 않는다.
+        """
+
+        tool = self._tools.realtime_citydata
+        if tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="realtime_population_not_configured",
+                    message="실시간 인구 혼잡도 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(),
+            )
+
+        results = await asyncio.gather(
+            *(tool.execute(RealtimeCityDataQuery(area.code)) for area in areas)
+        )
+
+        collected: list[DistrictAreaCongestionInfo] = []
+        unavailable = 0
+        observed_at: str | None = None
+        metadata: list[tuple[ProviderMetadata, ...]] = []
+        for area, tool_result in zip(areas, results, strict=True):
+            metadata.append(tool_result.provider_metadata)
+            citydata = tool_result.citydata
+            population = citydata.population if citydata is not None else None
+            if (
+                tool_result.status is not ToolStatus.SUCCESS
+                or population is None
+                or population.current_congestion_level is None
+            ):
+                unavailable += 1
+                continue
+            observed_at = observed_at or population.observed_at
+            collected.append(
+                DistrictAreaCongestionInfo(
+                    area_name=population.area_name or area.name,
+                    congestion_level=population.current_congestion_level,
+                    message=population.current_congestion_message,
+                )
+            )
+
+        collected.sort(key=lambda item: _congestion_rank(item.congestion_level))
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success" if collected else "no_data",
+            result=DistrictPopulationInfoResult(
+                status="success" if collected else "no_data",
+                district_name=district_name,
+                areas=collected,
+                unavailable_area_count=unavailable,
+                observed_at=observed_at,
+                source_url=_CITYDATA_SOURCE_URL,
+            ),
+            metadata=_info_response_metadata(*metadata),
+        )
+
     async def _fetch_realtime_population_or_concentration_info(
         self,
         request: InfoContextRequest,
@@ -880,6 +1018,7 @@ class ContextService:
         place_name: str,
         resolved_location: ResolvedLocation,
         location_metadata: tuple[ProviderMetadata, ...],
+        probe_stale_area: bool = True,
     ) -> InfoContextResponse:
         """현재형 혼잡 질문은 가까운 실시간 인구 값을 먼저 확인한다.
 
@@ -942,11 +1081,15 @@ class ContextService:
                 location_metadata=(*location_metadata, *tool_result.provider_metadata),
             )
 
-        stale_area_detected = await self._probe_stale_population_area(
-            place_name=place_name,
-            matched_area_name=area.name,
-            matched_area_distance_km=distance_km,
-            tool=tool,
+        stale_area_detected = (
+            await self._probe_stale_population_area(
+                place_name=place_name,
+                matched_area_name=area.name,
+                matched_area_distance_km=distance_km,
+                tool=tool,
+            )
+            if probe_stale_area
+            else None
         )
 
         return InfoContextResponse(
@@ -2852,6 +2995,46 @@ def _normalize_place_name(value: str) -> str:
     """공백·대소문자 차이를 무시하고 장소명을 대조한다(TP-171 이름-일치 폴백 전용)."""
 
     return value.casefold().replace(" ", "")
+
+
+def _area_resolved_location(area: SeoulRealtimeArea) -> ResolvedLocation:
+    """서울시 제공 지역 하나를 위치 해석 결과 모양으로 만든다.
+
+    지오코딩을 부르지 않는다 — 목록에 실린 좌표가 이미 그 지역의 중심점이고, 우리가
+    조회할 대상도 바로 그 지역이다. `_resolved_center_location_result()`가 보충 조회에서
+    같은 이유로 하는 일과 같다.
+    """
+
+    return ResolvedLocation(
+        requested_query=area.name,
+        provider_query=area.name,
+        resolved_name=area.name,
+        latitude=area.latitude,
+        longitude=area.longitude,
+        resolution_method=ResolutionMethod.DIRECT,
+        confidence=ResolutionConfidence.EXACT,
+    )
+
+
+# 혼잡한 순으로 줄 세우는 기준. 서울시 실시간 도시데이터가 쓰는 네 단계다.
+#
+# **목록에 없는 값은 맨 뒤로 보낸다.** 서울시가 등급 이름을 바꾸거나 새 값을 넣어도
+# 정렬이 예외로 끊기지 않게 한다 — 순서가 조금 어긋나는 것이 답을 통째로 잃는 것보다
+# 낫다. 다만 그런 값이 오면 화면에서 눈에 띄므로 조용히 묻히지는 않는다.
+CONGESTION_LEVEL_ORDER = ("붐빔", "약간 붐빔", "보통", "여유")
+
+# "지금 붐빈다"고 셀 등급. **보통은 넣지 않는다.** 한 번 "여유가 아닌 것"으로 셌더니
+# 종로구 14곳에서 "붐비는 곳 13곳"이 나왔는데 실제 구성은 약간 붐빔 6곳 + 보통 7곳이었다
+# (2026-09-09). 사용자가 "지금 붐비나"를 물을 때 알고 싶은 것은 피해야 할 곳이지 평소만큼
+# 사람이 있는 곳이 아니다.
+BUSY_CONGESTION_LEVELS = frozenset({"붐빔", "약간 붐빔"})
+
+
+def _congestion_rank(level: str) -> int:
+    try:
+        return CONGESTION_LEVEL_ORDER.index(level)
+    except ValueError:
+        return len(CONGESTION_LEVEL_ORDER)
 
 
 def _supported_district(value: str) -> ServiceDistrict | None:

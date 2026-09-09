@@ -18,6 +18,7 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 from app.agent_context.seoul_realtime_areas import names_match
+from app.agent_context.service import BUSY_CONGESTION_LEVELS, CONGESTION_LEVEL_ORDER
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
@@ -42,6 +43,7 @@ from app.service_area import supported_district_label
 from app.services.interpret.situational_offers import offer_for
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
+    DistrictPopulationInfoResult,
     EventInfoResult,
     InfoContextResponse,
     PlaceInfoResult,
@@ -409,6 +411,67 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
         f"{category} 상권은 현재 {level} 수준이에요. 이 값은 지역·업종별 카드 소비 활동 기준이에요."
         f"{observed}"
     )
+
+
+def compose_district_population_message(response: InfoContextResponse) -> str:
+    """구 하나를 통째로 물었을 때의 혼잡도 안내.
+
+    **첫 줄이 답이다.** "종로구 14곳 중 지금 붐비는 곳은 2곳이에요" 한 줄이면 사용자가
+    알고 싶었던 것이 끝난다. 나머지 목록은 근거이고, 카드에도 같은 내용이 실린다.
+
+    등급으로 묶고 개수로 자르지 않는다. 다섯 개까지만 보여주면 그 경계가 등급 한가운데를
+    지나 "이 외 9곳은 여유"가 사실과 어긋날 수 있다. 등급으로 묶으면 지역이 4곳이든
+    14곳이든 최대 네 줄이고 버리는 정보도 없다.
+
+    여유는 이름 대신 개수만 적는다 — 구 전체를 물었다는 것은 "지금 어디가 붐비나"에
+    가깝고, 여유로운 곳까지 나열하면 정작 붐비는 곳이 묻힌다. **다만 여유밖에 없으면
+    이름을 적는다.** 안 그러면 "여유 4곳"만 남아 어디를 말하는지 알 수 없다.
+    """
+
+    if response.status == "unavailable" or not isinstance(
+        response.result, DistrictPopulationInfoResult
+    ):
+        return _TOOL_UNAVAILABLE_MESSAGE
+    result = response.result
+    district = result.district_name
+    if not result.areas:
+        return (
+            f"{district}에는 서울시가 실시간 인구 정보를 제공하는 지역이 없어요. "
+            "구 안의 장소 이름으로 물어보시면 그 주변 혼잡도를 찾아볼게요."
+        )
+
+    grouped: dict[str, list[str]] = {}
+    for area in result.areas:
+        grouped.setdefault(area.congestion_level, []).append(area.area_name)
+
+    # 세는 규칙은 BUSY_CONGESTION_LEVELS가 정한다 — "보통"은 붐비는 쪽에 넣지 않는다.
+    busy_count = sum(
+        len(names) for level, names in grouped.items() if level in BUSY_CONGESTION_LEVELS
+    )
+    total = len(result.areas)
+    headline = (
+        f"{district} {total}곳 중 지금 붐비는 곳은 {busy_count}곳이에요."
+        if busy_count
+        else f"{district} {total}곳 모두 지금은 붐비지 않아요."
+    )
+
+    lines = [headline]
+    for level in CONGESTION_LEVEL_ORDER:
+        names = grouped.get(level)
+        if not names:
+            continue
+        # 여유는 개수만 — 단, 여유밖에 없으면 이름을 적는다(위 docstring).
+        if level == "여유" and len(grouped) > 1:
+            lines.append(f"여유 {len(names)}곳")
+        else:
+            lines.append(f"{level} {len(names)}곳: {', '.join(names)}")
+    if result.unavailable_area_count:
+        lines.append(f"{result.unavailable_area_count}곳은 지금 조회하지 못했어요.")
+
+    observed_at = format_citydata_timestamp(result.observed_at)
+    if observed_at:
+        lines.append(f"{observed_at} 기준이에요.")
+    return "\n".join(lines)
 
 
 def compose_realtime_population_message(response: InfoContextResponse) -> str:
@@ -1394,6 +1457,8 @@ async def _compose_chat_message(
             return compose_realtime_commercial_message(info_response)
         if isinstance(info_response.result, RealtimePopulationInfoResult):
             return compose_realtime_population_message(info_response)
+        if isinstance(info_response.result, DistrictPopulationInfoResult):
+            return compose_district_population_message(info_response)
         if isinstance(info_response.result, RealtimeCityInfoResult):
             return compose_realtime_city_info_message(info_response)
         if isinstance(info_response.result, EventInfoResult):

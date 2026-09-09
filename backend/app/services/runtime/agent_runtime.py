@@ -134,7 +134,7 @@ from app.services.runtime.info_context_schemas import (
     RealtimeCommercialInfoResult,
 )
 from app.services.runtime.info_context_transform import to_info_context_request
-from app.services.runtime.info_response_transform import to_info_place_card
+from app.services.runtime.info_response_transform import to_answer_info_place_card
 from app.services.runtime.llm_execution import (
     consumed_tokens,
     get_llm_execution_metadata,
@@ -3743,7 +3743,7 @@ async def _run_agent_flow(
                 )
                 paired_response = None
             if paired_response is not None and paired_response.status == "success":
-                secondary_info_place_card = to_info_place_card(paired_response)
+                secondary_info_place_card = to_answer_info_place_card(paired_response)
                 if secondary_info_place_card is not None:
                     message = compose_paired_parking_message(
                         message, question_type=llm_output.info.question_type
@@ -3760,7 +3760,7 @@ async def _run_agent_flow(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
-            info_place_card=to_info_place_card(info_response),
+            info_place_card=to_answer_info_place_card(info_response),
             secondary_info_place_card=secondary_info_place_card,
             message=message,
             message_footnote=unsupported_region_footnote(

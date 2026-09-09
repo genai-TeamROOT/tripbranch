@@ -4,6 +4,8 @@ from app.agent_context.info_schemas import (
     CommercialPaymentCategoryInfo,
     ConcentrationForecastInfo,
     ConcentrationInfoResult,
+    DistrictAreaCongestionInfo,
+    DistrictPopulationInfoResult,
     EventInfoResult,
     EventItem,
     InfoContextResponse,
@@ -19,7 +21,10 @@ from app.agent_context.info_schemas import (
     RoadIncidentCategoryCountInfo,
     SeoulRealtimeSummaryInfo,
 )
-from app.services.runtime.info_response_transform import to_info_place_card
+from app.services.runtime.info_response_transform import (
+    to_answer_info_place_card,
+    to_info_place_card,
+)
 
 
 def _response(
@@ -616,3 +621,141 @@ def test_무장애_정보가_없는_장소는_전부_None이다() -> None:
     assert card.seating is None
     assert card.stroller_rental is None
     assert card.guide_dog is None
+
+
+def _district_response(*areas: tuple[str, str, str | None]) -> InfoContextResponse:
+    return InfoContextResponse(
+        request_id="district-card",
+        status="success",
+        result=DistrictPopulationInfoResult(
+            status="success",
+            district_name="종로구",
+            areas=[
+                DistrictAreaCongestionInfo(
+                    area_name=name, congestion_level=level, message=message
+                )
+                for name, level, message in areas
+            ],
+            observed_at="2026-09-09 14:00",
+        ),
+    )
+
+
+def test_district_card_groups_areas_by_congestion_level() -> None:
+    """같은 등급은 항목 하나로 묶는다.
+
+    서울시가 주는 안내 문구는 같은 등급이면 글자까지 같다. 지역마다 항목을 두면
+    종로구처럼 한 등급에 열 곳이 몰릴 때 같은 문장이 열 번 반복됐다.
+    """
+
+    card = to_info_place_card(
+        _district_response(
+            ("경복궁", "약간 붐빔", "붐빈다고 느낄 수 있어요."),
+            ("인사동", "약간 붐빔", "붐빈다고 느낄 수 있어요."),
+            ("혜화역", "보통", "크게 붐비지는 않아요."),
+        )
+    )
+
+    assert card is not None
+    items = card.realtime_detail_items
+    assert [item.title for item in items] == ["약간 붐빔 2곳", "보통 1곳"]
+    assert items[0].details == {"지역": "경복궁, 인사동"}
+    # 안내 문구는 등급마다 한 번만.
+    assert items[0].subtitle == "붐빈다고 느낄 수 있어요."
+
+
+def test_district_card_puts_the_guidance_in_the_subtitle() -> None:
+    """긴 안내 문장은 details가 아니라 subtitle에 둔다.
+
+    details는 화면에서 두 칸 격자로 그려져(RealtimeDetailEntries) 문장이 절반 폭에
+    갇히면 어색하게 접힌다. 제목 아래 한 줄로 흐르는 subtitle이 문장에 맞다.
+    """
+
+    card = to_info_place_card(_district_response(("경복궁", "붐빔", "많이 붐벼요.")))
+
+    assert card is not None
+    assert "안내" not in card.realtime_detail_items[0].details
+
+
+def test_district_card_has_no_source_link() -> None:
+    """서울 열린데이터광장 페이지는 데이터셋 설명이지 사용자가 읽을 화면이 아니다.
+
+    목록 아래 링크 하나가 붙으면 "여기서 더 볼 수 있다"로 읽히는데 눌러 보면 그렇지
+    않다. 지도 미리보기가 함께 있는 한 곳짜리 카드는 사정이 다르므로 그쪽은 그대로 둔다.
+    """
+
+    card = to_info_place_card(_district_response(("경복궁", "붐빔", None)))
+
+    assert card is not None
+    assert card.realtime_source_url is None
+    assert card.realtime_map_url is None
+    assert card.population_forecasts == []
+
+
+def test_card_without_anything_to_read_is_not_made() -> None:
+    """답이 "확인할 수 없어요"인데 상세 보기 버튼이 함께 나가지 않는다.
+
+    장소명과 좌표만 있는 카드는 껍데기다. 열어 보면 빈 화면이고, 좌표 때문에 길찾기
+    버튼까지 떠서 "강서구로 길찾기"가 열렸다 — 사용자가 구청에 가려던 것이 아니다.
+    """
+
+    card = to_answer_info_place_card(
+        InfoContextResponse(
+            request_id="empty",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="강서구",
+                resolved_place_name="서울특별시 강서구",
+                fields={},
+            ),
+        )
+    )
+
+    assert card is None
+
+
+def test_card_with_one_readable_field_survives() -> None:
+    """읽을 것이 하나라도 있으면 만든다. 껍데기만 걸러내는 것이지 카드를 아끼는 게 아니다."""
+
+    card = to_answer_info_place_card(
+        InfoContextResponse(
+            request_id="one-field",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"operating_hours": "09:00~18:00"},
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.answer_fields == {"operating_hours": "09:00~18:00"}
+
+
+def test_detail_lookup_keeps_the_bare_card() -> None:
+    """상세 조회 경로는 껍데기라도 그대로 받는다.
+
+    거기서 카드는 읽을거리가 아니라 좌표를 실어 나르는 그릇이다 — 모달이 길찾기를
+    열려면 목적지가 필요한데, 첫 응답에 좌표가 없는 카드는 이름으로 다시 조회해 받는다.
+    껍데기를 버리면 그 길이 막힌다.
+    """
+
+    response = InfoContextResponse(
+        request_id="detail",
+        status="success",
+        result=PlaceInfoResult(
+            status="success",
+            question_type="general_info",
+            requested_place_name="창덕궁",
+            resolved_place_name="창덕궁",
+            fields={},
+        ),
+    )
+
+    assert to_info_place_card(response) is not None
+    assert to_answer_info_place_card(response) is None

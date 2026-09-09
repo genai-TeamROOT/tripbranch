@@ -13,6 +13,7 @@
       "category": "관광특구",
       "latitude": 37.5109994,
       "longitude": 127.0600607,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -22,6 +23,7 @@
       "category": "관광특구",
       "latitude": 37.5673111,
       "longitude": 127.0110232,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -31,6 +33,7 @@
       "category": "관광특구",
       "latitude": 37.5641494,
       "longitude": 126.9818508,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -40,6 +43,7 @@
       "category": "관광특구",
       "latitude": 37.5344393,
       "longitude": 126.9943774,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -49,6 +53,7 @@
       "category": "관광특구",
       "latitude": 37.5164794,
       "longitude": 127.1152741,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -58,6 +63,7 @@
       "category": "관광특구",
       "latitude": 37.5700017,
       "longitude": 126.9973704,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -67,6 +73,7 @@
       "category": "관광특구",
       "latitude": 37.5539193,
       "longitude": 126.921276,
+      "district": "마포구",
       "coordinate_source": "shp"
     },
     {
@@ -76,6 +83,7 @@
       "category": "고궁·문화유산",
       "latitude": 37.5709309,
       "longitude": 126.9771868,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -85,6 +93,7 @@
       "category": "고궁·문화유산",
       "latitude": 37.5705862,
       "longitude": 126.9834153,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -94,6 +103,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4808901,
       "longitude": 126.8801067,
+      "district": "금천구",
       "coordinate_source": "shp"
     },
     {
@@ -103,6 +113,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4988566,
       "longitude": 127.0281337,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -112,6 +123,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5399698,
       "longitude": 127.0682041,
+      "district": "광진구",
       "coordinate_source": "shp"
     },
     {
@@ -121,6 +133,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5534551,
       "longitude": 127.1548711,
+      "district": "강동구",
       "coordinate_source": "shp"
     },
     {
@@ -130,6 +143,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5048141,
       "longitude": 127.0058548,
+      "district": "서초구",
       "coordinate_source": "shp"
     },
     {
@@ -139,6 +153,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4922009,
       "longitude": 127.0139571,
+      "district": "서초구",
       "coordinate_source": "shp"
     },
     {
@@ -148,6 +163,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4838778,
       "longitude": 126.8961829,
+      "district": "구로구",
       "coordinate_source": "shp"
     },
     {
@@ -157,6 +173,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5023484,
       "longitude": 126.8821168,
+      "district": "구로구",
       "coordinate_source": "shp"
     },
     {
@@ -166,6 +183,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5563158,
       "longitude": 127.0801941,
+      "district": "광진구",
       "coordinate_source": "shp"
     },
     {
@@ -175,6 +193,7 @@
       "category": "인구밀집지역",
       "latitude": 37.492667,
       "longitude": 126.8955414,
+      "district": "영등포구",
       "coordinate_source": "shp"
     },
     {
@@ -184,6 +203,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5714824,
       "longitude": 127.0096587,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -193,6 +213,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5482904,
       "longitude": 127.0461362,
+      "district": "성동구",
       "coordinate_source": "shp"
     },
     {
@@ -202,6 +223,7 @@
       "category": "인구밀집지역",
       "latitude": 37.6121954,
       "longitude": 127.0307414,
+      "district": "강북구",
       "coordinate_source": "shp"
     },
     {
@@ -211,6 +233,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5591522,
       "longitude": 126.8391764,
+      "district": "강서구",
       "coordinate_source": "shp"
     },
     {
@@ -220,6 +243,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4779304,
       "longitude": 126.9812643,
+      "district": "동작구",
       "coordinate_source": "shp"
     },
     {
@@ -229,6 +253,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4806124,
       "longitude": 126.9530606,
+      "district": "관악구",
       "coordinate_source": "shp"
     },
     {
@@ -238,6 +263,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5675967,
       "longitude": 126.8310607,
+      "district": "강서구",
       "coordinate_source": "shp"
     },
     {
@@ -247,6 +273,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5565961,
       "longitude": 126.973034,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -256,6 +283,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5060542,
       "longitude": 127.0498076,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -265,6 +293,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5923894,
       "longitude": 127.0168527,
+      "district": "성북구",
       "coordinate_source": "shp"
     },
     {
@@ -274,6 +303,7 @@
       "category": "인구밀집지역",
       "latitude": 37.6414842,
       "longitude": 127.025695,
+      "district": "강북구",
       "coordinate_source": "shp"
     },
     {
@@ -283,6 +313,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5080802,
       "longitude": 127.0234056,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -292,6 +323,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5090983,
       "longitude": 126.8902011,
+      "district": "구로구",
       "coordinate_source": "shp"
     },
     {
@@ -301,6 +333,7 @@
       "category": "인구밀집지역",
       "latitude": 37.484676,
       "longitude": 126.9293341,
+      "district": "관악구",
       "coordinate_source": "shp"
     },
     {
@@ -310,6 +343,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5570345,
       "longitude": 126.9389691,
+      "district": "서대문구",
       "coordinate_source": "shp"
     },
     {
@@ -319,6 +353,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4853388,
       "longitude": 127.0339693,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -328,6 +363,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5003923,
       "longitude": 127.038185,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -337,6 +373,7 @@
       "category": "인구밀집지역",
       "latitude": 37.6186613,
       "longitude": 126.920732,
+      "district": "은평구",
       "coordinate_source": "shp"
     },
     {
@@ -346,6 +383,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5288108,
       "longitude": 126.8766422,
+      "district": "양천구",
       "coordinate_source": "shp"
     },
     {
@@ -355,6 +393,7 @@
       "category": "인구밀집지역",
       "latitude": 37.562216,
       "longitude": 127.0389009,
+      "district": "성동구",
       "coordinate_source": "shp"
     },
     {
@@ -364,6 +403,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5302561,
       "longitude": 126.9608225,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -373,6 +413,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5341858,
       "longitude": 126.9930483,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -382,6 +423,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4787496,
       "longitude": 127.1232726,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -391,6 +433,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5618041,
       "longitude": 127.0647851,
+      "district": "동대문구",
       "coordinate_source": "shp"
     },
     {
@@ -400,6 +443,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5392396,
       "longitude": 127.125015,
+      "district": "강동구",
       "coordinate_source": "shp"
     },
     {
@@ -409,6 +453,7 @@
       "category": "인구밀집지역",
       "latitude": 37.4860024,
       "longitude": 126.9810419,
+      "district": "동작구",
       "coordinate_source": "shp"
     },
     {
@@ -418,6 +463,7 @@
       "category": "인구밀집지역",
       "latitude": 37.559696,
       "longitude": 126.9636903,
+      "district": "서대문구",
       "coordinate_source": "shp"
     },
     {
@@ -427,6 +473,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5493757,
       "longitude": 126.9117329,
+      "district": "마포구",
       "coordinate_source": "shp"
     },
     {
@@ -436,6 +483,7 @@
       "category": "인구밀집지역",
       "latitude": 37.582481,
       "longitude": 127.0017621,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -445,6 +493,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5567598,
       "longitude": 126.9229991,
+      "district": "마포구",
       "coordinate_source": "shp"
     },
     {
@@ -454,6 +503,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5905406,
       "longitude": 127.0561625,
+      "district": "동대문구",
       "coordinate_source": "shp"
     },
     {
@@ -463,6 +513,7 @@
       "category": "발달상권",
       "latitude": 37.4934683,
       "longitude": 127.1118957,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -472,6 +523,7 @@
       "category": "발달상권",
       "latitude": 37.521389,
       "longitude": 127.0235718,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -481,6 +533,7 @@
       "category": "발달상권",
       "latitude": 37.570002,
       "longitude": 126.9999007,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -490,6 +543,7 @@
       "category": "발달상권",
       "latitude": 37.562272,
       "longitude": 126.8025996,
+      "district": "강서구",
       "coordinate_source": "shp"
     },
     {
@@ -499,6 +553,7 @@
       "category": "발달상권",
       "latitude": 37.5138937,
       "longitude": 126.9440553,
+      "district": "동작구",
       "coordinate_source": "shp"
     },
     {
@@ -508,6 +563,7 @@
       "category": "발달상권",
       "latitude": 37.5663492,
       "longitude": 126.9717786,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -517,6 +573,7 @@
       "category": "발달상권",
       "latitude": 37.5822357,
       "longitude": 126.9840012,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -526,6 +583,7 @@
       "category": "발달상권",
       "latitude": 37.5803675,
       "longitude": 126.9695755,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -535,6 +593,7 @@
       "category": "발달상권",
       "latitude": 37.5429665,
       "longitude": 127.0565961,
+      "district": "성동구",
       "coordinate_source": "shp"
     },
     {
@@ -544,6 +603,7 @@
       "category": "인구밀집지역",
       "latitude": 37.6476565,
       "longitude": 127.0340315,
+      "district": "도봉구",
       "coordinate_source": "shp"
     },
     {
@@ -553,6 +613,7 @@
       "category": "발달상권",
       "latitude": 37.5254954,
       "longitude": 127.0387342,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -562,6 +623,7 @@
       "category": "발달상권",
       "latitude": 37.5250221,
       "longitude": 126.9255312,
+      "district": "영등포구",
       "coordinate_source": "shp"
     },
     {
@@ -571,6 +633,7 @@
       "category": "발달상권",
       "latitude": 37.5616173,
       "longitude": 126.922338,
+      "district": "마포구",
       "coordinate_source": "shp"
     },
     {
@@ -580,6 +643,7 @@
       "category": "발달상권",
       "latitude": 37.516863,
       "longitude": 126.906151,
+      "district": "영등포구",
       "coordinate_source": "shp"
     },
     {
@@ -589,6 +653,7 @@
       "category": "발달상권",
       "latitude": 37.5311859,
       "longitude": 126.9712947,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -598,6 +663,7 @@
       "category": "발달상권",
       "latitude": 37.5322279,
       "longitude": 126.9939068,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -607,6 +673,7 @@
       "category": "발달상권",
       "latitude": 37.5738632,
       "longitude": 126.9860635,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -616,6 +683,7 @@
       "category": "발달상권",
       "latitude": 37.6561469,
       "longitude": 127.0547034,
+      "district": "노원구",
       "coordinate_source": "shp"
     },
     {
@@ -625,6 +693,7 @@
       "category": "발달상권",
       "latitude": 37.5258321,
       "longitude": 127.0437672,
+      "district": "강남구",
       "coordinate_source": "shp"
     },
     {
@@ -634,6 +703,7 @@
       "category": "발달상권",
       "latitude": 37.5808294,
       "longitude": 127.0399802,
+      "district": "동대문구",
       "coordinate_source": "shp"
     },
     {
@@ -643,6 +713,7 @@
       "category": "발달상권",
       "latitude": 37.5423711,
       "longitude": 126.9871847,
+      "district": "용산구",
       "coordinate_source": "shp"
     },
     {
@@ -652,6 +723,7 @@
       "category": "발달상권",
       "latitude": 37.5669879,
       "longitude": 127.0102888,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -661,6 +733,7 @@
       "category": "발달상권",
       "latitude": 37.5792783,
       "longitude": 126.8917967,
+      "district": "마포구",
       "coordinate_source": "shp"
     },
     {
@@ -670,6 +743,7 @@
       "category": "발달상권",
       "latitude": 37.5622631,
       "longitude": 126.9784956,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -679,6 +753,7 @@
       "category": "발달상권",
       "latitude": 37.5599163,
       "longitude": 126.9785302,
+      "district": "중구",
       "coordinate_source": "shp"
     },
     {
@@ -688,6 +763,7 @@
       "category": "발달상권",
       "latitude": 37.5726607,
       "longitude": 126.9896282,
+      "district": "종로구",
       "coordinate_source": "shp"
     },
     {
@@ -697,6 +773,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5213069,
       "longitude": 126.8552785,
+      "district": "양천구",
       "coordinate_source": "shp"
     },
     {
@@ -706,6 +783,7 @@
       "category": "인구밀집지역",
       "latitude": 37.510413,
       "longitude": 127.0826558,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -715,6 +793,7 @@
       "category": "인구밀집지역",
       "latitude": 37.5119968,
       "longitude": 127.1003659,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -724,6 +803,7 @@
       "category": "발달상권",
       "latitude": 37.5115594,
       "longitude": 127.1033061,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -733,6 +813,7 @@
       "category": "발달상권",
       "latitude": 37.5080474,
       "longitude": 127.1063151,
+      "district": "송파구",
       "coordinate_source": "shp"
     },
     {
@@ -742,6 +823,7 @@
       "category": "발달상권",
       "latitude": 37.556509,
       "longitude": 126.9369308,
+      "district": "서대문구",
       "coordinate_source": "shp"
     }
   ]

@@ -2003,6 +2003,39 @@ async def test_resolved_search_center_skips_location_and_weather() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refill_still_resolves_the_user_location() -> None:
+    """보충 조회도 사용자 위치는 채운다.
+
+    이 배치의 `location`(검색 기준점)은 A가 병합에서 버리지만 사용자 위치는 버리지
+    않는다 — 거리를 재는 기준점이기 때문이다(domain/ranking_origin.py). 전에는 둘을
+    함께 껐고, 그래서 첫 배치는 사용자 위치에서, 보충 배치는 검색 기준점에서 잰 거리가
+    한 카드 묶음에 섞였다. GPS를 강남에 두고 "강서구 갈만한곳"을 물으면 같은 응답에서
+    가막골이 0.21km(강서구청 기준), 황금내근린공원이 16.07km(강남 기준)로 나왔다.
+
+    기기 GPS는 좌표를 그대로 쓰므로 **외부 호출이 늘지 않는다.** 위 테스트가 지키는
+    "보충은 장소만 다시 받는다"와 어긋나지 않는다.
+    """
+
+    geocoding = _CountingGeocodingProvider()
+    weather = _CountingWeatherProvider()
+    service = _service(weather, geocoding_provider=geocoding)
+
+    response = await service.fetch_context(
+        _request(
+            gps_location=Coordinates(latitude=37.4979, longitude=127.0276),
+            resolved_search_center=Coordinates(latitude=37.5796, longitude=126.9770),
+        )
+    )
+
+    assert geocoding.queries == []
+    assert weather.calls == 0
+    assert response.context is not None
+    assert response.context.user_location is not None
+    assert response.context.user_location.data is not None
+    assert response.context.user_location.data.location.latitude == 37.4979
+
+
+@pytest.mark.asyncio
 async def test_without_resolved_search_center_full_context_is_collected() -> None:
     """기준점을 안 넘기면 예전대로 전부 모은다(첫 조회 경로).
 

@@ -565,6 +565,67 @@ async def test_ambiguous_location_requires_clarification() -> None:
 
 
 @pytest.mark.asyncio
+async def test_indistinguishable_candidates_do_not_ask_again() -> None:
+    """이름표가 전부 같으면 되묻지 않는다.
+
+    되묻기의 목적은 고르게 하는 것인데, 선택지가 서로 구분되지 않으면 어느 버튼을 눌러도
+    같은 문자열이 다시 들어가 같은 되묻기로 돌아온다 — 사용자가 빠져나갈 길이 없다.
+
+    "강서구"가 그랬다(2026-09-09). 네이버 지오코딩이 부산 강서구까지 2건을 주는데
+    이름표는 둘 다 "강서구"라 선택지가 하나로 합쳐졌고, 그 하나를 눌러도 제자리였다.
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(query="서울특별시 강서구", count=2, labels=("강서구", "강서구"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("강서구"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "서울특별시 강서구"
+
+
+@pytest.mark.asyncio
+async def test_distinct_candidates_still_ask() -> None:
+    """이름표가 서로 다르면 고르는 행위에 뜻이 있으므로 지금처럼 되묻는다.
+
+    "익선동"은 종로구와 창원시 진해구에 둘 다 있다(2026-09-09 실측).
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(count=2, labels=("종로구 익선동", "창원시 진해구 익선동"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("익선동"))
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+    assert "종로구 익선동" in result.error.details["candidate_names"]
+    assert "창원시 진해구 익선동" in result.error.details["candidate_names"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_labels_are_shown_once() -> None:
+    """같은 이름표가 여러 번 와도 선택지에는 한 번만 싣는다.
+
+    같은 글자를 두 번 보여주면 사용자는 둘이 다른 곳이라 여기고 고르는데, 어느 쪽을
+    골라도 결과가 같다.
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(count=3, labels=("종로구 익선동", "창원시 진해구 익선동", "종로구 익선동"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("익선동"))
+
+    assert result.error is not None
+    names = result.error.details["candidate_names"]
+    assert names.count("종로구 익선동") == 1
+
+
+@pytest.mark.asyncio
 async def test_unknown_location_is_no_data() -> None:
     provider = SequenceGeocodingProvider(
         [AppError(code="location_not_found", message="없음", status_code=404)]

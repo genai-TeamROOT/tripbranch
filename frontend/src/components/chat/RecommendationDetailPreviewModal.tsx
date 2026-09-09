@@ -933,15 +933,16 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
 function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
   return (
     <div className="flex flex-wrap gap-2">
+      {/* **출처는 링크가 아니라 라벨이다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
+          신청 안내라 사용자가 읽을 화면이 아니다. 어디서 온 값인지만 밝히고 누를 수는
+          없게 둔다 — 화살표(↗)를 떼고 hover 반응도 없앤 것이 그 표시다.
+          **색은 옆 칩들과 같은 파랑으로 남긴다.** 회색으로 낮췄더니 눌리지 않는 칩이
+          아니라 비활성된 버튼처럼 보였다(2026-09-09). 옆의 두 칩(주차정보 포털·혼잡도
+          지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
       {card.realtime_source_url && (
-        <a
-          href={card.realtime_source_url}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
-        >
-          서울시 데이터 출처 ↗
-        </a>
+        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300">
+          서울시 데이터
+        </span>
       )}
       {isRealtimeParkingCard(card) && (
         <a
@@ -1174,7 +1175,14 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
                 )}
               </div>
               {Object.keys(item.details).length > 0 && (
-                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                /* 항목이 하나면 폭을 다 쓴다. 두 칸 격자에 긴 문장이 하나만 들어가면
+                   절반 폭에 갇혀 어색하게 접힌다 — 구 단위 혼잡도의 지역 목록이
+                   그랬다(2026-09-09). 값이 둘 이상일 때는 지금처럼 두 칸이 낫다. */
+                <dl
+                  className={`mt-2 grid gap-x-3 gap-y-1.5 text-xs ${
+                    Object.keys(item.details).length === 1 ? "grid-cols-1" : "grid-cols-2"
+                  }`}
+                >
                   {Object.entries(item.details).map(([key, value]) => (
                     <div key={key} className="min-w-0">
                       <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
@@ -1563,8 +1571,8 @@ export function RecommendationDetailPreviewModal({
   /* 목적지 좌표와 출발점이 모두 있어야 길찾기 딥링크를 만들 수 있다. 출발점은 훅이
      정한다 — 위치 설정의 출발지가 먼저고, 없으면 기기 좌표다. */
   const directions = useNaverDirections(device_location);
-  const canRoute =
-    detailCard?.latitude != null && detailCard?.longitude != null && directions.canRoute;
+  const hasRouteTarget = detailCard?.latitude != null && detailCard?.longitude != null;
+  const canRoute = hasRouteTarget && directions.canRoute;
   /*
    * 상세를 기다리는 동안에도 버튼 자리를 잡아 둔다. 이 버튼은 스크롤 영역 바깥의
    * 하단 고정 바라, 늦게 생기면 그만큼 본문 높이가 줄며 읽던 자리가 밀린다.
@@ -1578,10 +1586,18 @@ export function RecommendationDetailPreviewModal({
    * 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
    * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
    */
+  /* 목적지가 있는 카드에서만 길찾기를 말한다.
+     실시간 도시데이터 INFO(혼잡도·상권·주차·지하철·버스·행사·도로소통·화장실)는 지역
+     단위 데이터라 카드에 목적지 좌표가 없고, 관광 상세로 보강하지도 않는다
+     (needsDetailEnrichment가 지도·목록이 있으면 막는다). 그런 카드에서 "지금 계신 곳을
+     알아야 길을 안내할 수 있어요"를 띄우면, 위치를 줘도 갈 곳이 없어 바가 그냥
+     사라진다 — 사용자에게는 "위치를 받았더니 길찾기가 없어진" 것으로 보인다.
+     공중화장실처럼 목적지가 여럿인 카드는 항목별로 여는 것이 맞고, 하단 바 하나로는
+     어느 곳을 고를지 정할 수 없다. */
   /* 출발점을 하나도 못 정할 때만 안내한다. 사용자가 위치 설정에서 출발지를 정해
      뒀으면 기기 좌표가 없어도 길찾기를 열 수 있으므로, 여기서 좌표만 보면 열 수 있는
      상황에도 "현재 위치를 받으세요"라고 말하게 된다. */
-  const needsDeviceLocation = !directions.canRoute;
+  const needsDeviceLocation = hasRouteTarget && !directions.canRoute;
   const showRouteFooter = needsDeviceLocation || canRoute || isLoading;
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;

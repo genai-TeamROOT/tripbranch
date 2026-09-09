@@ -234,6 +234,43 @@ class RealtimePopulationInfoResult(BaseModel):
     stale_area_detected: StaleAreaProbeDebug | None = None
 
 
+class DistrictAreaCongestionInfo(BaseModel):
+    """구 안 지역 한 곳의 현재 혼잡도."""
+
+    area_name: str
+    congestion_level: str
+    message: str | None = None
+
+
+class DistrictPopulationInfoResult(BaseModel):
+    """자치구 하나를 통째로 물었을 때의 실시간 인구 혼잡도 결과.
+
+    **한 곳짜리 결과(`RealtimePopulationInfoResult`)와 갈라 둔다.** 서울시 실시간
+    인구 데이터는 핫스팟 121곳 기준의 장소 단위라 "강서구"에 해당하는 값이 따로
+    없다. 그래서 구에 속한 지역을 모아 각각 조회한 뒤 묶어서 답하는데, 그 결과는
+    한 곳의 현재값·12시간 예측과 모양이 다르다 — 12시간 예측 막대는 한 곳 기준이라
+    여러 곳을 겹쳐 그릴 수 없고, 지도도 어느 지역 것을 띄울지 정할 수 없다.
+
+    **1곳뿐인 구는 여기로 오지 않는다.** 금천구·성북구·은평구·도봉구·노원구가
+    그런데, 그때는 그 지역 하나를 물은 것과 사실상 같아 기존 한 곳짜리 결과가 그대로
+    맞다(예측 막대도 지도도 의미가 있다).
+
+    `areas`가 비면 그 구에 제공 지역이 하나도 없다는 뜻이다(중랑구). 되묻을 것이
+    아니라 없다고 답해야 하는 상태다.
+    """
+
+    status: Literal["success", "no_data"]
+    district_name: str
+    # 혼잡한 순으로 정렬해 담는다 — 화면이 순서를 다시 정하지 않는다.
+    areas: list[DistrictAreaCongestionInfo] = Field(default_factory=list)
+    # 조회에 실패한 지역 수. 일부만 실패해도 나머지로 답하되, 몇 곳을 못 봤는지는
+    # 숨기지 않는다.
+    unavailable_area_count: int = Field(default=0, ge=0)
+    observed_at: str | None = None
+    source_url: str | None = None
+    error: ContextError | None = None
+
+
 class RoadIncidentCategoryCountInfo(BaseModel):
     """도로 위 돌발상황 한 분류의 진행 중 건수(사고/고장·공사/집회·기상/화재·기타)."""
 
@@ -438,6 +475,7 @@ class InfoContextResponse(BaseModel):
         ConcentrationInfoResult
         | RealtimeCommercialInfoResult
         | RealtimePopulationInfoResult
+        | DistrictPopulationInfoResult
         | RealtimeCityInfoResult
         | PlaceInfoResult
         | EventInfoResult
