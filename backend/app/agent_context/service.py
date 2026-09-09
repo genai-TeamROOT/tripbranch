@@ -366,16 +366,22 @@ class ContextService:
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
-        user_location_task = (
-            asyncio.create_task(
-                self._resolve_user_location(
-                    request,
-                    location_query=location_query,
-                    location_result=location_result,
-                )
+        # **보충 조회에서도 사용자 위치를 구한다.** 이 배치의 `location`(검색 기준점)은
+        # A가 병합에서 버리지만 사용자 위치는 버리지 않는다 — 거리를 재는 기준점이기
+        # 때문이다(domain/ranking_origin.py). 전에는 둘을 함께 껐고, 그래서 첫 배치는
+        # 사용자 위치에서, 보충 배치는 검색 기준점에서 잰 거리가 한 카드 묶음에 섞였다.
+        # GPS를 강남에 두고 "강서구 갈만한곳"을 물으면 같은 응답에서 가막골이 0.21km
+        # (강서구청 기준), 황금내근린공원이 16.07km(강남 기준)로 나왔다(2026-09-09).
+        #
+        # **외부 호출은 늘지 않는 편이 보통이다.** 기기 GPS만 있으면 좌표로 결과를
+        # 만들 뿐 Tool을 부르지 않는다. 발화가 검색 기준점과 다른 출발지를 말했을
+        # 때만 지오코딩 1회가 붙는데, 그 경우엔 그 값이 있어야 거리가 맞다.
+        user_location_task = asyncio.create_task(
+            self._resolve_user_location(
+                request,
+                location_query=location_query,
+                location_result=location_result,
             )
-            if refill_center is None
-            else None
         )
         weather_task = (
             asyncio.create_task(
