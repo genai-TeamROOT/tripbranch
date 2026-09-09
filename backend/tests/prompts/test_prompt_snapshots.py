@@ -86,6 +86,12 @@ def test_recommendation_summary_snapshot(name: str, intent) -> None:
     _assert_snapshot(name, gemini_prompts.build_recommendation_summary_instruction(intent))
 
 
+def test_place_reason_snapshot() -> None:
+    """인자가 없는 슬롯이라 케이스도 하나다(순위·조건·사용자 조건을 넘기지 않는다)."""
+
+    _assert_snapshot("place_reason", gemini_prompts.build_place_reason_instruction())
+
+
 @pytest.mark.parametrize(("name", "criteria"), fixtures.COMPARE_SUMMARY_CRITERIA)
 def test_compare_summary_snapshot(name: str, criteria) -> None:
     _assert_snapshot(name, gemini_prompts.build_compare_summary_instruction(criteria))

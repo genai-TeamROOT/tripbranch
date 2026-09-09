@@ -125,6 +125,9 @@ def get_llm_provider() -> LLMProvider:
         api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
         fast_model_names=settings.resolved_llm_fast_models,
         generation_model_names=settings.resolved_llm_generation_models,
+        # 상세 카드 추천 이유 전용 티어(PLACE_REASON_MODEL_NAME). 클릭당 별도
+        # 호출이라 fast·generation 어느 쪽과도 특성이 달라 스위치를 따로 둔다.
+        place_reason_model_names=settings.resolved_place_reason_models,
         # Tool/DB 호출과 분리된 LLM 전용 타임아웃(설정 없으면 EXTERNAL_API_TIMEOUT_SECONDS로
         # 폴백) — EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 때문에 올리면 TourAPI/Naver/
         # Supabase까지 같은 값을 물려받는 문제가 있어 분리했다(2026-08-11).

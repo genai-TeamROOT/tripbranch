@@ -22,3 +22,8 @@ slots:
     bundle:
       - _shared/persona/trivi.md
     evals: evals/README.md
+  recommend.place_reason:
+    description: 장소 상세 카드 클릭 시 그 장소의 취향 태그·후기 근거만으로 추천 이유 1~2문장을 만든다.
+    version: "1.0.0"
+    template: place_reason_instruction.md
+    evals: evals/README.md

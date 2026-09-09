@@ -211,6 +211,8 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "seoul_realtime_summary": None,
             "road_incident_counts": [],
         },
+        # want_ai_reason을 켜지 않은 요청이라 문장을 만들지 않는다.
+        "ai_reason": None,
     }
     assert len(captured_requests) == 1
     assert captured_requests[0].place_context == "from_recommendation"
@@ -277,7 +279,183 @@ def test_recommendation_place_details_hides_mismatched_place_card(monkeypatch) -
         "status": "no_data",
         "requested_place_id": "126508",
         "place_card": None,
+        "ai_reason": None,
     }
+
+
+# --- 상세 카드 "AI가 추천하는 이유" (recommend.place_reason) ------------------
+
+
+class _FakePreferenceRepository:
+    """상세 카드 취향 근거 조회만 흉내내는 저장소."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    async def find_preference_insights(self, content_id: str) -> list[dict]:
+        return self._rows
+
+
+_TAG_ROWS = [
+    {
+        "code": "nature",
+        "label": "자연을 즐기기 좋은",
+        "mention_count": 14,
+        "positive_document_count": 14,
+        "negative_document_count": 0,
+        "evidence": [
+            {"polarity": "positive", "text": "북한산 숲속 한옥에서 차를 마실 수 있어요.",
+             "source_type": "naver_post", "source_url": None},
+        ],
+    },
+]
+
+
+def _place_details_provider(monkeypatch, rows: list[dict]) -> None:
+    class FakeContextProvider:
+        async def fetch_info_context(self, request):
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=PlaceInfoResult(
+                    status="success",
+                    question_type="general_info",
+                    place_id="2832918",
+                    fields={},
+                    place_card=PlaceCard(place_id="2832918", place_name="한옥카페 선운각"),
+                ),
+            )
+
+    monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    monkeypatch.setattr(
+        chat_route, "get_place_details_repository", lambda client: _FakePreferenceRepository(rows)
+    )
+
+
+def test_place_details_generates_ai_reason_when_requested(monkeypatch) -> None:
+    """취향 태그가 있고 요청이 켜져 있으면 문장을 만들어 함께 내려준다."""
+
+    _place_details_provider(monkeypatch, _TAG_ROWS)
+    seen: list[dict] = []
+
+    class FakeLLM:
+        async def generate_place_reason(self, *, place_name, category_label, insights):
+            seen.append(
+                {
+                    "place_name": place_name,
+                    "category_label": category_label,
+                    "labels": [insight.label for insight in insights],
+                }
+            )
+            return provider_result(
+                "숲속 한옥의 정취를 느끼며 쉬기 좋아요.", source=ProviderSource.FAKE_LLM
+            )
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", FakeLLM)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={
+            "place_id": "2832918",
+            "place_name": "한옥카페 선운각",
+            "want_ai_reason": True,
+            "category_label": "카페/전통찻집",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ai_reason"] == "숲속 한옥의 정취를 느끼며 쉬기 좋아요."
+    # 카드가 해석한 이름을 넘긴다(요청 이름이 아니라) — 동명 대조를 이미 통과한 값이다.
+    assert seen == [
+        {
+            "place_name": "한옥카페 선운각",
+            "category_label": "카페/전통찻집",
+            "labels": ["자연을 즐기기 좋은"],
+        }
+    ]
+
+
+def test_place_details_skips_ai_reason_without_preference_tags(monkeypatch) -> None:
+    """태그가 없는 장소는 아예 부르지 않는다 — 만들 근거가 없다."""
+
+    _place_details_provider(monkeypatch, [])
+
+    def _never_called():
+        raise AssertionError("취향 태그가 없으면 LLM을 부르지 않아야 한다")
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", _never_called)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ai_reason"] is None
+
+
+def test_place_details_skips_ai_reason_when_not_requested(monkeypatch) -> None:
+    """INFO 카드·사진 검색은 그 절이 없다 — 켜지 않은 요청에 값을 치르지 않는다."""
+
+    _place_details_provider(monkeypatch, _TAG_ROWS)
+
+    def _never_called():
+        raise AssertionError("want_ai_reason이 아니면 LLM을 부르지 않아야 한다")
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", _never_called)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details", json={"place_id": "2832918", "place_name": "한옥카페 선운각"}
+    )
+
+    assert response.json()["ai_reason"] is None
+
+
+def test_place_details_survives_ai_reason_failure(monkeypatch) -> None:
+    """문장 생성이 죽어도 상세 카드는 그대로 나간다 — 이 문장은 부가 정보다."""
+
+    _place_details_provider(monkeypatch, _TAG_ROWS)
+
+    class BrokenLLM:
+        async def generate_place_reason(self, **kwargs):
+            raise RuntimeError("gemini down")
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", BrokenLLM)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["place_card"]["place_name"] == "한옥카페 선운각"
+    assert body["ai_reason"] is None
+
+
+def test_place_details_skips_ai_reason_when_disabled(monkeypatch) -> None:
+    """PLACE_REASON_ENABLED=false면 호출이 통째로 사라진다."""
+
+    _place_details_provider(monkeypatch, _TAG_ROWS)
+    monkeypatch.setattr(chat_route.settings, "place_reason_enabled", False)
+
+    def _never_called():
+        raise AssertionError("꺼져 있으면 LLM을 부르지 않아야 한다")
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", _never_called)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+    )
+
+    assert response.json()["ai_reason"] is None
 
 
 # --- SSE: 후속 질문은 done 뒤에 온다 (D-102) ---------------------------------

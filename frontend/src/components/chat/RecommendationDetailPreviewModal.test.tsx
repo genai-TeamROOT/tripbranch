@@ -1090,3 +1090,106 @@ it("현재 위치가 없어도 목적지가 없으면 위치 사용을 권하지
   expect(screen.queryByText(/지금 계신 곳을 알아야/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /현재 위치 사용/ })).not.toBeInTheDocument();
 });
+
+// --- "AI가 추천하는 이유" 두 번째 줄 (recommend.place_reason) ------------------
+
+it("AI가 추천하는 이유는 고정 문장 아래에 LLM 문장을 함께 보여준다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ place_id: "126508", place_name: "경복궁" }),
+    ai_reason: "후기에서 고즈넉한 산책로가 자주 언급돼요.",
+  });
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({
+        recommendation_reason: "날씨·운영시간·취향 조건을 종합한 4순위 추천이에요.",
+      })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  // 고정 문장은 카드가 이미 들고 있어 조회를 기다리지 않는다.
+  expect(
+    screen.getByText("날씨·운영시간·취향 조건을 종합한 4순위 추천이에요."),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText("후기에서 고즈넉한 산책로가 자주 언급돼요."),
+  ).toBeInTheDocument();
+});
+
+it("추천 카드로 열 때만 문장 생성을 요청한다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ place_id: "126508" }),
+    ai_reason: null,
+  });
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ category_label: "고궁" })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByText("경복궁");
+  expect(mockedFetch).toHaveBeenCalledWith(
+    expect.objectContaining({ want_ai_reason: true, category_label: "고궁" }),
+  );
+});
+
+it("사진 검색처럼 item 없이 열면 문장을 요청하지 않는다", async () => {
+  renderModal(card({ place_id: "126508", place_name: "경복궁" }));
+
+  await screen.findByText("경복궁");
+  expect(mockedFetch).toHaveBeenCalledWith(
+    expect.objectContaining({ want_ai_reason: false }),
+  );
+});
+
+it("문장이 없는 장소는 그 줄을 접는다 — 자리표시자가 남지 않는다", async () => {
+  /* 취향 태그가 없는 장소·생성 실패가 이 경우다. 자리표시자를 접지 않으면
+     읽을 것이 없는 회색 줄이 영원히 남는다. */
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ place_id: "126508", place_name: "경복궁" }),
+    ai_reason: null,
+  });
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ recommendation_reason: "거리 조건을 종합한 1순위 추천이에요." })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByText("거리 조건을 종합한 1순위 추천이에요.");
+  await waitFor(() => {
+    expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(0);
+  });
+});
+
+it("문장이 도착하기 전에는 같은 높이의 자리를 잡아 둔다", async () => {
+  /* 이 절을 표보다 위에 둔 이유가 "나중에 채워져도 이 절이 밀리거나 늘지 않는다"
+     였다(2026-09-08). 늦게 오는 줄을 자리 없이 끼우면 그 성질이 깨진다.
+     위 "그 줄을 접는다" 테스트와 짝이다 — 자리표시자가 아예 안 그려지면 그 테스트는
+     헛돌기 때문에, 그려지는 경우를 여기서 함께 못 박는다. */
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ recommendation_reason: "거리 조건을 종합한 1순위 추천이에요." })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(screen.getByText("거리 조건을 종합한 1순위 추천이에요.")).toBeInTheDocument();
+  expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
+});

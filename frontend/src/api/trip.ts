@@ -109,6 +109,14 @@ export function getRecommendations(
 export function fetchRecommendationPlaceDetails(request: {
   place_id?: string | null;
   place_name: string;
+  /**
+   * "AI가 추천하는 이유" 문장을 함께 만들지. 추천/수정 카드로 열었을 때만 켠다 —
+   * INFO 카드와 사진 검색 결과에는 그 절이 없어서, 켜면 읽히지 않을 문장에
+   * 클릭마다 LLM 값을 치른다.
+   */
+  want_ai_reason?: boolean;
+  /** 문장이 장소 종류를 잘못 말하지 않게 넘기는 분류 라벨. 카드만 알고 있는 값이다. */
+  category_label?: string | null;
 }) {
   return apiClient.post<RecommendationPlaceDetailResponse>("/chat/place-details", request);
 }

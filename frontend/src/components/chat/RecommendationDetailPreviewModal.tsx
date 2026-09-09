@@ -1532,6 +1532,14 @@ export function RecommendationDetailPreviewModal({
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
   );
+  /*
+   * "AI가 추천하는 이유"의 두 번째 줄. 상세 응답과 함께 도착한다.
+   *
+   * null과 ""를 가른다 — null은 "아직 모른다"(자리를 비워 둔다), ""는 "받았는데
+   * 없다"(그 장소는 취향 태그가 없거나 생성이 실패했다. 자리를 접는다). 하나로
+   * 합치면 태그 없는 장소에서 자리표시자가 영원히 남는다.
+   */
+  const [aiReason, setAiReason] = useState<string | null>(null);
   // 호출부 4곳 모두 {selected && <모달/>}로 조건부 렌더링한다 — AnimatePresence로
   // 언마운트를 감지할 부모가 없다. 닫힐 때는 여기서 슬라이드다운을 먼저 재생하고,
   // 애니메이션이 끝난 뒤에야 실제 onClose(부모의 상태 제거)를 부른다.
@@ -1630,12 +1638,16 @@ export function RecommendationDetailPreviewModal({
     const shouldEnrichCard = needsDetailEnrichment(card);
     if (card && !shouldEnrichCard) {
       setDetailCard(card);
+      // 조회를 아예 안 하는 경로다 — 문장은 오지 않는다. null로 두면 자리표시자가
+      // 영원히 남는다.
+      setAiReason("");
       return;
     }
     // 이름만 있으면 상세를 조회한다. 혼잡도·행사 카드는 place_id가 없지만
     // 이름으로 조회해 전체 상세(좌표 포함)를 받는다.
     if (!placeName) {
       setDetailStatus("no_data");
+      setAiReason("");
       return;
     }
     let cancelled = false;
@@ -1643,9 +1655,19 @@ export function RecommendationDetailPreviewModal({
     setDetailCard(card ?? null);
     setDetailStatus("loading");
 
-    void fetchRecommendationPlaceDetails({ place_id: placeId, place_name: placeName })
+    void fetchRecommendationPlaceDetails({
+      place_id: placeId,
+      place_name: placeName,
+      // 추천/수정 카드로 열었을 때만 문장을 만든다. INFO 카드·사진 검색 결과에는
+      // "AI가 추천하는 이유" 절 자체가 없어서(item이 없으면 안 그려진다), 켜면
+      // 읽히지 않을 문장에 클릭마다 LLM 값을 치른다.
+      want_ai_reason: Boolean(item),
+      category_label: item?.category_label ?? item?.category,
+    })
       .then((response) => {
         if (cancelled) return;
+        // 빈 문자열로 확정한다 — "받았는데 없다"와 "아직 모른다"를 가르는 값이다.
+        setAiReason(response.ai_reason ?? "");
         if (response.status === "success" && response.place_card) {
           setDetailCard(
             card
@@ -1661,13 +1683,16 @@ export function RecommendationDetailPreviewModal({
         setDetailStatus(response.status === "unavailable" ? "unavailable" : "no_data");
       })
       .catch(() => {
-        if (!cancelled) setDetailStatus("unavailable");
+        if (!cancelled) {
+          setDetailStatus("unavailable");
+          setAiReason("");
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [card, placeId, placeName]);
+  }, [card, item, placeId, placeName]);
 
   // .tb-shell의 contain:layout에 기대는 대신 document.body로 포탈해, 채팅
   // 스크롤 위치나 조상 요소의 overflow/포지셔닝과 무관하게 지금 보고 있는
@@ -1868,6 +1893,32 @@ export function RecommendationDetailPreviewModal({
                 </p>
               </div>
               <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+              {/* 두 번째 줄은 상세 응답과 함께 도착한다(recommend.place_reason).
+                  위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
+                  말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
+
+                  **자리를 미리 잡는다.** 이 절을 표보다 위에 둔 이유가 "표가
+                  스켈레톤인 동안 읽을 것이 있고, 나중에 채워져도 이 절이 밀리거나
+                  늘지 않는다"였다(2026-09-08 결정). 늦게 오는 줄을 그냥 끼우면 그
+                  성질이 깨져 읽는 도중 아래가 밀린다. 그래서 대기 중에는 같은
+                  높이의 자리표시자를 그리고, 문장 없이 확정되면(취향 태그가 없는
+                  장소·생성 실패) 접는다.
+
+                  두 줄로 잡은 것은 프롬프트가 1~2문장으로 못 박혀 있기 때문이다. */}
+              {aiReason === null ? (
+                <div
+                  className="flex flex-col gap-1.5"
+                  aria-hidden
+                  data-testid="ai-reason-placeholder"
+                >
+                  <div className="h-3.5 w-full animate-pulse rounded bg-line" />
+                  <div className="h-3.5 w-2/3 animate-pulse rounded bg-line" />
+                </div>
+              ) : (
+                aiReason && (
+                  <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
+                )
+              )}
             </section>
           )}
 
