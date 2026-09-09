@@ -170,12 +170,13 @@ export function ChatComposer({
    *
    * 지금은 쓰는 쪽이 스크롤 영역의 **형제**로 두고, 여기서 absolute 로 그 위에
    * 겹친다. 스크롤과 무관하게 자리가 고정이라 붙일 대상이 없고, 내용은 예전처럼
-   * 유리 뒤로 지나간다.
+   * 유리 뒤로 지나간다. 키보드가 뜨면 `.tb-keyboard-lift` 가 가린 높이만큼
+   * 올린다(index.css) — 위쪽 본문은 건드리지 않는다.
    */
   return (
     <div
       ref={dockRef}
-      className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:mx-auto md:w-full md:max-w-2xl"
+      className="tb-keyboard-lift tb-composer-dock absolute inset-x-0 bottom-0 z-20 px-4 pt-6 md:mx-auto md:w-full md:max-w-2xl"
     >
       {voiceError && (
         <p role="alert" className="mb-2 text-sm text-rust">

@@ -241,15 +241,17 @@ function composerRoot(): HTMLElement {
   /* 홈과 채팅이 같은 문구를 쓴다(HomePage/ChatPage text.composer). */
   return screen
     .getByPlaceholderText("트리비에게 물어보세요")
-    .closest("div.absolute") as HTMLElement;
+    .closest("div.tb-composer-dock") as HTMLElement;
 }
 
-test("홈 컴포저는 스크롤 칸 밖에서 그 위에 겹친다", async () => {
+test("홈 컴포저는 스크롤 칸 밖에 있고 키보드만큼 올라갈 준비가 되어 있다", async () => {
   await renderApp();
 
   const composer = composerRoot();
   expect(composer).not.toBeNull();
   expect(scrollableAncestorOf(composer)).toBeNull();
+  /* 올리는 것과 아래 여백이 다른 클래스다 — 스크롤 이동 버튼이 올리기만 같이 받는다. */
+  expect(composer.className).toContain("tb-keyboard-lift");
 
   /* main 자체가 스크롤러이면 컴포저가 다시 그 안에 들어간 것과 같다. */
   const main = composer.closest("main") as HTMLElement;
