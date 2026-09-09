@@ -8,7 +8,7 @@
  * 걷어내지고(TripContext의 isPastTurnControl) 일정 카드는 기록으로 남는다.
  * 지난 턴의 "다른 코스 보기"를 누르면 그때 조건으로 다시 짜서 결과가 어긋난다.
  *
- * "이 일정 저장"은 여기 없다 — ScheduleResultMessage에 남는다. 그건 새 요청이
+ * "일정 저장하기"은 여기 없다 — ScheduleResultMessage에 남는다. 그건 새 요청이
  * 아니라 그 턴의 일정을 run_id로 저장하는 것이라, 지난 일정을 나중에 저장하는
  * 것도 정상적인 사용이기 때문이다.
  */

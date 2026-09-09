@@ -25,7 +25,7 @@
  */
 
 import { Bookmark } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
@@ -52,9 +52,6 @@ interface ScheduleResultMessageProps {
   sessionId?: string;
 }
 
-/* 알림이 스스로 사라지기까지. 읽을 만큼은 두되 오래 남아 방해하지 않는 길이다. */
-const NOTICE_MS = 2500;
-
 export function ScheduleResultMessage({
   schedule,
   elapsedMs,
@@ -80,15 +77,6 @@ export function ScheduleResultMessage({
   const [savedId, setSavedId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  // 알림은 잠깐 떴다 사라진다. 화면을 떠나면 타이머도 함께 걷는다.
-  useEffect(() => {
-    if (notice === null) return;
-    const timer = window.setTimeout(() => setNotice(null), NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
   /*
    * 저장은 낙관적으로 그리지 않는다. 보관함 담기와 달리 이건 목록에 새 줄을
    * 만드는 동작이라, 실패했는데 저장된 것처럼 보이면 사용자가 나중에 목록에서
@@ -107,11 +95,9 @@ export function ScheduleResultMessage({
           runId,
         });
         setSavedId(saved.id);
-        setNotice("저장했어요");
       } else {
         await deleteSavedSchedule(savedId);
         setSavedId(null);
-        setNotice("저장을 해제했어요");
       }
       /* 저장 목록을 바로 갱신한다. 저장하고 목록을 봤는데 없으면 사용자는
          저장이 안 된 줄 안다 — 실제로 새로고침해야 보였다. */
@@ -149,20 +135,23 @@ export function ScheduleResultMessage({
             <h3 className="min-w-0 truncate text-sm font-bold text-ink">
               {defaultScheduleTitle(schedule.items)}
             </h3>
+            {/* 이름은 보이는 글자가 맡는다 — aria-label 을 따로 주면 화면에 보이는
+                말과 스크린리더가 읽는 말이 갈리고, 음성 명령으로 보이는 대로
+                말해도 걸리지 않는다. 누르면 무엇이 되는지를 말해야 해서 문구는
+                상태에 따라 바뀐다. */}
             <button
               type="button"
               disabled={isBusy}
               onClick={() => void handleToggleSave()}
-              /* 아이콘만 있는 버튼이라 이름을 여기서 준다. 누르면 무엇이 되는지를
-                 말해야 해서 상태에 따라 문구가 바뀐다. */
-              aria-label={savedId === null ? "이 일정 저장" : "저장 해제"}
               aria-pressed={savedId !== null}
-              className="shrink-0 text-muted transition-colors hover:text-brand disabled:opacity-50"
+              className={`flex shrink-0 items-center gap-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                savedId !== null ? "text-brand" : "text-muted hover:text-brand"
+              }`}
             >
               {/* 저장되면 같은 모양이 색으로 찬다 — 모양이 바뀌면 다른 버튼처럼
                   보여서, 누를 때마다 오가는 토글이라는 것이 덜 읽힌다. */}
               <Bookmark
-                size={18}
+                size={14}
                 className={
                   savedId !== null
                     ? "fill-brand text-brand"
@@ -171,13 +160,8 @@ export function ScheduleResultMessage({
                       : undefined
                 }
               />
+              {savedId === null ? "일정 저장하기" : "저장 취소"}
             </button>
-            {/* 저장했는지를 아이콘 색만으로 알아채기 어려워 잠깐 말로도 알린다. */}
-            {notice && (
-              <span role="status" className="text-xs text-brand">
-                {notice}
-              </span>
-            )}
           </div>
           {error && (
             <p role="alert" className="text-xs text-rust">

@@ -1,5 +1,5 @@
 /*
- * 역할: 일정 카드의 "이 일정 저장" 동작을 검증한다. (SCHEDULE 카드 2)
+ * 역할: 일정 카드의 "일정 저장하기" 동작을 검증한다. (SCHEDULE 카드 2)
  * 호출 시점: vitest 실행 시.
  *
  * **저장은 낙관적으로 그리지 않는다.** 보관함 담기와 달리 이건 목록에 새 줄을
@@ -95,7 +95,7 @@ test("저장할 이름을 제목으로 미리 보여준다", () => {
 test("저장하면 제목을 화면이 만들어 함께 보낸다", async () => {
   renderMessage();
 
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+  await userEvent.click(screen.getByRole("button", { name: "일정 저장하기" }));
 
   await waitFor(() => expect(saved.calls).toHaveLength(1));
   /* 서버는 payload를 열어보지 않기로 되어 있어 제목을 뽑을 수 없다 —
@@ -110,43 +110,34 @@ test("저장하면 제목을 화면이 만들어 함께 보낸다", async () => 
 test("저장하고 나면 해제 버튼으로 바뀐다", async () => {
   renderMessage();
 
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+  await userEvent.click(screen.getByRole("button", { name: "일정 저장하기" }));
 
   /* 같은 자리에서 오가는 토글이라 잠그지 않는다 — 잠그면 되돌릴 길이 없다. */
-  const toggle = await screen.findByRole("button", { name: "저장 해제" });
+  const toggle = await screen.findByRole("button", { name: "저장 취소" });
   expect(toggle).toBeEnabled();
   expect(toggle).toHaveAttribute("aria-pressed", "true");
-});
-
-test("저장했다고 잠깐 알린다", async () => {
-  renderMessage();
-
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
-
-  /* 아이콘 색만으로는 저장됐는지 알아채기 어려워 말로도 알린다. */
-  expect(await screen.findByRole("status")).toHaveTextContent("저장했어요");
 });
 
 test("다시 누르면 저장을 해제한다", async () => {
   renderMessage();
 
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
-  await userEvent.click(await screen.findByRole("button", { name: "저장 해제" }));
+  await userEvent.click(screen.getByRole("button", { name: "일정 저장하기" }));
+  await userEvent.click(await screen.findByRole("button", { name: "저장 취소" }));
 
   await waitFor(() => expect(saved.deleted).toEqual(["sched-1"]));
   /* 해제하면 다시 저장할 수 있는 상태로 돌아온다. */
-  expect(await screen.findByRole("button", { name: "이 일정 저장" })).toBeEnabled();
+  expect(await screen.findByRole("button", { name: "일정 저장하기" })).toBeEnabled();
 });
 
 test("저장에 실패하면 저장된 것처럼 보이지 않는다", async () => {
   saved.fails = true;
   renderMessage();
 
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+  await userEvent.click(screen.getByRole("button", { name: "일정 저장하기" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("저장하지 못했어요");
   /* 다시 누를 수 있어야 한다 — 잠긴 채로 두면 사용자가 할 수 있는 일이 없다. */
-  expect(screen.getByRole("button", { name: "이 일정 저장" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "일정 저장하기" })).toBeEnabled();
 });
 
 /*
@@ -158,7 +149,7 @@ test("저장하면 목록을 다시 받아온다", async () => {
   const unsubscribe = subscribeSavedSchedules((entries) => seen.push(entries));
   renderMessage();
 
-  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+  await userEvent.click(screen.getByRole("button", { name: "일정 저장하기" }));
 
   await waitFor(() => expect(seen).toHaveLength(1));
   unsubscribe();
