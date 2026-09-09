@@ -128,72 +128,178 @@ async def _run_once(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repeat", type=int, default=3, help="조건당 반복 횟수")
+    parser.add_argument(
+        "--repeat", type=int, default=1,
+        help="조건당 반복 횟수. 먼저 1로 쓸고 갈린 조건만 올린다",
+    )
+    parser.add_argument(
+        "--models", default=None,
+        help="쉼표로 구분한 GENERATION 모델. 비우면 .env의 운영값을 쓴다",
+    )
+    parser.add_argument(
+        "--only", default=None,
+        help="쉼표로 구분한 조건 이름. 이 중 하나가 든 것만 돈다"
+             "(예: 없음/일정 또는 없음/추천,비/추천). 스모크와 좁히기용",
+    )
+    parser.add_argument(
+        "--max-calls", type=int, default=60,
+        help="예정 호출 수가 이 값을 넘으면 실행을 거부한다",
+    )
+    parser.add_argument(
+        "--max-consecutive-errors", type=int, default=3,
+        help="연속 실패가 이 횟수에 닿으면 중단한다",
+    )
+    parser.add_argument("--delay", type=float, default=0.0, help="호출 간 대기(초)")
     parser.add_argument("--out-dir", default=None)
     args = parser.parse_args()
+
+    if not settings.llm_api_key:
+        raise SystemExit("LLM_API_KEY가 없습니다. backend/.env를 확인하세요.")
 
     out_dir = Path(args.out_dir) if args.out_dir else RESULTS_DIR / f"mode_judge_{date.today()}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    provider = RealGeminiProvider(
-        api_key=settings.llm_api_key,
-        fast_model_names=settings.resolved_llm_fast_models,
-        # 판정은 생성 모델 묶음을 쓴다(gemini.py::judge_travel_modes).
-        generation_model_names=settings.resolved_llm_generation_models,
+    models = (
+        [m.strip() for m in args.models.split(",") if m.strip()]
+        if args.models
+        else list(settings.resolved_llm_generation_models)
     )
     segments = _segments()
     baseline = _rule_baseline()
+
+    # 돌 조건을 먼저 확정해야 호출 수를 셀 수 있다.
+    labels = [
+        f"{name}/{'일정' if sequential else '추천'}"
+        for name in _CONDITIONS
+        for sequential in (True, False)
+    ]
+    if args.only:
+        wanted = [token.strip() for token in args.only.split(",") if token.strip()]
+
+        def _hit(label: str, w: str) -> bool:
+            # **`/`가 든 토큰은 정확히 일치해야 한다.** 부분 문자열로 두면
+            # `유모차/추천`이 `비+유모차/추천`까지 잡는다 — 2026-09-09에 조건 3개를
+            # 지정했는데 4개가 돌아 5호출을 더 썼다(RULES 함정 45와 같은 모양:
+            # 짧은 패턴이 긴 것을 함께 잡는다). `/`가 없으면 접두 지정이므로
+            # 조건 이름 부분만 비교한다.
+            return label == w if "/" in w else label.split("/", 1)[0] == w
+
+        labels = [label for label in labels if any(_hit(label, w) for w in wanted)]
+        # 오타 하나가 조용히 무시되면 "그 조건은 돌았는데 통과했다"로 읽힌다.
+        # 걸린 것이 있어도 안 걸린 토큰은 따로 잡아 알린다.
+        missed = [w for w in wanted if not any(_hit(label, w) for label in labels)]
+        if missed:
+            raise SystemExit(f"--only의 {missed}에 걸리는 조건이 없습니다.")
+        if not labels:
+            raise SystemExit(f"--only '{args.only}'에 걸리는 조건이 없습니다.")
+
+    # judge_travel_modes는 호출 1건이 요청 1건이다(planner의 must_include
+    # 재시도 같은 것이 없다). 전송 실패 재시도는 별개다.
+    planned = len(models) * args.repeat * len(labels)
+    print(f"모델 {models}")
+    print(f"조건 {len(labels)}개 × 반복 {args.repeat}회 × 모델 {len(models)}개")
+    print(f"예정 호출 {planned}건, 상한 {args.max_calls}건")
+    if planned > args.max_calls:
+        raise SystemExit(
+            f"예정 호출 {planned}건이 --max-calls({args.max_calls})를 넘습니다. "
+            "먼저 --only 한 건 --repeat 1로 스모크를 돌리세요. "
+            "통째로 돌려야 하면 --max-calls를 명시하세요."
+        )
     print(f"거리(km): {_DISTANCES_KM}")
     print(f"규칙 기준선: {baseline}\n")
 
     rows: list[dict[str, object]] = []
-    latencies: list[float] = []
+    # 지연은 **모델별로 따로 모은다.** 한 통에 담아 중앙값을 내면 모집단이
+    # 섞여서 두 모델 어느 쪽도 아닌 숫자가 나온다(RULES 함정 30).
+    latencies_by_model: dict[str, list[float]] = {model: [] for model in models}
+    consecutive_errors = 0
 
-    for name, base_context in _CONDITIONS.items():
-        for sequential in (True, False):
-            label = f"{name}/{'일정' if sequential else '추천'}"
-            context = ModeJudgmentContext(
-                transport=base_context.transport,
-                companion=base_context.companion,
-                accessibility_needs=base_context.accessibility_needs,
-                weather=base_context.weather,
-                sequential=sequential,
-            )
-            for attempt in range(args.repeat):
-                try:
-                    modes, elapsed_ms = await _run_once(provider, segments, context)
-                except Exception as exc:  # 측정 도구라 한 건 실패로 멈추지 않는다
-                    print(f"  {label} #{attempt + 1} 실패: {exc}")
-                    rows.append({"조건": label, "시도": attempt + 1, "실패": str(exc)})
+    for model in models:
+        print(f"[{model}]")
+        provider = RealGeminiProvider(
+            api_key=settings.llm_api_key,
+            # 이 호출은 GENERATION만 쓴다(gemini.py::judge_travel_modes).
+            # FAST는 운영값 그대로 둔다 — 변수는 하나여야 한다(RULES 함정 48).
+            fast_model_names=settings.resolved_llm_fast_models,
+            generation_model_names=[model],
+        )
+        for name, base_context in _CONDITIONS.items():
+            for sequential in (True, False):
+                label = f"{name}/{'일정' if sequential else '추천'}"
+                if label not in labels:
                     continue
-                latencies.append(elapsed_ms)
-                same = sum(1 for a, b in zip(modes, baseline, strict=False) if a == b)
-                first = modes[0] if modes else None
-                transit = sum(1 for mode in modes if mode == "transit")
-                rows.append(
-                    {
-                        "조건": label,
-                        "시도": attempt + 1,
-                        "판정": list(modes),
-                        "규칙과_같은_구간": same,
-                        "전체_구간": len(baseline),
-                        "전환_수": transit,
-                        "첫_줄": first,
-                        "지연ms": round(elapsed_ms, 1),
-                    }
+                context = ModeJudgmentContext(
+                    transport=base_context.transport,
+                    companion=base_context.companion,
+                    accessibility_needs=base_context.accessibility_needs,
+                    weather=base_context.weather,
+                    sequential=sequential,
                 )
-                print(
-                    f"  {label} #{attempt + 1}: {modes}"
-                    f"  규칙일치 {same}/{len(baseline)}"
-                    f"  전환 {transit}  {elapsed_ms:.0f}ms"
-                )
+                for attempt in range(args.repeat):
+                    try:
+                        modes, elapsed_ms = await _run_once(provider, segments, context)
+                    except Exception as exc:  # 한 건 실패로 멈추지 않는다
+                        print(f"  {label} #{attempt + 1} 실패: {exc}")
+                        rows.append(
+                            {"모델": model, "조건": label, "시도": attempt + 1,
+                             "실패": str(exc)}
+                        )
+                        consecutive_errors += 1
+                        if consecutive_errors >= args.max_consecutive_errors:
+                            raise SystemExit(
+                                f"연속 {consecutive_errors}건 실패로 중단합니다. "
+                                f"마지막 오류: {exc}"
+                            ) from exc
+                        continue
+                    consecutive_errors = 0
+                    latencies_by_model[model].append(elapsed_ms)
+                    same = sum(1 for a, b in zip(modes, baseline, strict=False) if a == b)
+                    first = modes[0] if modes else None
+                    transit = sum(1 for mode in modes if mode == "transit")
+                    rows.append(
+                        {
+                            "모델": model,
+                            "조건": label,
+                            "시도": attempt + 1,
+                            "판정": list(modes),
+                            "규칙과_같은_구간": same,
+                            "전체_구간": len(baseline),
+                            "전환_수": transit,
+                            "첫_줄": first,
+                            "지연ms": round(elapsed_ms, 1),
+                        }
+                    )
+                    print(
+                        f"  {label} #{attempt + 1}: {modes}"
+                        f"  규칙일치 {same}/{len(baseline)}"
+                        f"  전환 {transit}  {elapsed_ms:.0f}ms"
+                    )
+                    if args.delay:
+                        await asyncio.sleep(args.delay)
 
-    summary: dict[str, object] = {"거리_km": list(_DISTANCES_KM), "규칙_기준선": list(baseline)}
-    if latencies:
-        ordered = sorted(latencies)
-        summary["지연_p50_ms"] = round(statistics.median(ordered), 1)
-        summary["지연_p95_ms"] = round(ordered[int(len(ordered) * 0.95) - 1], 1)
-        summary["호출_수"] = len(latencies)
+    summary: dict[str, object] = {
+        # **모델을 기록한다.** 2026-09-03 실행은 이것을 안 남겨서, 나중에
+        # 어느 모델의 기준선인지 config 이력과 .env를 뒤져 확인해야 했다.
+        "모델": models,
+        "거리_km": list(_DISTANCES_KM),
+        "규칙_기준선": list(baseline),
+    }
+    per_model: dict[str, object] = {}
+    for model in models:
+        ordered = sorted(latencies_by_model[model])
+        if not ordered:
+            continue
+        done = [r for r in rows if r.get("모델") == model and "지연ms" in r]
+        per_model[model] = {
+            "지연_p50_ms": round(statistics.median(ordered), 1),
+            "지연_p95_ms": round(ordered[int(len(ordered) * 0.95) - 1], 1),
+            "호출_수": len(ordered),
+            "규칙과_전부_일치한_회차": sum(
+                1 for r in done if r["규칙과_같은_구간"] == len(baseline)
+            ),
+            "회차_수": len(done),
+        }
+    summary["모델별"] = per_model
 
     out_path = out_dir / "measure_mode_judge.json"
     out_path.write_text(

@@ -39,7 +39,14 @@ from pathlib import Path
 from google.genai import types as genai_types
 
 from app.config import settings
-from app.providers.gemini import RealGeminiProvider
+from app.providers.gemini import (
+    _REJECTS_ZERO_THINKING_BUDGET,
+    RealGeminiProvider,
+)
+from app.services.runtime.llm_execution import (
+    get_llm_execution_metadata,
+    reset_llm_execution_metadata,
+)
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "test_results"
 EXPERIMENT_DIR = RESULTS_DIR / "intent_cot_2026-08-11"
@@ -97,10 +104,35 @@ def load_cases(path: Path, only: str) -> list[dict[str, str]]:
     return rows
 
 
+def _tokens() -> dict[str, int]:
+    """직전 호출의 토큰. **입력 토큰이 자동 캐싱 문턱(4,096) 위인지 보려고 넣었다.**
+
+    2026-09-09에 68호출을 쓰고도 이 값을 안 남겨서, 분류 프롬프트가 문턱을 넘는지
+    모른 채로 끝났다. 넘고 못 넘고가 입력 비용을 열 배 가른다(캐시 단가가 정가의
+    10분의 1). 사고·캐시 토큰도 같이 센다 — 둘 다 과금과 직결되는데 지연만 봐서는
+    안 보인다.
+    """
+    metadata = get_llm_execution_metadata()
+    if metadata is None or not metadata.calls:
+        return {}
+    out: dict[str, int] = {}
+    for call in metadata.calls:
+        for key, value in (
+            ("입력토큰", call.input_tokens),
+            ("출력토큰", call.output_tokens),
+            ("사고토큰", call.thoughts_tokens),
+            ("캐시토큰", call.cached_tokens),
+        ):
+            if isinstance(value, int):
+                out[key] = out.get(key, 0) + value
+    return out
+
+
 async def classify_once(
     provider: RealGeminiProvider, case: dict[str, str]
 ) -> tuple[str | None, str | None, float]:
     started = time.perf_counter()
+    reset_llm_execution_metadata()
     try:
         result = (
             await provider.classify_intent(
@@ -111,10 +143,38 @@ async def classify_once(
                 last_intent=case["last_intent"] or None,
             )
         ).data
+        _TOKENS.append(_tokens())
         return result.intent.value, None, (time.perf_counter() - started) * 1000
     except Exception as exc:  # noqa: BLE001 — 한 건이 실패해도 측정을 계속한다
         detail = getattr(exc, "details", None) or str(exc)
         return None, f"{type(exc).__name__}: {detail}", (time.perf_counter() - started) * 1000
+
+
+_TOKENS: list[dict[str, int]] = []
+
+
+def _print_token_summary() -> None:
+    """호출당 평균과 캐싱 문턱 판정."""
+    seen = [t for t in _TOKENS if t]
+    if not seen:
+        return
+    totals: dict[str, int] = {}
+    for t in seen:
+        for k, v in t.items():
+            totals[k] = totals.get(k, 0) + v
+    n = len(seen)
+    print("토큰 — " + "  ".join(f"{k} 호출당 {v // n:,}" for k, v in totals.items()))
+    inp = totals.get("입력토큰", 0) // n
+    if totals.get("캐시토큰"):
+        hit = totals["캐시토큰"] * 100 // max(totals.get("입력토큰", 1), 1)
+        print(f"자동 캐싱 적중 — 입력의 {hit}%")
+    elif inp:
+        gap = 4096 - inp
+        note = (
+            f"{gap}토큰 모자람" if gap > 0
+            else "문턱은 넘었는데 적중 0 — 접두가 매 턴 달라지는지 본다"
+        )
+        print(f"⚠️  캐시 적중 0 — 입력 {inp:,}토큰, 문턱 4,096 ({note})")
 
 
 async def run(cases: list[dict[str, str]], args: argparse.Namespace) -> list[CaseResult]:
@@ -122,6 +182,10 @@ async def run(cases: list[dict[str, str]], args: argparse.Namespace) -> list[Cas
     results: list[CaseResult] = []
     total = len(cases) * args.repeat
     done = 0
+    # 같은 오류로 전 케이스를 끝까지 도는 것을 막는다. 2026-09-08에 lite +
+    # --budget 0 조합이 첫 호출부터 400이었는데도 204건을 전부 때렸다 —
+    # 실패는 케이스마다 독립이 아니라 설정 오류일 때가 많다.
+    consecutive_errors = 0
 
     for case in cases:
         result = CaseResult(
@@ -135,6 +199,17 @@ async def run(cases: list[dict[str, str]], args: argparse.Namespace) -> list[Cas
             result.latencies_ms.append(latency)
             if error:
                 result.errors.append(error)
+                consecutive_errors += 1
+                if consecutive_errors >= args.max_consecutive_errors:
+                    results.append(result)
+                    print(
+                        f"연속 {consecutive_errors}건 실패로 중단합니다 "
+                        f"({done}/{total} 호출 시점). 마지막 오류: {error}",
+                        flush=True,
+                    )
+                    return results
+            else:
+                consecutive_errors = 0
             await asyncio.sleep(args.delay)
 
         mark = "O" if result.hits == args.repeat else ("X" if result.hits == 0 else "~")
@@ -158,7 +233,16 @@ def report(results: list[CaseResult], args: argparse.Namespace) -> dict[str, obj
     failed = [r for r in results if r.hits == 0]
     errored = [r for r in results if r.errors]
     latencies = sorted(r.mean_latency_ms for r in results)
-    budget_label = "미설정" if _budget is None else str(_budget)
+    # **"미설정"은 "thinking을 안 걸었다"가 아니다.** 이 스크립트가 덮어쓰지
+    # 않았다는 뜻이고, 그러면 호출부(classify_intent)가 정한 thinking_budget=0이
+    # 프로덕션 경로 그대로 나간다 — 0을 숫자로 받지 못하는 모델에서는
+    # thinking_level=MINIMAL로 변환된다. 라벨만 보고 "설정 없이 쟀다"로 읽으면
+    # 같은 프로덕션 설정을 잰 두 실행이 다른 설정으로 보인다(2026-09-09).
+    budget_label = (
+        "미설정(=호출부 값 그대로: thinking_budget 0 → 0을 못 받는 모델은 MINIMAL)"
+        if _budget is None
+        else str(_budget)
+    )
 
     print("\n" + "=" * 74)
     print(f"모델={args.model}  thinking={budget_label}  반복={args.repeat}")
@@ -216,6 +300,10 @@ def main() -> None:
                         help="thinking_budget. 0=끔, 생략하면 모델 기본값(동적)")
     parser.add_argument("--repeat", type=int, default=1, help="케이스당 반복 횟수")
     parser.add_argument("--delay", type=float, default=1.0, help="호출 간 대기(초)")
+    parser.add_argument("--max-calls", type=int, default=150,
+                        help="예정 호출 수가 이 값을 넘으면 실행을 거부한다")
+    parser.add_argument("--max-consecutive-errors", type=int, default=3,
+                        help="연속 실패가 이 횟수에 닿으면 측정을 중단한다")
     parser.add_argument("--only", default="", help="특정 번호만 (쉼표 구분)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
@@ -226,6 +314,20 @@ def main() -> None:
 
     if not settings.llm_api_key:
         raise SystemExit("LLM_API_KEY가 없습니다. backend/.env를 확인하세요.")
+    # 이 스크립트의 _config_with_budget()는 프로덕션의 _thinking_config_for()를
+    # 우회해 숫자를 그대로 싣는다. 그래서 프로덕션이 막아둔 400 조합을 이 스크립트만
+    # 만들어낼 수 있다 — 호출 하나도 쓰지 않고 여기서 거부한다.
+    if (
+        args.budget is not None
+        and args.budget <= 0
+        and args.model in _REJECTS_ZERO_THINKING_BUDGET
+    ):
+        raise SystemExit(
+            f"{args.model}은 thinking_budget에 숫자 0을 받으면 400으로 즉시 "
+            "실패합니다(_REJECTS_ZERO_THINKING_BUDGET). 프로덕션은 0을 "
+            "thinking_level=MINIMAL로 바꿔 보내므로, 프로덕션과 같은 설정을 "
+            "재려면 --budget을 생략하세요(호출부가 정한 값이 그대로 나갑니다)."
+        )
     if not args.cases.exists():
         raise SystemExit(f"케이스 파일이 없습니다: {args.cases}")
     # 결과는 전 케이스 호출이 끝난 뒤에 쓰므로, 저장 실패는 측정 비용을 통째로 날린다.
@@ -243,8 +345,21 @@ def main() -> None:
     cases = load_cases(args.cases, args.only)
     if not cases:
         raise SystemExit("측정할 케이스가 없습니다.")
+    planned = len(cases) * args.repeat
+    print(
+        f"예정 호출 {planned}건 = 케이스 {len(cases)} x 반복 {args.repeat}, "
+        f"model={args.model}",
+        flush=True,
+    )
+    if planned > args.max_calls:
+        raise SystemExit(
+            f"예정 호출 {planned}건이 --max-calls({args.max_calls})를 넘습니다. "
+            "먼저 --repeat 1로 전체를 한 번 쓸고, 갈린 번호만 --only로 좁혀 "
+            "--repeat을 올리세요. 통째로 돌려야 하면 --max-calls를 명시하세요."
+        )
 
     results = asyncio.run(run(cases, args))
+    _print_token_summary()
     payload = report(results, args)
 
     tag = args.tag or ("budget" + str(args.budget) if args.budget is not None else "default")
