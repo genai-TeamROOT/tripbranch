@@ -72,6 +72,33 @@ export function ChatComposer({
    * 적어두면 한쪽만 고쳐진다. max-height는 scrollHeight를 깎지 않으므로 이 계산은
    * 그대로 맞고, 넘치는 만큼은 overflow-y-auto가 안에서 스크롤한다.
    */
+  /*
+   * 컴포저는 스크롤 영역 **위에 겹쳐** 선다 — 그래야 예전처럼 내용이 유리 뒤로
+   * 지나간다(2026-09-09). 겹치는 만큼 스크롤 영역 아래에 자리를 비워 두어야
+   * 마지막 내용이 영영 가리지 않는데, 그 높이를 여기서 재서 알려준다.
+   * 입력창이 여러 줄로 자라면 이 값도 따라 자란다.
+   *
+   * 붙이는 곳은 가장 가까운 main/section 이다 — 화면마다 그 안에서
+   * `pb-[var(--tb-composer-h)]` 로 받아 쓴다.
+   */
+  const dockRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const host = dock?.closest("main, section");
+    if (!dock || !(host instanceof HTMLElement)) return;
+
+    const publish = () => {
+      host.style.setProperty("--tb-composer-h", `${Math.round(dock.offsetHeight)}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(dock);
+    return () => {
+      observer.disconnect();
+      host.style.removeProperty("--tb-composer-h");
+    };
+  }, []);
+
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const element = inputRef.current;
@@ -135,8 +162,21 @@ export function ChatComposer({
 
   const resolvedSendLabel = sendLabel ?? (language === "en" ? "Send" : "보내기");
 
+  /*
+   * **더 이상 sticky 가 아니다**(2026-09-09). 전에는 `sticky bottom-0` 으로 스크롤
+   * 영역 안에 두고 바닥에 붙였는데, iOS 사파리에서 소프트 키보드가 뜬 동안 그
+   * sticky 가 통째로 죽었다 — 처음 붙은 자리에서 내용과 같이 흘러갔다(실측:
+   * "창바닥 − 컴포저바닥"이 scrollTop 과 한 행도 빠짐없이 일치, 표본 전부).
+   *
+   * 지금은 쓰는 쪽이 스크롤 영역의 **형제**로 두고, 여기서 absolute 로 그 위에
+   * 겹친다. 스크롤과 무관하게 자리가 고정이라 붙일 대상이 없고, 내용은 예전처럼
+   * 유리 뒤로 지나간다.
+   */
   return (
-    <div className="sticky bottom-0 z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:mx-auto md:w-full md:max-w-2xl">
+    <div
+      ref={dockRef}
+      className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:mx-auto md:w-full md:max-w-2xl"
+    >
       {voiceError && (
         <p role="alert" className="mb-2 text-sm text-rust">
           {voiceError}

@@ -315,128 +315,138 @@ export function HomePage() {
   );
 
   return (
-    <main className="flex h-full flex-col overflow-y-auto">
+    <main className="relative flex h-full flex-col overflow-hidden">
       <AppHeader location={locationChip} />
 
       {/*
-       * 세로 간격을 gap 하나로 고르게 주지 않는다. 헤드라인이 위를, 오브가 남는
-       * 가운데를 갖고, 나머지는 컴포저 쪽으로 내려붙는다 — 요소를 빼거나 순서를
-       * 바꾸지 않고 **남는 공간을 어디에 줄지**만 정한 것이다(2026-09-07).
+       * **스크롤은 이 칸만 한다**(2026-09-09). 전에는 main 자체가 스크롤러였고
+       * 컴포저가 그 안에서 sticky 로 바닥에 붙어 있었는데, iOS 에서 소프트
+       * 키보드가 뜬 동안 그 sticky 가 죽어 내용과 같이 흘러갔다(ChatComposer
+       * 주석). 컴포저는 이 칸의 형제이면서 absolute 로 그 위에 겹치므로, 겹치는
+       * 만큼(--tb-composer-h, 컴포저가 자기 높이를 재서 알려준다) 아래에 자리를
+       * 비워 둔다 — 안 그러면 마지막 내용이 컴포저에 영영 가린다.
        */}
-      {/* min-h-0 이 있어야 아래 오브 칸이 남는 높이에 맞춰 줄어든다. flex 자식은
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-[var(--tb-composer-h,0px)]">
+        {/*
+         * 세로 간격을 gap 하나로 고르게 주지 않는다. 헤드라인이 위를, 오브가 남는
+         * 가운데를 갖고, 나머지는 컴포저 쪽으로 내려붙는다 — 요소를 빼거나 순서를
+         * 바꾸지 않고 **남는 공간을 어디에 줄지**만 정한 것이다(2026-09-07).
+         */}
+        {/* min-h-0 이 있어야 아래 오브 칸이 남는 높이에 맞춰 줄어든다. flex 자식은
           기본이 min-height:auto 라 내용보다 작아지지 않고, 그러면 짧은 화면에서
           오브가 칸을 뚫고 나가 홈 전체가 스크롤된다(2026-09-07 실측). */}
-      <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
-        <div className="flex items-center justify-end">
-          {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
+        <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
+          <div className="flex items-center justify-end">
+            {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
               비어 있으면 비활성. */}
-          <button
-            type="button"
-            disabled={isLoading || !userInput.trim()}
-            onClick={() => void startChat(userInput, "/dev-chat")}
-            className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
-          >
-            {text.developer}
-          </button>
-        </div>
-
-        {/*
-         * 오브가 맨 위에 오고 글이 그 아래에 가운데로 붙는다(2026-09-07).
-         *
-         * 오브는 장식이라 aria-hidden 이다 — 누르는 기능도 움직임도 없다.
-         * 화면이 낮으면 이미지 자체가 작아진다(.tb-orb__img).
-         */}
-        {/* pt 로 히어로를 아래로 내린다(2026-09-07). 아래 flex-1 칸이 그만큼
-            줄어들어 아래쪽 묶음은 제자리에 남는다. */}
-        <div className="flex flex-col items-center pt-10 text-center">
-          <img
-            src="/glass-object.png"
-            alt=""
-            aria-hidden
-            width={76}
-            height={75}
-            decoding="async"
-            className="tb-orb__img"
-          />
-          {/*
-           * 한 줄이다(2026-09-07). 두 줄로 쪼개 놓으면 가운데 정렬에서 윗줄이
-           * 짧아 축이 흔들려 보인다.
-           *
-           * 좁은 화면에서 접히지 않게 글자를 줄인다 — 24px 이면 "갑자기 일정이
-           * 바뀌셨나요?" 가 241px 이라 360px 화면의 본문 폭(328px)에 들어간다.
-           *
-           * **nowrap 은 쓰지 않는다.** 영어 문구가 더 길어서(Did your plans change
-           * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
-           * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
-           *
-           * 부각하는 낱말은 "일정"과 "상황" 둘 다 브랜드색이다(2026-09-07 사용자
-           * 결정). 이 화면이 무엇에 대한 화면인지가 그 두 낱말에 다 들어 있다.
-           */}
-          <h1 className="mt-5 text-2xl font-bold leading-[1.32] tracking-[-0.035em] text-ink sm:text-[30px]">
-            {text.headline.lead}
-            <span className="text-brand">{text.headline.accent}</span>
-            {text.headline.tail}
-          </h1>
-          <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">
-            {text.subtitle.lead}
-            <span className="font-semibold text-brand">{text.subtitle.accent}</span>
-            {text.subtitle.tail}
-          </p>
-          <div className="mt-6 flex flex-wrap items-start justify-center gap-2">
-            {text.prompts.map((prompt) => (
-              <button
-                key={prompt}
-                type="button"
-                disabled={isLoading}
-                onClick={() => setUserInput(prompt)}
-                /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
-                   오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
-                className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
-              >
-                {prompt}
-              </button>
-            ))}
+            <button
+              type="button"
+              disabled={isLoading || !userInput.trim()}
+              onClick={() => void startChat(userInput, "/dev-chat")}
+              className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
+            >
+              {text.developer}
+            </button>
           </div>
-        </div>
 
-        {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
-        <div className="min-h-3 flex-1" />
-
-        {errorMessage && <ErrorBanner message={errorMessage} />}
-
-        {/*
-         * 위치 권한 고지. 채팅 바 바로 위다(2026-09-07) — 권한을 실제로 묻는 것은
-         * 여기서 보내는 순간이라, 누르기 직전에 읽히는 자리가 맞다.
-         *
-         * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
-         * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
-         *
-         * **text-muted(대비 4.76:1)보다 옅은 text-gray-400(2026-09-07)** — 실제
-         * 대비는 2.56:1로 WCAG AA(4.5:1)에 못 미친다. 11px 잔글씨라 원래도 본문
-         * 기준을 넘기지 못했었지만, 이 값은 명백히 더 내려간다. 필수로 읽어야
-         * 하는 안내가 아니라(안 읽어도 기능은 그대로 동작한다) 이 화면에서 가장
-         * 낮은 우선순위로 두기로 한 사용자 결정을 존중해 그대로 적용한다 —
-         * 다른 잔글씨(RecommendationDetailPreviewModal의 11px 캡션)에도 이미
-         * 쓰이는 값이라 새 색을 들이는 것도 아니다.
-         *
-         * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
-         * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
-         * 은 띄어쓰기에서만 끊는다.
-         *
-         * text-balance 는 뺐다 — 문장마다 block 이 되면 각 문장 안에서만 균형을
-         * 맞추므로 두 번째 문장이 두 줄로 쪼개질 여지만 생긴다.
-         */}
-        <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-gray-400">
           {/*
-           * 문장마다 한 줄이다. 좁은 화면에서는 block, sm 이상에서는 inline —
-           * 넓으면 두 문장이 한 줄에 다 들어간다.
+           * 오브가 맨 위에 오고 글이 그 아래에 가운데로 붙는다(2026-09-07).
            *
-           * 그냥 흘려보내면 두 번째 문장 첫머리("허용한")가 첫 줄 끝에 붙어
-           * 문장이 어디서 갈리는지 안 보였다(2026-09-07).
+           * 오브는 장식이라 aria-hidden 이다 — 누르는 기능도 움직임도 없다.
+           * 화면이 낮으면 이미지 자체가 작아진다(.tb-orb__img).
            */}
-          <span className="block sm:inline">{text.locationNotice.first}</span>{" "}
-          <span className="block sm:inline">{text.locationNotice.second}</span>
-        </p>
+          {/* pt 로 히어로를 아래로 내린다(2026-09-07). 아래 flex-1 칸이 그만큼
+            줄어들어 아래쪽 묶음은 제자리에 남는다. */}
+          <div className="flex flex-col items-center pt-10 text-center">
+            <img
+              src="/glass-object.png"
+              alt=""
+              aria-hidden
+              width={76}
+              height={75}
+              decoding="async"
+              className="tb-orb__img"
+            />
+            {/*
+             * 한 줄이다(2026-09-07). 두 줄로 쪼개 놓으면 가운데 정렬에서 윗줄이
+             * 짧아 축이 흔들려 보인다.
+             *
+             * 좁은 화면에서 접히지 않게 글자를 줄인다 — 24px 이면 "갑자기 일정이
+             * 바뀌셨나요?" 가 241px 이라 360px 화면의 본문 폭(328px)에 들어간다.
+             *
+             * **nowrap 은 쓰지 않는다.** 영어 문구가 더 길어서(Did your plans change
+             * suddenly?) 안 접히는 대신 칸을 넘어간다 — 한 줄로 만들려다 가로로
+             * 삐져나가면 더 나쁘다. 안 들어가는 날에는 얌전히 접히게 둔다.
+             *
+             * 부각하는 낱말은 "일정"과 "상황" 둘 다 브랜드색이다(2026-09-07 사용자
+             * 결정). 이 화면이 무엇에 대한 화면인지가 그 두 낱말에 다 들어 있다.
+             */}
+            <h1 className="mt-5 text-2xl font-bold leading-[1.32] tracking-[-0.035em] text-ink sm:text-[30px]">
+              {text.headline.lead}
+              <span className="text-brand">{text.headline.accent}</span>
+              {text.headline.tail}
+            </h1>
+            <p className="mt-3 text-[13px] leading-relaxed text-muted sm:text-sm">
+              {text.subtitle.lead}
+              <span className="font-semibold text-brand">{text.subtitle.accent}</span>
+              {text.subtitle.tail}
+            </p>
+            <div className="mt-6 flex flex-wrap items-start justify-center gap-2">
+              {text.prompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => setUserInput(prompt)}
+                  /* 프로스티드 — ChatComposer·AppHeader 가 이미 쓰는 언어다. 유리
+                   오브가 뜬 화면에서 누를 수 있는 것도 같이 떠 보이게 한다. */
+                  className="rounded-full border border-white bg-white/60 px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 disabled:opacity-50"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 남는 세로 공간은 여기가 갖는다 — 위는 히어로, 아래는 컴포저에 붙는다. */}
+          <div className="min-h-3 flex-1" />
+
+          {errorMessage && <ErrorBanner message={errorMessage} />}
+
+          {/*
+           * 위치 권한 고지. 채팅 바 바로 위다(2026-09-07) — 권한을 실제로 묻는 것은
+           * 여기서 보내는 순간이라, 누르기 직전에 읽히는 자리가 맞다.
+           *
+           * 예전에는 통짜 파란 패널이라 제목 다음으로 큰 색 덩어리였다. 고지는 먼저
+           * 읽히는 글이 아니라 필요할 때 찾는 글이라 잔글씨로 내렸다.
+           *
+           * **text-muted(대비 4.76:1)보다 옅은 text-gray-400(2026-09-07)** — 실제
+           * 대비는 2.56:1로 WCAG AA(4.5:1)에 못 미친다. 11px 잔글씨라 원래도 본문
+           * 기준을 넘기지 못했었지만, 이 값은 명백히 더 내려간다. 필수로 읽어야
+           * 하는 안내가 아니라(안 읽어도 기능은 그대로 동작한다) 이 화면에서 가장
+           * 낮은 우선순위로 두기로 한 사용자 결정을 존중해 그대로 적용한다 —
+           * 다른 잔글씨(RecommendationDetailPreviewModal의 11px 캡션)에도 이미
+           * 쓰이는 값이라 새 색을 들이는 것도 아니다.
+           *
+           * **break-keep 이 있어야 낱말이 안 쪼개진다.** 한글은 기본값에서 아무
+           * 글자에서나 줄이 갈려 "채팅 세 / 션의" 처럼 끊겼다(360px 실측). keep-all
+           * 은 띄어쓰기에서만 끊는다.
+           *
+           * text-balance 는 뺐다 — 문장마다 block 이 되면 각 문장 안에서만 균형을
+           * 맞추므로 두 번째 문장이 두 줄로 쪼개질 여지만 생긴다.
+           */}
+          <p className="mt-3 break-keep text-center text-[11px] leading-relaxed text-gray-400">
+            {/*
+             * 문장마다 한 줄이다. 좁은 화면에서는 block, sm 이상에서는 inline —
+             * 넓으면 두 문장이 한 줄에 다 들어간다.
+             *
+             * 그냥 흘려보내면 두 번째 문장 첫머리("허용한")가 첫 줄 끝에 붙어
+             * 문장이 어디서 갈리는지 안 보였다(2026-09-07).
+             */}
+            <span className="block sm:inline">{text.locationNotice.first}</span>{" "}
+            <span className="block sm:inline">{text.locationNotice.second}</span>
+          </p>
+        </div>
       </div>
 
       <ChatComposer
