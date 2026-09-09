@@ -496,15 +496,38 @@ def _to_district_population_card(
         # 본문이라 그 목록 아래 링크가 하나 붙으면 "여기서 더 볼 수 있다"로 읽히는데,
         # 눌러 보면 그렇지 않다. 한 곳짜리 카드는 지도 미리보기가 함께 있어 사정이
         # 다르므로 그쪽은 그대로 둔다.
-        realtime_detail_items=[
-            RealtimeInfoDetailItem(
-                title=area.area_name,
-                subtitle=area.congestion_level,
-                details={"안내": area.message} if area.message else {},
-            )
-            for area in result.areas
-        ],
+        realtime_detail_items=_district_congestion_items(result),
     )
+
+
+def _district_congestion_items(
+    result: DistrictPopulationInfoResult,
+) -> list[RealtimeInfoDetailItem]:
+    """등급 하나를 항목 하나로 묶는다.
+
+    **지역마다 한 항목씩 두지 않는다.** 같은 등급이면 서울시가 주는 안내 문구가 글자
+    하나까지 같아서, 종로구처럼 한 등급에 열 곳이 몰리면 같은 문장이 열 번 반복됐다
+    (2026-09-09). 읽을 것이 늘지 않는데 화면만 길어진다.
+
+    긴 안내 문장은 `subtitle`에 둔다. `details`는 두 칸 격자로 그려져(모달의
+    RealtimeDetailEntries) 문장이 절반 폭에 갇히면 어색하게 접힌다 — 제목 아래 한 줄로
+    흐르는 `subtitle`이 문장에 맞다.
+    """
+
+    grouped: dict[str, list[str]] = {}
+    messages: dict[str, str | None] = {}
+    for area in result.areas:
+        grouped.setdefault(area.congestion_level, []).append(area.area_name)
+        messages.setdefault(area.congestion_level, area.message)
+
+    return [
+        RealtimeInfoDetailItem(
+            title=f"{level} {len(names)}곳",
+            subtitle=messages.get(level),
+            details={"지역": ", ".join(names)},
+        )
+        for level, names in grouped.items()
+    ]
 
 
 def _to_realtime_detail_items(

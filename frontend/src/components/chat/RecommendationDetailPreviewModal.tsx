@@ -1174,7 +1174,14 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
                 )}
               </div>
               {Object.keys(item.details).length > 0 && (
-                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                /* 항목이 하나면 폭을 다 쓴다. 두 칸 격자에 긴 문장이 하나만 들어가면
+                   절반 폭에 갇혀 어색하게 접힌다 — 구 단위 혼잡도의 지역 목록이
+                   그랬다(2026-09-09). 값이 둘 이상일 때는 지금처럼 두 칸이 낫다. */
+                <dl
+                  className={`mt-2 grid gap-x-3 gap-y-1.5 text-xs ${
+                    Object.keys(item.details).length === 1 ? "grid-cols-1" : "grid-cols-2"
+                  }`}
+                >
                   {Object.entries(item.details).map(([key, value]) => (
                     <div key={key} className="min-w-0">
                       <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
