@@ -40,12 +40,17 @@ import type {
 import {
   buildAgentMessages,
   buildPhotoSimilarMessage,
+  buildRecommendationCaptionMessage,
   buildRecommendationMessages,
   createMessageId,
   isPhotoSimilarRecord,
 } from "./agentMessages";
 import { hasTimeGap } from "./timeSeparator";
-import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
+import {
+  findStreamInsertionIndex,
+  findStreamingMessageIndex,
+  freezeStreamingMessage,
+} from "./streamingMessage";
 import { attachRecommendationsToTurns } from "./pastRecommendations";
 import { clearState, loadState, saveState } from "./storage";
 
@@ -406,6 +411,9 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ...action.payload.recommendations,
         ...action.payload.unverified_recommendations,
       ].map((item) => item.place_id);
+      const captionMessage = buildRecommendationCaptionMessage({
+        hasResults: shownIds.length > 0,
+      });
       return {
         ...state,
         recommendations: action.payload.recommendations,
@@ -413,6 +421,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
         messages: [
           ...state.messages,
+          ...(captionMessage ? [captionMessage] : []),
           ...buildRecommendationMessages({
             recommendations: action.payload.recommendations,
             unverifiedRecommendations: action.payload.unverified_recommendations,
@@ -588,17 +597,14 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "SET_AGENT_PROGRESS":
       return { ...state, agentProgress: action.payload };
     case "APPEND_STREAM_RESULT": {
-      const {
-        recommendations,
-        state: streamState,
-        llm_output,
-        elapsedMsClient,
-        message: wrapperMessage,
-      } = action.payload;
+      const { recommendations, state: streamState, llm_output, elapsedMsClient } = action.payload;
       const shownIds = [
         ...recommendations.recommendations,
         ...recommendations.unverified_recommendations,
       ].map((item) => item.place_id);
+      const captionMessage = buildRecommendationCaptionMessage({
+        hasResults: shownIds.length > 0,
+      });
       return {
         ...state,
         recommendations: recommendations.recommendations,
@@ -606,21 +612,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
         session_id: streamState.session_id ?? state.session_id,
         streamingIntent: llm_output.intent,
+        // (LLM 팁이 곧 여기 맨 앞에 끼어든다, START_STREAM_MESSAGE) → 캡션 → 카드.
+        // 팁은 message_start/delta가 recommendation_caption 바로 앞에 끼워
+        // 넣는다(findStreamInsertionIndex) — 캡션·카드보다도 위로 온다.
         messages: [
           ...state.messages,
-          // SSE 추천은 고정 안내 → 카드 → LLM 선택 팁 순서다. result에만 담긴
-          // 고정 안내를 먼저 넣어, LLM이 길게 생성되는 동안에도 후보를 바로 보여준다.
-          ...(wrapperMessage
-            ? [
-                {
-                  id: createMessageId("assistant"),
-                  type: "assistant_text" as const,
-                  text: wrapperMessage,
-                  intent: llm_output.intent,
-                  status: llm_output.status,
-                },
-              ]
-            : []),
+          ...(captionMessage ? [captionMessage] : []),
           ...buildRecommendationMessages({
             recommendations: recommendations.recommendations,
             unverifiedRecommendations: recommendations.unverified_recommendations,
@@ -631,21 +628,28 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ],
       };
     }
-    case "START_STREAM_MESSAGE":
+    case "START_STREAM_MESSAGE": {
+      // 캡션(없으면 카드) 바로 앞에 끼워 넣는다 — LLM 팁이 이제 맨 위에서
+      // 실시간으로 채워진다(findStreamInsertionIndex). RECOMMEND가 아닌 턴은
+      // 캡션도 카드도 없어 기존처럼 배열 끝에 붙는다.
+      const insertAt = findStreamInsertionIndex(state.messages);
+      const streamMessage: ChatMessage = {
+        id: createMessageId("assistant-stream"),
+        type: "assistant_text",
+        text: "…",
+        intent: action.payload.intent,
+        streaming: true,
+      };
       return {
         ...state,
         streamingIntent: action.payload.intent,
         messages: [
-          ...state.messages,
-          {
-            id: createMessageId("assistant-stream"),
-            type: "assistant_text",
-            text: "…",
-            intent: action.payload.intent,
-            streaming: true,
-          },
+          ...state.messages.slice(0, insertAt),
+          streamMessage,
+          ...state.messages.slice(insertAt),
         ],
       };
+    }
     case "APPEND_STREAM_MESSAGE_DELTA": {
       const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
@@ -666,18 +670,23 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           ),
         };
       }
+      // message_start 없이 delta부터 온 엣지 케이스도 같은 자리에 끼워 넣는다 —
+      // 안 그러면 이 말풍선만 카드 아래로 갈라진다.
+      const insertAt = findStreamInsertionIndex(state.messages);
+      const fallbackMessage: ChatMessage = {
+        id: createMessageId("assistant-stream"),
+        type: "assistant_text",
+        text: action.payload.text,
+        intent: state.streamingIntent ?? undefined,
+        status: "complete",
+        streaming: true,
+      };
       return {
         ...state,
         messages: [
-          ...state.messages,
-          {
-            id: createMessageId("assistant-stream"),
-            type: "assistant_text",
-            text: action.payload.text,
-            intent: state.streamingIntent ?? undefined,
-            status: "complete",
-            streaming: true,
-          },
+          ...state.messages.slice(0, insertAt),
+          fallbackMessage,
+          ...state.messages.slice(insertAt),
         ],
       };
     }
@@ -706,25 +715,33 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       };
       const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
+      const isRecommendTurn =
+        response.llm_output.intent === "RECOMMEND" || response.llm_output.intent === "MODIFY";
+      // 카드 캡션은 이제 RecommendationResultMessage가 항상 그린다. RECOMMEND/
+      // MODIFY에서 팁이 한 글자도 안 왔으면(freezeStreamingMessage와 같은 규칙)
+      // response.message(고정 문구 폴백)로 채우지 않고 빈 말풍선을 지운다 —
+      // 채우면 캡션과 같은 말이 또 한 번 뜬다. 다른 Intent는 기존 폴백을 유지한다.
       const streamedMessages =
         streamingMessage?.type === "assistant_text" && streamingMessage.streaming
-          ? state.messages.map((message, index) =>
-              index === streamIndex
-                ? {
-                    ...streamingMessage,
-                    text:
-                      streamingMessage.text === "…"
-                        ? response.message ||
-                          (state.language === "en"
-                            ? "Here are some places that match your preferences."
-                            : "이런 곳들을 찾아봤어요:")
-                        : streamingMessage.text,
-                    intent: response.llm_output.intent,
-                    status: response.llm_output.status,
-                    streaming: false,
-                  }
-                : message,
-            )
+          ? streamingMessage.text === "…" && isRecommendTurn
+            ? state.messages.filter((_, index) => index !== streamIndex)
+            : state.messages.map((message, index) =>
+                index === streamIndex
+                  ? {
+                      ...streamingMessage,
+                      text:
+                        streamingMessage.text === "…"
+                          ? response.message ||
+                            (state.language === "en"
+                              ? "Here are some places that match your preferences."
+                              : "이런 곳들을 찾아봤어요:")
+                          : streamingMessage.text,
+                      intent: response.llm_output.intent,
+                      status: response.llm_output.status,
+                      streaming: false,
+                    }
+                  : message,
+              )
           : state.messages;
       const trailingMessages: ChatMessage[] = [];
       if (response.info_place_card !== null && response.info_place_card !== undefined) {

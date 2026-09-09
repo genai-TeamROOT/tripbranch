@@ -64,7 +64,7 @@ it("폐점과 확인 불가가 섞여도 줄은 하나고 순위가 이어진다
   );
 
   expect(screen.getAllByText("추천 장소")).toHaveLength(1);
-  const row = screen.getByText("추천 장소").parentElement as HTMLElement;
+  const row = screen.getByText("추천 장소").closest("section") as HTMLElement;
   expect(within(row).getByText("1위")).toBeInTheDocument();
   expect(within(row).getByText("2위")).toBeInTheDocument();
   expect(within(row).getByText("3위")).toBeInTheDocument();
@@ -100,7 +100,7 @@ it("검증된 후보 뒤로 순위가 이어지고 줄은 하나다", () => {
     { wrapper: TripProvider },
   );
 
-  const row = screen.getByText("추천 장소").parentElement as HTMLElement;
+  const row = screen.getByText("추천 장소").closest("section") as HTMLElement;
   expect(within(row).getByText("1위")).toBeInTheDocument();
   expect(within(row).getByText("2위")).toBeInTheDocument();
   expect(within(row).getByText("동네 서점")).toBeInTheDocument();

@@ -51,17 +51,19 @@ def load_document_contexts(documents_path: Path) -> dict[str, dict[str, str]]:
         contexts: dict[str, dict[str, str]] = {}
         for row in csv.DictReader(handle):
             document_id = _text(row.get("document_id"))
+            directness = _text(row.get("directness"))
+            quality_status = _text(row.get("quality_status"))
             if (
                 not document_id
-                or _text(row.get("directness")) != "direct"
-                or _text(row.get("quality_status")) != "ok"
+                or (directness and directness != "direct")
+                or (quality_status and quality_status != "ok")
             ):
                 continue
             contexts[document_id] = {
                 "content_id": _text(row.get("content_id")),
                 "place_title": _text(row.get("place_title")),
-                "source_type": _text(row.get("source_type")),
-                "source_text": _text(row.get("source_text")),
+                "source_type": _text(row.get("source_type")) or "naver_post",
+                "source_text": _text(row.get("source_text")) or _text(row.get("clean_text")),
             }
     return contexts
 

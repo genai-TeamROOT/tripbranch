@@ -305,19 +305,20 @@ test("user chat hides condition debug card and shows recommendations", async () 
   expect(screen.queryByText("운영시간을 확인할 수 없는 장소")).not.toBeInTheDocument();
 });
 
-test("streamed recommendation renders template, cards, then the LLM tip", async () => {
+test("streamed recommendation renders the LLM tip, then caption, then cards", async () => {
   await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  const template = await screen.findByText("이런 곳들을 찾아봤어요:");
-  const firstCard = screen.getByText("테스트 박물관");
+  // LLM 팁이 맨 위에서 실시간 생성된다(2026-09-09) — 팁 → 캡션 → 카드 순서.
   const tip = await screen.findByText("조건에 맞는 장소를 찾아봤어요.");
-  expect(template.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+  const caption = await screen.findByText("트리비가 추천하는 관광명소 순위예요:");
+  const firstCard = screen.getByText("테스트 박물관");
+  expect(tip.compareDocumentPosition(caption) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(caption.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
     0,
   );
-  expect(firstCard.compareDocumentPosition(tip) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
 test("user chat needs only one chat call", async () => {

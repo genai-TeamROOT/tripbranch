@@ -69,6 +69,24 @@ class MemoryLocalSearchProvider:
         return provider_result(self._places, source=ProviderSource.FAKE_LOCAL_SEARCH)
 
 
+class QueryKeyedLocalSearchProvider:
+    """질의 문자열별로 다른 결과를 돌려준다 — "역" 재검색처럼 원 질의와 재검색
+    질의의 응답이 달라야 하는 테스트 전용(`MemoryLocalSearchProvider`는 질의와
+    무관하게 항상 같은 결과라 이 시나리오를 표현하지 못한다)."""
+
+    def __init__(self, places_by_query: dict[str, tuple[LocalSearchPlace, ...]]) -> None:
+        self._places_by_query = places_by_query
+        self.calls: list[str] = []
+
+    async def search_places_by_name(
+        self, query: str, *, display: int = 5
+    ) -> ProviderResult[tuple[LocalSearchPlace, ...]]:
+        self.calls.append(query)
+        return provider_result(
+            self._places_by_query.get(query, ()), source=ProviderSource.FAKE_LOCAL_SEARCH
+        )
+
+
 class MemoryPlaceLocationRepository:
     def __init__(self, matches: tuple[StoredPlaceLocation, ...]) -> None:
         self._matches = matches
@@ -565,6 +583,67 @@ async def test_ambiguous_location_requires_clarification() -> None:
 
 
 @pytest.mark.asyncio
+async def test_indistinguishable_candidates_do_not_ask_again() -> None:
+    """이름표가 전부 같으면 되묻지 않는다.
+
+    되묻기의 목적은 고르게 하는 것인데, 선택지가 서로 구분되지 않으면 어느 버튼을 눌러도
+    같은 문자열이 다시 들어가 같은 되묻기로 돌아온다 — 사용자가 빠져나갈 길이 없다.
+
+    "강서구"가 그랬다(2026-09-09). 네이버 지오코딩이 부산 강서구까지 2건을 주는데
+    이름표는 둘 다 "강서구"라 선택지가 하나로 합쳐졌고, 그 하나를 눌러도 제자리였다.
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(query="서울특별시 강서구", count=2, labels=("강서구", "강서구"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("강서구"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "서울특별시 강서구"
+
+
+@pytest.mark.asyncio
+async def test_distinct_candidates_still_ask() -> None:
+    """이름표가 서로 다르면 고르는 행위에 뜻이 있으므로 지금처럼 되묻는다.
+
+    "익선동"은 종로구와 창원시 진해구에 둘 다 있다(2026-09-09 실측).
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(count=2, labels=("종로구 익선동", "창원시 진해구 익선동"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("익선동"))
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+    assert "종로구 익선동" in result.error.details["candidate_names"]
+    assert "창원시 진해구 익선동" in result.error.details["candidate_names"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_labels_are_shown_once() -> None:
+    """같은 이름표가 여러 번 와도 선택지에는 한 번만 싣는다.
+
+    같은 글자를 두 번 보여주면 사용자는 둘이 다른 곳이라 여기고 고르는데, 어느 쪽을
+    골라도 결과가 같다.
+    """
+
+    provider = SequenceGeocodingProvider(
+        [_result(count=3, labels=("종로구 익선동", "창원시 진해구 익선동", "종로구 익선동"))]
+    )
+
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("익선동"))
+
+    assert result.error is not None
+    names = result.error.details["candidate_names"]
+    assert names.count("종로구 익선동") == 1
+
+
+@pytest.mark.asyncio
 async def test_unknown_location_is_no_data() -> None:
     provider = SequenceGeocodingProvider(
         [AppError(code="location_not_found", message="없음", status_code=404)]
@@ -907,6 +986,119 @@ async def test_local_search_ambiguous_all_shops_and_geocoding_outside_service_ar
 
 
 @pytest.mark.asyncio
+async def test_local_search_retries_station_abbreviation_with_station_suffix() -> None:
+    """"교대"처럼 역 줄임말은 그대로 검색하면 동명 대학·상호에 밀려 역이 후보에
+    아예 안 잡힌다(실측, 2026-09-09: 네이버 지역 검색 "교대" 상위 5건은
+    서울교육대학교·식당뿐). "역"을 붙인 재검색으로 "교대역"을 찾아 채택한다.
+    """
+    provider = QueryKeyedLocalSearchProvider(
+        {
+            "교대": (
+                _local_place("교대갈비집 시청점", category="한식>육류,고기요리"),
+                _local_place("서울교육대학교", category="교육,학문>대학교"),
+            ),
+            "교대역": (
+                _local_place("교대역 2호선", category="교통,운수>지하철,전철"),
+                _local_place("교대역 3호선", category="교통,운수>지하철,전철"),
+            ),
+        }
+    )
+    geocoding = SequenceGeocodingProvider([])
+    result = await ResolveLocationTool(
+        geocoding, MemoryPlaceLocationRepository(()), provider
+    ).execute(ResolveLocationQuery("교대"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name in ("교대역 2호선", "교대역 3호선")
+    assert provider.calls == ["교대", "교대역"]
+    # 이름으로 확정했으므로 Geocoding까지 가지 않는다.
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_local_search_station_retry_accepts_name_mismatch() -> None:
+    """"홍대"+"역"="홍대역"의 실제 역명은 "홍대입구역"이라 이름이 다르다(실측,
+    2026-09-09). 정확/첫토큰/편집거리 매칭은 다 실패하지만, "역"을 붙인
+    재검색에서 교통 카테고리 후보가 단 하나면 이름이 달라도 채택한다.
+    """
+    provider = QueryKeyedLocalSearchProvider(
+        {
+            "홍대": (_local_place("홍익대학교 서울캠퍼스", category="교육,학문>대학교"),),
+            "홍대역": (
+                _local_place("홍대입구역 2호선", category="교통,운수>지하철,전철"),
+                _local_place("삼평식당 홍대본점", category="한식>육류,고기요리"),
+            ),
+        }
+    )
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), MemoryPlaceLocationRepository(()), provider
+    ).execute(ResolveLocationQuery("홍대"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "홍대입구역 2호선"
+
+
+@pytest.mark.asyncio
+async def test_local_search_station_retry_skips_when_query_already_ends_with_station() -> None:
+    """이미 "역"으로 끝나는 질의는 다시 붙이지 않는다 — "안국역역"을 만들지 않는다.
+
+    후보가 아예 없는 상태를 재현한다("안국역" 그대로 검색해도 0건). 접미사를
+    또 붙였다면 "안국역역"으로 한 번 더 호출됐을 텐데, 그러지 않고 바로
+    Geocoding으로 넘어간다.
+    """
+    provider = QueryKeyedLocalSearchProvider({})
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider(
+            [AppError(code="location_not_found", message="위치를 찾을 수 없어요.")]
+        ),
+        MemoryPlaceLocationRepository(()),
+        provider,
+    ).execute(ResolveLocationQuery("안국역"))
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    # "안국역역"으로 재조회하지 않는다 — 원 질의 한 번만 호출됐다.
+    assert provider.calls == ["안국역"]
+
+
+@pytest.mark.asyncio
+async def test_local_search_station_retry_stays_ambiguous_for_different_stations() -> None:
+    """"역"을 붙인 재검색에서 서로 다른 역이 여럿 나오면 임의로 고르지 않고
+    실패시켜 상위 호출부가 별칭/Geocoding 사다리로 넘기게 한다."""
+    provider = QueryKeyedLocalSearchProvider(
+        {
+            "OO": (_local_place("OO식당", category="음식점>한식"),),
+            "OO역": (
+                _local_place(
+                    "OO역 3호선",
+                    category="교통,운수>지하철,전철",
+                    latitude=37.5743,
+                    longitude=126.9848,
+                ),
+                _local_place(
+                    "XX역 1호선",
+                    category="교통,운수>지하철,전철",
+                    latitude=37.5900,
+                    longitude=126.9848,
+                ),
+            ),
+        }
+    )
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider(
+            [AppError(code="location_not_found", message="위치를 찾을 수 없어요.")]
+        ),
+        MemoryPlaceLocationRepository(()),
+        provider,
+    ).execute(ResolveLocationQuery("OO"))
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "location_not_found"
+
+
+@pytest.mark.asyncio
 async def test_local_search_asks_again_when_exact_name_duplicated() -> None:
     """정확 일치가 여러 건이면 첫 토큰으로도 못 좁히므로 바로 재질문한다."""
     result, _ = await _resolve_with_local_search(
@@ -944,7 +1136,8 @@ async def test_local_search_without_candidates_falls_back_to_geocoding() -> None
     ).execute(ResolveLocationQuery("청운효자동"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
-    assert local_search.calls == ["청운효자동"]
+    # 후보가 아예 없으면 "역"을 붙인 재검색을 한 번 더 시도한 뒤 Geocoding으로 넘어간다.
+    assert local_search.calls == ["청운효자동", "청운효자동역"]
     assert geocoding.calls != []
 
 

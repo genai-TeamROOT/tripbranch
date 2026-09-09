@@ -933,15 +933,16 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
 function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
   return (
     <div className="flex flex-wrap gap-2">
+      {/* **출처는 링크가 아니라 라벨이다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
+          신청 안내라 사용자가 읽을 화면이 아니다. 어디서 온 값인지만 밝히고 누를 수는
+          없게 둔다 — 화살표(↗)를 떼고 hover 반응도 없앤 것이 그 표시다.
+          **색은 옆 칩들과 같은 파랑으로 남긴다.** 회색으로 낮췄더니 눌리지 않는 칩이
+          아니라 비활성된 버튼처럼 보였다(2026-09-09). 옆의 두 칩(주차정보 포털·혼잡도
+          지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
       {card.realtime_source_url && (
-        <a
-          href={card.realtime_source_url}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
-        >
-          서울시 데이터 출처 ↗
-        </a>
+        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300">
+          서울시 데이터
+        </span>
       )}
       {isRealtimeParkingCard(card) && (
         <a
@@ -1174,7 +1175,14 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
                 )}
               </div>
               {Object.keys(item.details).length > 0 && (
-                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                /* 항목이 하나면 폭을 다 쓴다. 두 칸 격자에 긴 문장이 하나만 들어가면
+                   절반 폭에 갇혀 어색하게 접힌다 — 구 단위 혼잡도의 지역 목록이
+                   그랬다(2026-09-09). 값이 둘 이상일 때는 지금처럼 두 칸이 낫다. */
+                <dl
+                  className={`mt-2 grid gap-x-3 gap-y-1.5 text-xs ${
+                    Object.keys(item.details).length === 1 ? "grid-cols-1" : "grid-cols-2"
+                  }`}
+                >
                   {Object.entries(item.details).map(([key, value]) => (
                     <div key={key} className="min-w-0">
                       <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
@@ -1524,6 +1532,14 @@ export function RecommendationDetailPreviewModal({
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
   );
+  /*
+   * "AI가 추천하는 이유"의 두 번째 줄. 상세 응답과 함께 도착한다.
+   *
+   * null과 ""를 가른다 — null은 "아직 모른다"(자리를 비워 둔다), ""는 "받았는데
+   * 없다"(그 장소는 취향 태그가 없거나 생성이 실패했다. 자리를 접는다). 하나로
+   * 합치면 태그 없는 장소에서 자리표시자가 영원히 남는다.
+   */
+  const [aiReason, setAiReason] = useState<string | null>(null);
   // 호출부 4곳 모두 {selected && <모달/>}로 조건부 렌더링한다 — AnimatePresence로
   // 언마운트를 감지할 부모가 없다. 닫힐 때는 여기서 슬라이드다운을 먼저 재생하고,
   // 애니메이션이 끝난 뒤에야 실제 onClose(부모의 상태 제거)를 부른다.
@@ -1563,8 +1579,8 @@ export function RecommendationDetailPreviewModal({
   /* 목적지 좌표와 출발점이 모두 있어야 길찾기 딥링크를 만들 수 있다. 출발점은 훅이
      정한다 — 위치 설정의 출발지가 먼저고, 없으면 기기 좌표다. */
   const directions = useNaverDirections(device_location);
-  const canRoute =
-    detailCard?.latitude != null && detailCard?.longitude != null && directions.canRoute;
+  const hasRouteTarget = detailCard?.latitude != null && detailCard?.longitude != null;
+  const canRoute = hasRouteTarget && directions.canRoute;
   /*
    * 상세를 기다리는 동안에도 버튼 자리를 잡아 둔다. 이 버튼은 스크롤 영역 바깥의
    * 하단 고정 바라, 늦게 생기면 그만큼 본문 높이가 줄며 읽던 자리가 밀린다.
@@ -1578,10 +1594,18 @@ export function RecommendationDetailPreviewModal({
    * 출발지가 떠 있으니 위치를 아는 줄 안다. 실제로 겪는 상태다: 새 대화(RESET)는
    * 좌표를 지우지만 출발지·검색지는 sessionStorage에 남는다.
    */
+  /* 목적지가 있는 카드에서만 길찾기를 말한다.
+     실시간 도시데이터 INFO(혼잡도·상권·주차·지하철·버스·행사·도로소통·화장실)는 지역
+     단위 데이터라 카드에 목적지 좌표가 없고, 관광 상세로 보강하지도 않는다
+     (needsDetailEnrichment가 지도·목록이 있으면 막는다). 그런 카드에서 "지금 계신 곳을
+     알아야 길을 안내할 수 있어요"를 띄우면, 위치를 줘도 갈 곳이 없어 바가 그냥
+     사라진다 — 사용자에게는 "위치를 받았더니 길찾기가 없어진" 것으로 보인다.
+     공중화장실처럼 목적지가 여럿인 카드는 항목별로 여는 것이 맞고, 하단 바 하나로는
+     어느 곳을 고를지 정할 수 없다. */
   /* 출발점을 하나도 못 정할 때만 안내한다. 사용자가 위치 설정에서 출발지를 정해
      뒀으면 기기 좌표가 없어도 길찾기를 열 수 있으므로, 여기서 좌표만 보면 열 수 있는
      상황에도 "현재 위치를 받으세요"라고 말하게 된다. */
-  const needsDeviceLocation = !directions.canRoute;
+  const needsDeviceLocation = hasRouteTarget && !directions.canRoute;
   const showRouteFooter = needsDeviceLocation || canRoute || isLoading;
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
@@ -1614,12 +1638,16 @@ export function RecommendationDetailPreviewModal({
     const shouldEnrichCard = needsDetailEnrichment(card);
     if (card && !shouldEnrichCard) {
       setDetailCard(card);
+      // 조회를 아예 안 하는 경로다 — 문장은 오지 않는다. null로 두면 자리표시자가
+      // 영원히 남는다.
+      setAiReason("");
       return;
     }
     // 이름만 있으면 상세를 조회한다. 혼잡도·행사 카드는 place_id가 없지만
     // 이름으로 조회해 전체 상세(좌표 포함)를 받는다.
     if (!placeName) {
       setDetailStatus("no_data");
+      setAiReason("");
       return;
     }
     let cancelled = false;
@@ -1627,9 +1655,19 @@ export function RecommendationDetailPreviewModal({
     setDetailCard(card ?? null);
     setDetailStatus("loading");
 
-    void fetchRecommendationPlaceDetails({ place_id: placeId, place_name: placeName })
+    void fetchRecommendationPlaceDetails({
+      place_id: placeId,
+      place_name: placeName,
+      // 추천/수정 카드로 열었을 때만 문장을 만든다. INFO 카드·사진 검색 결과에는
+      // "AI가 추천하는 이유" 절 자체가 없어서(item이 없으면 안 그려진다), 켜면
+      // 읽히지 않을 문장에 클릭마다 LLM 값을 치른다.
+      want_ai_reason: Boolean(item),
+      category_label: item?.category_label ?? item?.category,
+    })
       .then((response) => {
         if (cancelled) return;
+        // 빈 문자열로 확정한다 — "받았는데 없다"와 "아직 모른다"를 가르는 값이다.
+        setAiReason(response.ai_reason ?? "");
         if (response.status === "success" && response.place_card) {
           setDetailCard(
             card
@@ -1645,13 +1683,16 @@ export function RecommendationDetailPreviewModal({
         setDetailStatus(response.status === "unavailable" ? "unavailable" : "no_data");
       })
       .catch(() => {
-        if (!cancelled) setDetailStatus("unavailable");
+        if (!cancelled) {
+          setDetailStatus("unavailable");
+          setAiReason("");
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [card, placeId, placeName]);
+  }, [card, item, placeId, placeName]);
 
   // .tb-shell의 contain:layout에 기대는 대신 document.body로 포탈해, 채팅
   // 스크롤 위치나 조상 요소의 overflow/포지셔닝과 무관하게 지금 보고 있는
@@ -1852,6 +1893,32 @@ export function RecommendationDetailPreviewModal({
                 </p>
               </div>
               <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+              {/* 두 번째 줄은 상세 응답과 함께 도착한다(recommend.place_reason).
+                  위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
+                  말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
+
+                  **자리를 미리 잡는다.** 이 절을 표보다 위에 둔 이유가 "표가
+                  스켈레톤인 동안 읽을 것이 있고, 나중에 채워져도 이 절이 밀리거나
+                  늘지 않는다"였다(2026-09-08 결정). 늦게 오는 줄을 그냥 끼우면 그
+                  성질이 깨져 읽는 도중 아래가 밀린다. 그래서 대기 중에는 같은
+                  높이의 자리표시자를 그리고, 문장 없이 확정되면(취향 태그가 없는
+                  장소·생성 실패) 접는다.
+
+                  두 줄로 잡은 것은 프롬프트가 1~2문장으로 못 박혀 있기 때문이다. */}
+              {aiReason === null ? (
+                <div
+                  className="flex flex-col gap-1.5"
+                  aria-hidden
+                  data-testid="ai-reason-placeholder"
+                >
+                  <div className="h-3.5 w-full animate-pulse rounded bg-line" />
+                  <div className="h-3.5 w-2/3 animate-pulse rounded bg-line" />
+                </div>
+              ) : (
+                aiReason && (
+                  <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
+                )
+              )}
             </section>
           )}
 

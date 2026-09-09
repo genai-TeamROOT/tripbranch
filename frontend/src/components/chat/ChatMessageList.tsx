@@ -11,7 +11,7 @@
  * 이유가 없다(개발자용 정보가 실서비스 화면에 새던 문제를 정리함).
  */
 
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Sparkles } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { AgentProgressEvent, ChatMessage, Language, TravelOriginToggle } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
@@ -116,15 +116,7 @@ function MarkdownText({ text }: { text: string }) {
   return <div className="space-y-1.5">{elements}</div>;
 }
 
-function StreamingText({
-  text,
-  streaming,
-  language,
-}: {
-  text: string;
-  streaming: boolean;
-  language: Language;
-}) {
+function StreamingText({ text, streaming }: { text: string; streaming: boolean }) {
   // Gemini는 단어·문장 단위 청크를 보내기도 한다. 화면에서는 청크 크기와 무관하게
   // 한 글자씩 이어 보여, 첫 텍스트가 도착한 뒤에도 생성 중이라는 감각을 유지한다.
   const [visibleText, setVisibleText] = useState(() => (streaming ? "" : text));
@@ -144,11 +136,7 @@ function StreamingText({
     return () => window.clearInterval(timer);
   }, [streaming, text, visibleText]);
 
-  const displayText =
-    language === "en" && text === "이런 곳들을 찾아봤어요:"
-      ? "Here are some places that match your preferences."
-      : visibleText;
-  return <MarkdownText text={displayText} />;
+  return <MarkdownText text={visibleText} />;
 }
 
 /*
@@ -232,6 +220,25 @@ function TurnErrorNotice({
           {language === "en" ? "Try again" : "다시 시도"}
         </button>
       )}
+    </div>
+  );
+}
+
+/*
+ * 추천 카드 앞에 뜨는 고정 캡션 한 줄(문구 통합, 2026-09-09). 추천 기준
+ * 보조설명("거리·날씨·취향 등을 고려했어요")은 여기 없다 — "추천 장소" 가로
+ * 줄 오른쪽에 붙는다(RecommendationResultMessage → PlaceCardRow의 note,
+ * 2026-09-09 사용자 피드백). 카드·팁과 메시지를 갈라 둔 이유는
+ * ChatMessageList.tsx의 "recommendation_caption" 분기 옆 주석과
+ * agentMessages.ts의 buildRecommendationCaptionMessage 주석 참고.
+ */
+function RecommendationCaptionMessage({ language }: { language: Language }) {
+  const summary =
+    language === "en" ? "Trivi's ranked picks for you:" : "트리비가 추천하는 관광명소 순위예요:";
+  return (
+    <div className="flex w-full items-center gap-1.5 text-sm text-ink">
+      <Sparkles size={16} className="shrink-0 text-brand" aria-hidden="true" />
+      <p>{summary}</p>
     </div>
   );
 }
@@ -360,7 +367,6 @@ export function ChatMessageList({
                   <StreamingText
                     text={message.text}
                     streaming={message.type === "assistant_text" && Boolean(message.streaming)}
-                    language={language}
                   />
                 )}
                 {message.type === "assistant_text" && message.footnote && (
@@ -490,6 +496,10 @@ export function ChatMessageList({
                 onSetLocation={onSetLocation}
               />
             );
+          }
+
+          if (message.type === "recommendation_caption") {
+            return <RecommendationCaptionMessage key={message.id} language={language} />;
           }
 
           if (message.type === "past_recommendation_result") {
