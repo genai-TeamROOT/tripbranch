@@ -1028,3 +1028,65 @@ it("스켈레톤 행과 실제 행이 같은 뼈대를 쓴다", async () => {
   const realRow = (await screen.findAllByTestId("info-row"))[0];
   expect(realRow.className).toBe(skeletonRowClass);
 });
+
+
+/*
+ * 실시간 도시데이터 INFO는 지역 단위 데이터라 카드에 목적지 좌표가 없다. 관광 상세로
+ * 보강하지도 않는다 — needsDetailEnrichment가 지도·목록이 있으면 막는다.
+ *
+ * 그런 카드에서 하단 바를 띄우면, 위치를 줘도 갈 곳이 없어 바가 그냥 사라진다.
+ * 사용자에게는 "위치를 받았더니 길찾기가 없어진" 것으로 보인다.
+ */
+it("목적지가 없는 실시간 카드에는 길찾기 바를 띄우지 않는다", async () => {
+  seedDeviceLocation();
+  const districtCard = card({
+    question_type: "concentration",
+    place_name: "종로구",
+    latitude: null,
+    longitude: null,
+    realtime_area_name: "종로구",
+    realtime_detail_items: [
+      {
+        title: "약간 붐빔 6곳",
+        subtitle: "붐빈다고 느낄 수 있어요.",
+        details: { 지역: "경복궁" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  });
+  render(
+    <RecommendationDetailPreviewModal card={districtCard} onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("약간 붐빔 6곳")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
+});
+
+it("현재 위치가 없어도 목적지가 없으면 위치 사용을 권하지 않는다", async () => {
+  const districtCard = card({
+    question_type: "concentration",
+    place_name: "종로구",
+    latitude: null,
+    longitude: null,
+    realtime_area_name: "종로구",
+    realtime_detail_items: [
+      {
+        title: "보통 4곳",
+        subtitle: "크게 붐비지는 않아요.",
+        details: { 지역: "보신각" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  });
+  render(
+    <RecommendationDetailPreviewModal card={districtCard} onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("보통 4곳")).toBeInTheDocument();
+  expect(screen.queryByText(/지금 계신 곳을 알아야/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /현재 위치 사용/ })).not.toBeInTheDocument();
+});
