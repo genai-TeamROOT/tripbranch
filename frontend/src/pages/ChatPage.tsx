@@ -431,19 +431,7 @@ export function ChatPage() {
 
   return (
     <main className="relative flex h-full flex-col overflow-hidden">
-      {/* 담은 장소가 있으면 헤더 오른쪽에 "N곳 일정 짜기"가 뜬다. 전에는 이
-          동작이 입력창 바로 위(SavedPlacesBar)에 있어서, 하트를 누른 뒤 맨
-          아래까지 내려가야 보였다 — 카드를 보며 담는 동안에는 안 보인다. */}
-      <AppHeader
-        location={locationChip}
-        trailing={
-          <SavedPlacesChip
-            onPlanFromSaved={planFromSaved}
-            isLoading={isLoading}
-            language={state.language}
-          />
-        }
-      />
+      <AppHeader location={locationChip} />
 
       {/*
        * **스크롤은 이 칸만 한다**(2026-09-09). 전에는 main 자체가 스크롤러였고
@@ -531,8 +519,17 @@ export function ChatPage() {
           래퍼도 스크롤 칸과 컴포저 사이의 형제가 됐다 — 자리가 고정이라 붙일
           대상이 없고, iOS에서 sticky가 죽는 문제도 같이 비켜간다(ChatComposer
           주석). h-0 + items-end 라 버튼은 그 경계선에서 위로 자라 컴포저 바로
-          위에 뜬다. tb-keyboard-lift 로 컴포저와 같은 만큼 올라간다. */}
-      <div className="tb-keyboard-lift pointer-events-none absolute inset-x-0 bottom-[var(--tb-composer-h,0px)] z-30 mx-auto flex w-full max-w-2xl justify-end px-4">
+          위에 뜬다. tb-keyboard-lift 로 컴포저와 같은 만큼 올라간다.
+
+          **이동 버튼과 일정 칩이 한 띠를 쓴다**(2026-09-09). 칩은 전에 헤더
+          오른쪽에 있었는데, 눌러야 하는 두 동작이 화면 위아래로 갈려 있었다.
+          지금은 손이 가는 자리인 입력창 바로 위에 모인다.
+
+          양옆 flex-1이 같은 폭이라 가운데 버튼이 **칩 너비와 무관하게** 정중앙에
+          선다. 칩은 담은 곳이 없으면 스스로 사라지는데, 그때도 버튼 자리는 그대로다.
+          items-end 라 높이가 다른 둘의 아랫변이 맞는다. */}
+      <div className="tb-keyboard-lift pointer-events-none absolute inset-x-0 bottom-[var(--tb-composer-h,0px)] z-30 mx-auto flex w-full max-w-2xl items-end px-4">
+        <div className="flex-1" />
         <motion.button
           type="button"
           animate={{
@@ -550,6 +547,13 @@ export function ChatPage() {
         >
           {scrollButtonDirection === "up" ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </motion.button>
+        <div className="pointer-events-auto flex flex-1 justify-end">
+          <SavedPlacesChip
+            onPlanFromSaved={planFromSaved}
+            isLoading={isLoading}
+            language={state.language}
+          />
+        </div>
       </div>
 
       <ChatComposer
