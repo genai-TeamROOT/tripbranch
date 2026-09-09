@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import time
+from pathlib import Path
 
 from app.config import Settings
 from app.providers.gemini import RealGeminiProvider
@@ -102,10 +104,35 @@ def _served_model() -> str | None:
     return metadata.calls[-1].served_model
 
 
+def _tokens() -> dict[str, int]:
+    """직전 호출의 토큰. **사고 토큰을 보려고 넣었다.**
+
+    `thinking_budget=0`은 `_thinking_config_for()`에서 `thinking_level=MINIMAL`로
+    바뀌어 나가는데, **그것이 실제로 생각을 끄는지는 모델마다 다르다.** 사고
+    토큰은 과금 대상이면서 출력 토큰에 안 잡히므로, 안 세면 새 모델의 비용을
+    과소 집계한다. 특히 `gemini-3.6-flash`처럼 숫자 0을 거부하는 모델을 잴 때
+    이 열이 없으면 "왜 비싼가"에 답할 수 없다.
+    """
+    metadata = get_llm_execution_metadata()
+    if metadata is None or not metadata.calls:
+        return {}
+    out: dict[str, int] = {}
+    for call in metadata.calls:
+        for key, value in (
+            ("입력토큰", call.input_tokens),
+            ("출력토큰", call.output_tokens),
+            ("사고토큰", call.thoughts_tokens),
+            ("캐시토큰", call.cached_tokens),
+        ):
+            if isinstance(value, int):
+                out[key] = out.get(key, 0) + value
+    return out
+
+
 async def _extract(
     provider: RealGeminiProvider, text: str
-) -> tuple[str | None, int | None, str | None, str | None, int]:
-    """(search_center, time_available, 응답 모델, 오류, ms)를 반환한다."""
+) -> tuple[str | None, int | None, str | None, str | None, int, dict[str, int]]:
+    """(search_center, time_available, 응답 모델, 오류, ms, 토큰)을 반환한다."""
     reset_llm_execution_metadata()
     started = time.perf_counter()
     try:
@@ -119,10 +146,16 @@ async def _extract(
         search_center, time_available = None, None
         error = f"{type(exc).__name__}: {exc}"
     ms = round((time.perf_counter() - started) * 1000)
-    return search_center, time_available, _served_model(), error, ms
+    return search_center, time_available, _served_model(), error, ms, _tokens()
 
 
-async def run(model: str | None, repeat: int, delay: float) -> list[dict[str, object]]:
+async def run(
+    model: str | None,
+    repeat: int,
+    delay: float,
+    *,
+    max_consecutive_errors: int = 3,
+) -> list[dict[str, object]]:
     settings = Settings()
     if not settings.llm_api_key:
         raise ValueError("LLM_API_KEY가 필요합니다.")
@@ -138,6 +171,10 @@ async def run(model: str | None, repeat: int, delay: float) -> list[dict[str, ob
     print(f"모델 묶음: {chain} | 반복: {repeat}회 | 케이스: {len(CASES)}건")
 
     rows: list[dict[str, object]] = []
+    token_totals: dict[str, int] = {}
+    # 연속 실패 중단. 설정 오류는 케이스마다 독립 사건이 아니라서, 끝까지 도는
+    # 루프는 비용을 케이스 수만큼 곱한다(RULES 함정 46).
+    consecutive_errors = 0
     for group, text, expected_center, expected_time in CASES:
         centers: list[str | None] = []
         times: list[int | None] = []
@@ -145,7 +182,9 @@ async def run(model: str | None, repeat: int, delay: float) -> list[dict[str, ob
         errors: list[str] = []
         latencies: list[int] = []
         for _ in range(repeat):
-            center, time_available, served, error, ms = await _extract(provider, text)
+            center, time_available, served, error, ms, toks = await _extract(provider, text)
+            for key, value in toks.items():
+                token_totals[key] = token_totals.get(key, 0) + value
             centers.append(center)
             times.append(time_available)
             models.append(served)
@@ -153,6 +192,15 @@ async def run(model: str | None, repeat: int, delay: float) -> list[dict[str, ob
             if error:
                 errors.append(error)
             print("." if error is None else "!", end="", flush=True)
+            if error is None:
+                consecutive_errors = 0
+            else:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise SystemExit(
+                        f"\n연속 {consecutive_errors}건 실패로 중단합니다. "
+                        f"마지막 오류: {error}"
+                    )
             await asyncio.sleep(delay)
         rows.append(
             {
@@ -169,6 +217,31 @@ async def run(model: str | None, repeat: int, delay: float) -> list[dict[str, ob
         )
 
     print(flush=True)
+    if token_totals:
+        done = sum(1 for r in rows for _ in [0])  # 케이스 수
+        calls = max(done * repeat, 1)
+        summary = "  ".join(
+            f"{k} {v:,} (호출당 {v // calls:,})" for k, v in token_totals.items()
+        )
+        print(f"토큰 합계 — {summary}")
+        # **사고 토큰이 0이 아니면 그 모델은 MINIMAL에서도 생각한다.** 과금 대상이다.
+        if token_totals.get("사고토큰"):
+            print(
+                "⚠️  사고 토큰이 0이 아니다 — 이 모델은 thinking_level=MINIMAL에서도 "
+                "생각한다. 비용 계산에 반드시 포함할 것."
+            )
+        # **자동 캐싱이 걸렸는지.** Gemini는 2.5 이상에서 기본으로 켜져 있고 최소
+        # 4,096토큰을 넘어야 적중한다. 추출 프롬프트는 그 문턱 바로 위로 추정돼
+        # 있어서, 실제로 넘는지 못 넘는지가 입력 비용을 열 배로 가른다.
+        cached = token_totals.get("캐시토큰", 0)
+        inp = token_totals.get("입력토큰", 0)
+        if cached:
+            print(f"자동 캐싱 적중 — 입력의 {cached * 100 // max(inp, 1)}%가 캐시에서 읽혔다.")
+        else:
+            print(
+                "⚠️  캐시 적중 0 — 자동 캐싱이 한 번도 안 걸렸다. 프롬프트가 최소 "
+                "토큰(3.5·3.6 Flash 계열 4,096)에 못 미치거나 접두가 매 턴 달라지는 것이다."
+            )
     return rows
 
 
@@ -253,9 +326,16 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
         f"최소 {all_ms[0]}ms · 최대 {all_ms[-1]}ms"
     )
     print(f"반복 {repeat}회 기준")
-    print(f"  흔들린 케이스        {len(unstable)}/{len(rows)}건")
-    for r in unstable:
-        print(f"    - {r['발화']}  center={_fmt(r['centers'])} time={_fmt(r['times'])}")
+    if repeat < 2:
+        # **반복 1회에서는 흔들림이 정의상 0이다.** 그걸 "0/18건"으로 찍으면
+        # 다음 사람이 "이 모델은 안 흔들린다"로 읽는다 — 구조적으로 0인 칸을
+        # 근거로 세는 것이 RULES 함정 50이다. 숫자 대신 판정 불가를 적는다.
+        print("  흔들린 케이스        판정 불가 (반복 1회 — 같은 입력을 두 번 안 넣었다)")
+    else:
+        print(f"  흔들린 케이스        {len(unstable)}/{len(rows)}건")
+    if repeat >= 2:
+        for r in unstable:
+            print(f"    - {r['발화']}  center={_fmt(r['centers'])} time={_fmt(r['times'])}")
     print(f"  응답 모델이 바뀐 케이스 {len(fell_back)}/{len(rows)}건")
     for r in fell_back:
         print(f"    - {r['발화']}  {_fmt([_short_model(m) for m in r['models']])}")
@@ -287,10 +367,60 @@ def main() -> None:
         action="store_true",
         help="흔들림이 있으면 종료코드 1. 기본은 0 — 기준선 측정 자체는 실패가 아니다",
     )
+    parser.add_argument(
+        "--max-calls", type=int, default=60,
+        help="예정 호출 수가 이 값을 넘으면 실행을 거부한다",
+    )
+    parser.add_argument(
+        "--max-consecutive-errors", type=int, default=3,
+        help="연속 실패가 이 횟수에 닿으면 중단한다",
+    )
+    parser.add_argument(
+        "--out-dir", type=Path, default=None,
+        help="주면 <out-dir>/verify_extraction_<모델>.json에 원자료를 남긴다",
+    )
     args = parser.parse_args()
 
-    rows = asyncio.run(run(args.model, args.repeat, args.delay))
+    planned = args.repeat * len(CASES)
+    print(f"예정 호출 {planned}건, 상한 {args.max_calls}건")
+    if planned > args.max_calls:
+        raise SystemExit(
+            f"예정 호출 {planned}건이 --max-calls({args.max_calls})를 넘습니다. "
+            "반복을 줄이거나 --max-calls를 명시하세요."
+        )
+
+    rows = asyncio.run(
+        run(
+            args.model,
+            args.repeat,
+            args.delay,
+            max_consecutive_errors=args.max_consecutive_errors,
+        )
+    )
     unstable = _report(rows, args.repeat)
+
+    if args.out_dir:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        # **요청 모델을 파일에 박는다.** 어느 모델의 기준선인지 나중에 config
+        # 이력과 .env를 뒤져 확인하는 일이 실제로 있었다(RULES 함정 49).
+        tag = (args.model or "설정값").replace("/", "_")
+        out_path = args.out_dir / f"verify_extraction_{tag}.json"
+        out_path.write_text(
+            json.dumps(
+                {
+                    "요청_모델": args.model,
+                    "반복": args.repeat,
+                    "케이스_수": len(CASES),
+                    "흔들린_케이스_수": unstable,
+                    "행": rows,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"원자료 저장: {out_path}")
+
     raise SystemExit(1 if (args.strict and unstable) else 0)
 
 
