@@ -5,7 +5,7 @@
  * 호출 시점: ChatMessageList가 place_info_result 메시지를 렌더할 때 호출된다.
  */
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
 import { useTripState } from "../../state/TripContext";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
@@ -124,8 +124,11 @@ function parseOperatingHours(value: string): OperatingHoursRow[] | null {
 }
 
 function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
+  /* 위쪽 여백을 두지 않는다 — 이 묶음은 <dd> 안에 들어가고, 여백을 주면 값
+     블록만 라벨보다 내려가 같은 행인데 서로 어긋나 보인다(2026-09-09 화면
+     확인). 행 간격은 바깥 <dl>이 맡는다. */
   return (
-    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+    <div className="grid gap-2 sm:grid-cols-2">
       {rows.map(({ period, hours }) => (
         <div key={period} className="rounded-xl bg-chip px-3 py-2">
           <p className="text-xs font-semibold text-label">{period}</p>
@@ -591,21 +594,36 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
       ) : isRealtimeSubwayCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
         <SubwayArrivalList items={card.realtime_detail_items ?? []} />
       ) : answers.length > 0 ? (
-        <dl className="px-4 py-3 text-sm">
-          {answers.map(([key, value]) => (
-            <div key={key} className="flex gap-2">
-              <dt className="shrink-0 text-muted">
-                {isEn ? (FIELD_LABELS_EN[key] ?? FIELD_LABELS[key] ?? key) : (FIELD_LABELS[key] ?? key)}
-              </dt>
-              <dd className="min-w-0 flex-1 whitespace-pre-line text-ink">
-                {key === "operating_hours" && parseOperatingHours(value) ? (
-                  <OperatingHoursRows rows={parseOperatingHours(value) ?? []} />
-                ) : (
-                  formatCardValue(key as keyof InfoPlaceCardData, value)
-                )}
-              </dd>
-            </div>
-          ))}
+        /* 라벨 열은 grid의 auto 트랙 하나가 맡는다. 행마다 <dt>를 따로 두면 그
+           행의 라벨 글자 폭이 그대로 열 폭이 되어, "휴무일"(3자)과 "운영시간"(4자)
+           사이에서 값이 시작하는 자리가 어긋난다(2026-09-09 화면 확인). dt/dd 를
+           감싸는 행 <div>를 두지 않는 것이 핵심이다 — 감싸면 행마다 별개의 포맷
+           맥락이 되어 서로의 라벨 폭을 모른다. 행 간격(gap-y)도 여기서 준다 —
+           예전에는 행이 서로 붙어 있어 휴무일의 두 번째 줄과 다음 항목이 한
+           덩어리로 읽혔다. */
+        <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 px-4 py-3 text-sm">
+          {answers.map(([key, value]) => {
+            const hoursRows = key === "operating_hours" ? parseOperatingHours(value) : null;
+            return (
+              <Fragment key={key}>
+                {/* 값이 칩 묶음이면 라벨을 6px 내린다. 칩의 첫 글자는 칩 안쪽
+                    여백(py-2, 8px)만큼 내려가 있어서, 라벨을 행 맨 위에 두면
+                    같은 행인데 라벨만 위로 뜬다. 다른 행은 값이 글자라 그대로 맞다. */}
+                <dt className={`text-muted ${hoursRows ? "pt-1.5" : ""}`}>
+                  {isEn
+                    ? (FIELD_LABELS_EN[key] ?? FIELD_LABELS[key] ?? key)
+                    : (FIELD_LABELS[key] ?? key)}
+                </dt>
+                <dd className="min-w-0 whitespace-pre-line text-ink">
+                  {hoursRows ? (
+                    <OperatingHoursRows rows={hoursRows} />
+                  ) : (
+                    formatCardValue(key as keyof InfoPlaceCardData, value)
+                  )}
+                </dd>
+              </Fragment>
+            );
+          })}
         </dl>
       ) : null}
 
