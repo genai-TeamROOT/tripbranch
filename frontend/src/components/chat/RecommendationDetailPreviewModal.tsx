@@ -32,10 +32,11 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { createPortal } from "react-dom";
-import { fetchRecommendationPlaceDetails } from "../../api/trip";
+import { fetchPlaceAiReason, fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import { placeCategoryLabel } from "../../utils/placeCategory";
 import { getBrowserDeviceLocation } from "../../utils/geolocation";
+import { isAlwaysOpen } from "../../utils/operatingHours";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
 import { openNaverMapSearch } from "../../utils/naverDirections";
@@ -122,6 +123,13 @@ const ACCESSIBILITY_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIc
  */
 function operatingStatusSuffix(item: RecommendationItem | undefined, isEn: boolean): string | null {
   if (!item) return null;
+  /* 상시 개방인 곳은 남은 시간을 말하지 않는다. 공원·산책로에 "영업 중"은 장사
+     하는 곳처럼 들리고, 그보다 "시간을 안 보고 가도 된다"가 이 장소에 대해 알려줄
+     것이 더 많다. "운영"은 이 배지가 닫힌 상태에 이미 쓰는 말이라(운영 종료)
+     매장에도 공원에도 같이 붙는다. 판정은 목록 카드와 같은 규칙을 쓴다. */
+  if (item.operating_hours_display && isAlwaysOpen(item.operating_hours_display)) {
+    return isEn ? "Open 24h" : "24시간 운영";
+  }
   if (isEn) return item.remaining_minutes === null ? "Closed" : "Open";
   return item.remaining_minutes === null ? "운영 종료" : "영업 중";
 }
@@ -1533,7 +1541,10 @@ export function RecommendationDetailPreviewModal({
     "loading",
   );
   /*
-   * "AI가 추천하는 이유"의 두 번째 줄. 상세 응답과 함께 도착한다.
+   * "AI가 추천하는 이유"의 두 번째 줄. 상세조회가 끝난 뒤 **별도 호출**로 도착한다
+   * (아래 두 번째 useEffect). 한 응답에 묶으면 이 문장을 만드는 1~2초 동안 주소·
+   * 운영시간·사진까지 통째로 안 나온다 — 부가 문장 하나 때문에 카드 전체가 늦는
+   * 것이 훨씬 나쁘다.
    *
    * null과 ""를 가른다 — null은 "아직 모른다"(자리를 비워 둔다), ""는 "받았는데
    * 없다"(그 장소는 취향 태그가 없거나 생성이 실패했다. 자리를 접는다). 하나로
@@ -1638,7 +1649,7 @@ export function RecommendationDetailPreviewModal({
     const shouldEnrichCard = needsDetailEnrichment(card);
     if (card && !shouldEnrichCard) {
       setDetailCard(card);
-      // 조회를 아예 안 하는 경로다 — 문장은 오지 않는다. null로 두면 자리표시자가
+      // 조회를 아예 안 하는 경로다 — 문장도 오지 않는다. null로 두면 자리표시자가
       // 영원히 남는다.
       setAiReason("");
       return;
@@ -1655,19 +1666,41 @@ export function RecommendationDetailPreviewModal({
     setDetailCard(card ?? null);
     setDetailStatus("loading");
 
-    void fetchRecommendationPlaceDetails({
-      place_id: placeId,
-      place_name: placeName,
-      // 추천/수정 카드로 열었을 때만 문장을 만든다. INFO 카드·사진 검색 결과에는
-      // "AI가 추천하는 이유" 절 자체가 없어서(item이 없으면 안 그려진다), 켜면
-      // 읽히지 않을 문장에 클릭마다 LLM 값을 치른다.
-      want_ai_reason: Boolean(item),
-      category_label: item?.category_label ?? item?.category,
-    })
+    /*
+     * 상세가 도착한 **뒤에** 문장을 따로 받는다. 두 호출을 한 응답으로 묶었더니
+     * 문장 생성에 드는 1~2초가 주소·운영시간·사진이 뜨는 시각을 통째로 밀었다 —
+     * 부가 문장 하나 때문에 카드 전체가 늦는 것이 훨씬 나쁘다.
+     *
+     * 이어서 부르는 것은 서버가 문장의 근거(취향 태그·후기)를 place_id로 다시
+     * 읽기 때문이다. 이름 해석이 끝난 id가 나와야 부를 수 있다.
+     *
+     * 추천/수정 카드로 열었을 때만 부른다. INFO 카드·사진 검색 결과에는 그 절
+     * 자체가 없어서(item이 없으면 안 그려진다), 부르면 읽히지 않을 문장에
+     * 클릭마다 LLM 값을 치른다.
+     */
+    const loadAiReason = (resolved: InfoPlaceCard | null) => {
+      // 빈 문자열로 확정한다 — "받았는데 없다"와 "아직 모른다"를 가르는 값이다.
+      // 부를 수 없는 경로에서 null로 두면 자리표시자가 영원히 남는다.
+      if (!item || !resolved?.place_id) {
+        setAiReason("");
+        return;
+      }
+      void fetchPlaceAiReason({
+        place_id: resolved.place_id,
+        place_name: resolved.place_name ?? item.name,
+        category_label: item.category_label ?? item.category,
+      })
+        .then((response) => {
+          if (!cancelled) setAiReason(response.ai_reason ?? "");
+        })
+        .catch(() => {
+          if (!cancelled) setAiReason("");
+        });
+    };
+
+    void fetchRecommendationPlaceDetails({ place_id: placeId, place_name: placeName })
       .then((response) => {
         if (cancelled) return;
-        // 빈 문자열로 확정한다 — "받았는데 없다"와 "아직 모른다"를 가르는 값이다.
-        setAiReason(response.ai_reason ?? "");
         if (response.status === "success" && response.place_card) {
           setDetailCard(
             card
@@ -1678,9 +1711,11 @@ export function RecommendationDetailPreviewModal({
                 }
               : response.place_card,
           );
+          loadAiReason(response.place_card);
           return;
         }
         setDetailStatus(response.status === "unavailable" ? "unavailable" : "no_data");
+        setAiReason("");
       })
       .catch(() => {
         if (!cancelled) {
@@ -1893,7 +1928,7 @@ export function RecommendationDetailPreviewModal({
                 </p>
               </div>
               <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
-              {/* 두 번째 줄은 상세 응답과 함께 도착한다(recommend.place_reason).
+              {/* 두 번째 줄은 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
                   위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
                   말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
 
@@ -1911,8 +1946,12 @@ export function RecommendationDetailPreviewModal({
                   aria-hidden
                   data-testid="ai-reason-placeholder"
                 >
-                  <div className="h-3.5 w-full animate-pulse rounded bg-line" />
-                  <div className="h-3.5 w-2/3 animate-pulse rounded bg-line" />
+                  {/* bg-chip이다. 이 팔레트에 `line`이라는 색은 없어서(테두리 색의
+                      이름은 `border`다) bg-line은 규칙이 아예 생성되지 않아 투명한
+                      줄이 된다 — 자리는 잡히는데 회색이 안 보였다. 같은 화면의 다른
+                      스켈레톤(표·사진)이 전부 쓰는 색으로 맞춘다. */}
+                  <div className="h-3.5 w-full animate-pulse rounded bg-chip" />
+                  <div className="h-3.5 w-2/3 animate-pulse rounded bg-chip" />
                 </div>
               ) : (
                 aiReason && (

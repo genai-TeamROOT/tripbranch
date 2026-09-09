@@ -211,8 +211,6 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "seoul_realtime_summary": None,
             "road_incident_counts": [],
         },
-        # want_ai_reason을 켜지 않은 요청이라 문장을 만들지 않는다.
-        "ai_reason": None,
     }
     assert len(captured_requests) == 1
     assert captured_requests[0].place_context == "from_recommendation"
@@ -279,11 +277,14 @@ def test_recommendation_place_details_hides_mismatched_place_card(monkeypatch) -
         "status": "no_data",
         "requested_place_id": "126508",
         "place_card": None,
-        "ai_reason": None,
     }
 
 
 # --- 상세 카드 "AI가 추천하는 이유" (recommend.place_reason) ------------------
+#
+# 문장은 상세조회와 **다른 엔드포인트**다(POST /chat/place-details/reason). 한
+# 응답에 묶었더니 문장 생성 1~2초가 주소·운영시간이 뜨는 시각을 그대로 밀어서
+# 나눴다. 아래 첫 테스트가 그 분리를 잠근다.
 
 
 class _FakePreferenceRepository:
@@ -332,10 +333,47 @@ def _place_details_provider(monkeypatch, rows: list[dict]) -> None:
     )
 
 
-def test_place_details_generates_ai_reason_when_requested(monkeypatch) -> None:
-    """취향 태그가 있고 요청이 켜져 있으면 문장을 만들어 함께 내려준다."""
+def _preference_rows(monkeypatch, rows: list[dict]) -> None:
+    monkeypatch.setattr(
+        chat_route, "get_place_details_repository", lambda client: _FakePreferenceRepository(rows)
+    )
+
+
+def test_place_details_never_waits_on_the_llm(monkeypatch) -> None:
+    """상세조회는 취향 태그가 있어도 LLM을 부르지 않는다.
+
+    이 단정이 이 기능의 요점이다 — 문장을 상세 응답에 실으면 그 생성 시간이
+    주소·운영시간·사진이 뜨는 시각 전체를 뒤로 민다. 태그가 있는 장소로 부르는
+    것이 중요하다(태그가 없으면 원래 경로에서도 LLM을 안 불러 통과해 버린다).
+    """
 
     _place_details_provider(monkeypatch, _TAG_ROWS)
+
+    def _never_called():
+        raise AssertionError("상세조회는 LLM을 부르지 않아야 한다")
+
+    monkeypatch.setattr(chat_route, "get_llm_provider", _never_called)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    # 태그 자체는 상세 응답에 그대로 실린다 — 화면이 근거 목록을 그린다.
+    assert [tag["label"] for tag in body["place_card"]["preference_insights"]] == [
+        "자연을 즐기기 좋은"
+    ]
+    assert "ai_reason" not in body
+
+
+def test_place_reason_generates_sentence(monkeypatch) -> None:
+    """취향 태그가 있으면 문장을 만들어 내려준다."""
+
+    _preference_rows(monkeypatch, _TAG_ROWS)
     seen: list[dict] = []
 
     class FakeLLM:
@@ -355,18 +393,16 @@ def test_place_details_generates_ai_reason_when_requested(monkeypatch) -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/chat/place-details",
+        "/api/chat/place-details/reason",
         json={
             "place_id": "2832918",
             "place_name": "한옥카페 선운각",
-            "want_ai_reason": True,
             "category_label": "카페/전통찻집",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["ai_reason"] == "숲속 한옥의 정취를 느끼며 쉬기 좋아요."
-    # 카드가 해석한 이름을 넘긴다(요청 이름이 아니라) — 동명 대조를 이미 통과한 값이다.
     assert seen == [
         {
             "place_name": "한옥카페 선운각",
@@ -376,10 +412,22 @@ def test_place_details_generates_ai_reason_when_requested(monkeypatch) -> None:
     ]
 
 
-def test_place_details_skips_ai_reason_without_preference_tags(monkeypatch) -> None:
+def test_place_reason_requires_place_id() -> None:
+    """근거를 저장소에서 다시 읽으므로 place_id 없이는 부를 수 없다."""
+
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details/reason", json={"place_name": "한옥카페 선운각"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_place_reason_skips_without_preference_tags(monkeypatch) -> None:
     """태그가 없는 장소는 아예 부르지 않는다 — 만들 근거가 없다."""
 
-    _place_details_provider(monkeypatch, [])
+    _preference_rows(monkeypatch, [])
 
     def _never_called():
         raise AssertionError("취향 태그가 없으면 LLM을 부르지 않아야 한다")
@@ -388,36 +436,18 @@ def test_place_details_skips_ai_reason_without_preference_tags(monkeypatch) -> N
     client = TestClient(app)
 
     response = client.post(
-        "/api/chat/place-details",
-        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+        "/api/chat/place-details/reason",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각"},
     )
 
     assert response.status_code == 200
     assert response.json()["ai_reason"] is None
 
 
-def test_place_details_skips_ai_reason_when_not_requested(monkeypatch) -> None:
-    """INFO 카드·사진 검색은 그 절이 없다 — 켜지 않은 요청에 값을 치르지 않는다."""
+def test_place_reason_survives_llm_failure(monkeypatch) -> None:
+    """문장 생성이 죽어도 오류가 아니라 빈 문장으로 답한다 — 화면은 그대로 있는다."""
 
-    _place_details_provider(monkeypatch, _TAG_ROWS)
-
-    def _never_called():
-        raise AssertionError("want_ai_reason이 아니면 LLM을 부르지 않아야 한다")
-
-    monkeypatch.setattr(chat_route, "get_llm_provider", _never_called)
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/chat/place-details", json={"place_id": "2832918", "place_name": "한옥카페 선운각"}
-    )
-
-    assert response.json()["ai_reason"] is None
-
-
-def test_place_details_survives_ai_reason_failure(monkeypatch) -> None:
-    """문장 생성이 죽어도 상세 카드는 그대로 나간다 — 이 문장은 부가 정보다."""
-
-    _place_details_provider(monkeypatch, _TAG_ROWS)
+    _preference_rows(monkeypatch, _TAG_ROWS)
 
     class BrokenLLM:
         async def generate_place_reason(self, **kwargs):
@@ -427,21 +457,18 @@ def test_place_details_survives_ai_reason_failure(monkeypatch) -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/chat/place-details",
-        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+        "/api/chat/place-details/reason",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각"},
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "success"
-    assert body["place_card"]["place_name"] == "한옥카페 선운각"
-    assert body["ai_reason"] is None
+    assert response.json()["ai_reason"] is None
 
 
-def test_place_details_skips_ai_reason_when_disabled(monkeypatch) -> None:
+def test_place_reason_skips_when_disabled(monkeypatch) -> None:
     """PLACE_REASON_ENABLED=false면 호출이 통째로 사라진다."""
 
-    _place_details_provider(monkeypatch, _TAG_ROWS)
+    _preference_rows(monkeypatch, _TAG_ROWS)
     monkeypatch.setattr(chat_route.settings, "place_reason_enabled", False)
 
     def _never_called():
@@ -451,8 +478,8 @@ def test_place_details_skips_ai_reason_when_disabled(monkeypatch) -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/chat/place-details",
-        json={"place_id": "2832918", "place_name": "한옥카페 선운각", "want_ai_reason": True},
+        "/api/chat/place-details/reason",
+        json={"place_id": "2832918", "place_name": "한옥카페 선운각"},
     )
 
     assert response.json()["ai_reason"] is None

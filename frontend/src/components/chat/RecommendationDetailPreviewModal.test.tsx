@@ -8,7 +8,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { fetchRecommendationPlaceDetails } from "../../api/trip";
+import { fetchPlaceAiReason, fetchRecommendationPlaceDetails } from "../../api/trip";
 import { openNaverDirections } from "../../utils/naverDirections";
 import { TripProvider } from "../../state/TripContext";
 import type {
@@ -20,6 +20,7 @@ import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewM
 
 vi.mock("../../api/trip", () => ({
   fetchRecommendationPlaceDetails: vi.fn(),
+  fetchPlaceAiReason: vi.fn(),
 }));
 
 /* 링크를 여는 두 함수만 가로채고 나머지는 진짜를 쓴다. deviceLocationToOrigin은
@@ -32,6 +33,7 @@ vi.mock("../../utils/naverDirections", async (importOriginal) => ({
 }));
 
 const mockedFetch = vi.mocked(fetchRecommendationPlaceDetails);
+const mockedReason = vi.mocked(fetchPlaceAiReason);
 const mockedDirections = vi.mocked(openNaverDirections);
 
 /* 길찾기 버튼은 현재 위치가 있어야 나온다. TripProvider가 sessionStorage에서
@@ -124,6 +126,10 @@ function recommendationItem(overrides: Partial<RecommendationItem> = {}): Recomm
 
 beforeEach(() => {
   mockedFetch.mockReset();
+  // 문장 호출은 대부분의 테스트에서 관심 밖이다. 기본은 "문장 없음"으로 두고,
+  // 문장을 보는 테스트만 각자 덮어쓴다.
+  mockedReason.mockReset();
+  mockedReason.mockResolvedValue({ ai_reason: null });
   mockedDirections.mockReset();
   sessionStorage.clear();
 });
@@ -359,6 +365,22 @@ it("로딩 중에도 이미 아는 운영시간을 먼저 보여준다", async (
   expect(screen.queryByText("09:00~18:00")).not.toBeInTheDocument();
   /* 영업 상태는 장소명 옆에 그대로 있다. */
   expect(screen.getByText("영업 중")).toBeInTheDocument();
+});
+
+it("상시 개방인 곳은 영업 중이 아니라 24시간 운영이라고 말한다", async () => {
+  /* 공원·산책로에 "영업 중"은 장사하는 곳처럼 들린다. 남은 시간이 있어도(상시라
+     항상 있다) 그 문구를 쓰지 않는다. */
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ operating_hours_display: "24시간", remaining_minutes: 600 })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("24시간 운영")).toBeInTheDocument();
+  expect(screen.queryByText("영업 중")).not.toBeInTheDocument();
 });
 
 /* INFO·사진 검색 경로는 item 자체가 없어 참고할 값이 없다 — 근거 없이 지어내지 않는다. */
@@ -1092,14 +1114,44 @@ it("현재 위치가 없어도 목적지가 없으면 위치 사용을 권하지
 });
 
 // --- "AI가 추천하는 이유" 두 번째 줄 (recommend.place_reason) ------------------
+//
+// 문장은 상세조회와 **다른 호출**로 받는다(fetchPlaceAiReason). 한 호출에 묶으면
+// 문장을 기다리는 동안 주소·운영시간·사진이 통째로 안 나온다.
+
+it("상세 카드는 문장을 기다리지 않는다 — 문장이 오기 전에 이미 그려진다", async () => {
+  /* 이 테스트가 이 분리의 요점이다. 문장 호출을 영원히 끝나지 않게 두고도 주소가
+     보여야 한다 — 한 호출에 묶여 있으면 여기서 아무것도 안 보인다. */
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({
+      place_id: "126508",
+      place_name: "경복궁",
+      answer_fields: { address: "서울 종로구 사직로 161" },
+    }),
+  });
+  mockedReason.mockReturnValue(new Promise(() => {}));
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ recommendation_reason: "거리 조건을 종합한 1순위 추천이에요." })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("서울 종로구 사직로 161")).toBeInTheDocument();
+  // 문장 자리는 아직 비어 있다.
+  expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
+});
 
 it("AI가 추천하는 이유는 고정 문장 아래에 LLM 문장을 함께 보여준다", async () => {
   mockedFetch.mockResolvedValue({
     status: "success",
     requested_place_id: "126508",
     place_card: card({ place_id: "126508", place_name: "경복궁" }),
-    ai_reason: "후기에서 고즈넉한 산책로가 자주 언급돼요.",
   });
+  mockedReason.mockResolvedValue({ ai_reason: "후기에서 고즈넉한 산책로가 자주 언급돼요." });
 
   render(
     <RecommendationDetailPreviewModal
@@ -1120,12 +1172,11 @@ it("AI가 추천하는 이유는 고정 문장 아래에 LLM 문장을 함께 �
   ).toBeInTheDocument();
 });
 
-it("추천 카드로 열 때만 문장 생성을 요청한다", async () => {
+it("추천 카드로 열 때만 문장을 요청한다", async () => {
   mockedFetch.mockResolvedValue({
     status: "success",
     requested_place_id: "126508",
-    place_card: card({ place_id: "126508" }),
-    ai_reason: null,
+    place_card: card({ place_id: "126508", place_name: "경복궁" }),
   });
 
   render(
@@ -1137,18 +1188,21 @@ it("추천 카드로 열 때만 문장 생성을 요청한다", async () => {
   );
 
   await screen.findByText("경복궁");
-  expect(mockedFetch).toHaveBeenCalledWith(
-    expect.objectContaining({ want_ai_reason: true, category_label: "고궁" }),
-  );
+  // 상세 응답이 해석한 place_id로 부른다 — 서버가 그 id로 근거를 다시 읽는다.
+  await waitFor(() => {
+    expect(mockedReason).toHaveBeenCalledWith({
+      place_id: "126508",
+      place_name: "경복궁",
+      category_label: "고궁",
+    });
+  });
 });
 
 it("사진 검색처럼 item 없이 열면 문장을 요청하지 않는다", async () => {
   renderModal(card({ place_id: "126508", place_name: "경복궁" }));
 
   await screen.findByText("경복궁");
-  expect(mockedFetch).toHaveBeenCalledWith(
-    expect.objectContaining({ want_ai_reason: false }),
-  );
+  expect(mockedReason).not.toHaveBeenCalled();
 });
 
 it("문장이 없는 장소는 그 줄을 접는다 — 자리표시자가 남지 않는다", async () => {
@@ -1158,8 +1212,8 @@ it("문장이 없는 장소는 그 줄을 접는다 — 자리표시자가 남�
     status: "success",
     requested_place_id: "126508",
     place_card: card({ place_id: "126508", place_name: "경복궁" }),
-    ai_reason: null,
   });
+  mockedReason.mockResolvedValue({ ai_reason: null });
 
   render(
     <RecommendationDetailPreviewModal
@@ -1175,12 +1229,43 @@ it("문장이 없는 장소는 그 줄을 접는다 — 자리표시자가 남�
   });
 });
 
+it("문장 생성이 실패해도 그 줄만 접고 카드는 그대로 둔다", async () => {
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({
+      place_id: "126508",
+      place_name: "경복궁",
+      answer_fields: { address: "서울 종로구 사직로 161" },
+    }),
+  });
+  mockedReason.mockRejectedValue(new Error("500"));
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ recommendation_reason: "거리 조건을 종합한 1순위 추천이에요." })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("서울 종로구 사직로 161")).toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(0);
+  });
+});
+
 it("문장이 도착하기 전에는 같은 높이의 자리를 잡아 둔다", async () => {
   /* 이 절을 표보다 위에 둔 이유가 "나중에 채워져도 이 절이 밀리거나 늘지 않는다"
      였다(2026-09-08). 늦게 오는 줄을 자리 없이 끼우면 그 성질이 깨진다.
      위 "그 줄을 접는다" 테스트와 짝이다 — 자리표시자가 아예 안 그려지면 그 테스트는
      헛돌기 때문에, 그려지는 경우를 여기서 함께 못 박는다. */
-  mockedFetch.mockReturnValue(new Promise(() => {}));
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ place_id: "126508", place_name: "경복궁" }),
+  });
+  mockedReason.mockReturnValue(new Promise(() => {}));
 
   render(
     <RecommendationDetailPreviewModal
@@ -1191,5 +1276,7 @@ it("문장이 도착하기 전에는 같은 높이의 자리를 잡아 둔다", 
   );
 
   expect(screen.getByText("거리 조건을 종합한 1순위 추천이에요.")).toBeInTheDocument();
-  expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
+  await waitFor(() => {
+    expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
+  });
 });

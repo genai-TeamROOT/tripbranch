@@ -188,10 +188,6 @@ it("주소 INFO 카드도 클릭하면 전체 장소 상세를 보강 조회한�
     expect(fetchRecommendationPlaceDetails).toHaveBeenCalledWith({
       place_id: "126508",
       place_name: "경복궁",
-      // INFO 카드에는 "AI가 추천하는 이유" 절이 없다 — 읽히지 않을 문장에 LLM
-      // 값을 치르지 않는다. 켜지는 것은 추천/수정 카드로 열 때뿐이다.
-      want_ai_reason: false,
-      category_label: undefined,
     });
   });
   const dialog = screen.getByRole("dialog", { name: "경복궁" });
