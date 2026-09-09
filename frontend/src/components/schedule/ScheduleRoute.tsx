@@ -1,8 +1,14 @@
 /*
  * 역할: 일정의 정류장들을 카드 목록으로 그린다.
- * 입력: 일정 항목들, 언어, 이 일정을 구분하는 키.
+ * 입력: 일정 항목들, 언어, 체크 상태(없어도 된다).
  * 출력: 정류장 카드와 그 사이 이동 한 줄, 장소 상세 모달 열기, "다녀왔어요" 체크.
- * 호출 시점: SchedulePage가 시간 띠 아래에 그린다.
+ * 호출 시점: SchedulePage가 시간 띠 아래에, ScheduleResultMessage가 채팅 안에 그린다.
+ *
+ * **채팅과 일정 상세가 같은 카드를 쓴다**(2026-09-09). 예전에는 채팅이
+ * ScheduleCard + ScheduleTravelSegment라는 별도 한 벌을 갖고 있어서, 같은 일정이
+ * 화면마다 다르게 보였다(사진 유무, 도착 시각 자리, 경고 표시, 상세보기 위치가
+ * 모두 달랐다). 한 벌로 합쳐 갈릴 여지를 없앤다. 채팅에는 체크가 없으므로
+ * `onToggleVisited`를 넘기지 않으면 사진이 버튼이 아니게 되고 체크 배지도 빠진다.
  *
  * **한때 "지금 있는 곳"만 사진을 크게 키워 보여줬다.** 전체 폭 사진 위에
  * 그라디언트·문구·버튼을 겹친 큰 카드와 96px 정사각 썸네일 카드 사이를
@@ -31,18 +37,24 @@ import { useState } from "react";
 import { Check } from "lucide-react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
-import { scheduleTravelLabel } from "../../utils/scheduleTravel";
+import { SCHEDULE_TRAVEL_ESTIMATE_HINT, scheduleTravelLabel } from "../../utils/scheduleTravel";
 import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
 import type { ScheduleItem } from "../../types";
 
 interface ScheduleRouteProps {
   items: ScheduleItem[];
   isEn: boolean;
-  /** 체크한 정류장 인덱스 집합(`useScheduleVisited`). */
-  visited: Set<number>;
-  /** 정류장 체크를 켜고 끈다. */
-  onToggleVisited: (index: number) => void;
+  /** 체크한 정류장 인덱스 집합(`useScheduleVisited`). 없으면 체크를 그리지 않는다. */
+  visited?: Set<number>;
+  /**
+   * 정류장 체크를 켜고 끈다. **넘기지 않으면 체크 기능 자체가 없다** — 사진이
+   * 버튼이 아니게 되고 체크 배지도 빠진다. 채팅(ScheduleResultMessage)이 그렇다.
+   */
+  onToggleVisited?: (index: number) => void;
 }
+
+/* 체크를 받지 않는 화면용. 렌더마다 새 Set 을 만들지 않기 위해 모듈에 하나 둔다. */
+const EMPTY_VISITED: Set<number> = new Set();
 
 function travelLine(item: ScheduleItem, isEn: boolean): string | null {
   if (item.travel_to_next_min === null) return null;
@@ -73,27 +85,39 @@ function badgeSize(items: ScheduleItem[], index: number): number | null {
 
 export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: ScheduleRouteProps) {
   const [detailFor, setDetailFor] = useState<ScheduleItem | null>(null);
-  const furthestVisited = visited.size > 0 ? Math.max(...visited) : -1;
+  /* 체크를 안 받는 화면(채팅)에서는 다녀왔어요·건너뛰었어요가 아예 없다 — 빈
+     집합으로 두면 아래 판정이 전부 false 로 떨어져 분기를 따로 두지 않아도 된다. */
+  const visitedStops = visited ?? EMPTY_VISITED;
+  const furthestVisited = visitedStops.size > 0 ? Math.max(...visitedStops) : -1;
 
   return (
-    <div className="flex flex-col gap-2">
+    <ol className="flex flex-col gap-2">
       {items.map((item, index) => {
-        const isVisited = visited.has(index);
+        const isVisited = visitedStops.has(index);
         const isSkipped = !isVisited && index < furthestVisited;
         const previous = items[index - 1];
         const leg = previous ? travelLine(previous, isEn) : null;
         const clusterSize = badgeSize(items, index);
         return (
-          <div key={item.place_id}>
+          <li key={item.place_id}>
             {clusterSize !== null && (
               <div className="mb-1.5">
                 <ScheduleClusterBadge count={clusterSize} isEn={isEn} />
               </div>
             )}
             {/* 이동은 한 줄이다. 높이로 표현하면 죽은 공간이 되고, 길이 비교는
-                위의 시간 띠가 대신한다. */}
+                위의 시간 띠가 대신한다.
+
+                추정 구간에는 왜 "약"이 붙었는지를 툴팁으로 밝힌다 — 예전에 채팅
+                쪽(ScheduleTravelSegment)에만 있고 여기에는 없어서, 같은 구간이
+                화면마다 다르게 설명됐다. */}
             {leg && (
-              <p className="relative py-2 pl-10 text-xs tabular-nums text-muted before:absolute before:bottom-0 before:left-[19px] before:top-0 before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--color-border)_0_4px,transparent_4px_8px)]">
+              <p
+                title={
+                  previous?.travel_to_next_measured ? undefined : SCHEDULE_TRAVEL_ESTIMATE_HINT
+                }
+                className="relative py-2 pl-10 text-xs tabular-nums text-muted before:absolute before:bottom-0 before:left-[19px] before:top-0 before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--color-border)_0_4px,transparent_4px_8px)]"
+              >
                 {leg}
               </p>
             )}
@@ -106,41 +130,51 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
               } ${isVisited ? "opacity-60" : ""}`}
             >
               {/* 이미지 전체가 체크 버튼이다 — 배지만 누르게 하면 손끝 크기에 비해
-                  너무 좁다. 체크됐다는 표시(배지)는 눌러도 되는 자리 위에 얹는다. */}
-              <button
-                type="button"
-                onClick={() => onToggleVisited(index)}
-                aria-pressed={isVisited}
-                aria-label={
-                  isVisited
-                    ? isEn
-                      ? `Undo — ${item.place_name} not visited yet`
-                      : `${item.place_name} 체크 되돌리기`
-                    : isEn
-                      ? `Mark ${item.place_name} as visited`
-                      : `${item.place_name} 다녀왔어요 체크`
-                }
-                className="relative h-24 w-24 shrink-0"
-              >
+                  너무 좁다. 체크됐다는 표시(배지)는 눌러도 되는 자리 위에 얹는다.
+                  체크를 받지 않는 화면에서는 버튼이 아니라 사진만 남는다 — 누를 수
+                  없는 자리에 눌리는 표시를 남기지 않는다. */}
+              {onToggleVisited ? (
+                <button
+                  type="button"
+                  onClick={() => onToggleVisited(index)}
+                  aria-pressed={isVisited}
+                  aria-label={
+                    isVisited
+                      ? isEn
+                        ? `Undo — ${item.place_name} not visited yet`
+                        : `${item.place_name} 체크 되돌리기`
+                      : isEn
+                        ? `Mark ${item.place_name} as visited`
+                        : `${item.place_name} 다녀왔어요 체크`
+                  }
+                  className="relative h-24 w-24 shrink-0"
+                >
+                  <PlaceThumbnail
+                    src={item.image_url}
+                    fallbackSrc={item.image_url_fallback}
+                    className="h-24 w-24 rounded-xl"
+                  />
+                  {/* 체크 전에도 체크 아이콘을 그린다(회색) — 아이콘이 체크된 뒤에만
+                      나오면 처음 보는 사람은 누를 수 있는 곳인지 모른다. */}
+                  <span
+                    className={`absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors ${
+                      isVisited
+                        ? "border-white bg-calm text-white"
+                        : isSkipped
+                          ? "border-white bg-gold text-white"
+                          : "border-border bg-white text-muted"
+                    }`}
+                  >
+                    <Check size={13} />
+                  </span>
+                </button>
+              ) : (
                 <PlaceThumbnail
                   src={item.image_url}
                   fallbackSrc={item.image_url_fallback}
-                  className="h-24 w-24 rounded-xl"
+                  className="h-24 w-24 shrink-0 rounded-xl"
                 />
-                {/* 체크 전에도 체크 아이콘을 그린다(회색) — 아이콘이 체크된 뒤에만
-                    나오면 처음 보는 사람은 누를 수 있는 곳인지 모른다. */}
-                <span
-                  className={`absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors ${
-                    isVisited
-                      ? "border-white bg-calm text-white"
-                      : isSkipped
-                        ? "border-white bg-gold text-white"
-                        : "border-border bg-white text-muted"
-                  }`}
-                >
-                  <Check size={13} />
-                </span>
-              </button>
+              )}
               <div className="flex min-w-0 flex-1 flex-col gap-0.5 pr-20">
                 <span
                   className={`text-xs font-bold tabular-nums ${
@@ -184,10 +218,12 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
                 {isEn ? "View place details" : "장소 상세보기"}
               </button>
             </div>
-          </div>
+          </li>
         );
       })}
 
+      {/* 모달은 createPortal로 body에 붙으므로 목록 안에서 열어도 ol/li 마크업을
+          건드리지 않는다. */}
       {detailFor && (
         <RecommendationDetailPreviewModal
           placeId={detailFor.place_id}
@@ -195,6 +231,6 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
           onClose={() => setDetailFor(null)}
         />
       )}
-    </div>
+    </ol>
   );
 }

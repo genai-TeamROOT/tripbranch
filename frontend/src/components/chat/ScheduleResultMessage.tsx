@@ -2,8 +2,8 @@
  * 역할: 일정 편성 API 응답을 채팅 메시지 안에서 세로 타임라인으로 렌더링한다.
  * 입력: ScheduleResult(items/route_summary/total_duration_min/basis_note),
  *   저장에 함께 보낼 run_id·session_id.
- * 출력: 제목과 저장(책갈피) 버튼, 정류장(ScheduleCard)과 이동 구간
- *   (ScheduleTravelSegment)이 번갈아 이어지는 타임라인, 근거 시각 안내.
+ * 출력: 제목과 저장 버튼, 정류장 목록(ScheduleRoute — 일정 상세 화면과 같은
+ *   컴포넌트다), 근거 시각 안내.
  *   재편성 버튼("다른 코스 보기"·"검색 범위 넓혀서 다시 찾기")은 여기 없다 —
  *   턴이 지나면 걷어내야 해서 ScheduleActionsMessage로 갈라져 있다.
  *   총 소요 시간·동선 요약 문구는 여기서 만들지 않는다 —
@@ -29,11 +29,8 @@ import { useState } from "react";
 import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
-import { clusterStartSize, isSameCluster } from "../../utils/scheduleTravel";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
-import { ScheduleCard } from "../ScheduleCard";
-import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
-import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
+import { ScheduleRoute } from "../schedule/ScheduleRoute";
 
 function formatDuration(milliseconds: number | undefined) {
   if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
@@ -169,44 +166,14 @@ export function ScheduleResultMessage({
             </p>
           )}
 
-          <ul className="flex flex-col">
-            {schedule.items.flatMap((item, index) => {
-              const next = schedule.items[index + 1];
-              const linkedToNext = next !== undefined && isSameCluster(item, next);
-              /* 묶음이 시작하는 자리에서 한 번만 알린다(TP-243) — 구간마다
-                 붙이면 세 곳이 묶였을 때 같은 말이 두 번 반복된다. */
-              const clusterSize = clusterStartSize(schedule.items, index);
-              const nodes = [
-                <ScheduleCard
-                  key={item.place_id}
-                  item={item}
-                  isLast={index === schedule.items.length - 1}
-                  linkedToNext={linkedToNext}
-                />,
-              ];
-              if (clusterSize !== null) {
-                nodes.unshift(
-                  <li key={`${item.place_id}-cluster`} className="mb-1.5 pl-10">
-                    <ScheduleClusterBadge count={clusterSize} />
-                  </li>,
-                );
-              }
-              if (item.travel_to_next_min !== null) {
-                nodes.push(
-                  <ScheduleTravelSegment
-                    key={`${item.place_id}-travel`}
-                    minutes={item.travel_to_next_min}
-                    mode={item.travel_to_next_mode}
-                    measured={item.travel_to_next_measured}
-                    /* 묶음은 구간에 표시한다 — 붙어 있다는 건 두 곳 사이의
-                       이야기라 카드 하나에 얹으면 어느 쪽 이야기인지 흐려진다. */
-                    clustered={linkedToNext}
-                  />,
-                );
-              }
-              return nodes;
-            })}
-          </ul>
+          {/* 일정 상세(/schedule)와 같은 카드를 쓴다 — 예전에는 채팅만 쓰는
+              ScheduleCard·ScheduleTravelSegment 한 벌이 따로 있어서 같은 일정이
+              화면마다 다르게 보였다(사진 유무, 도착 시각 자리, 경고 표시,
+              상세보기 위치). 체크는 채팅에 없으므로 onToggleVisited 를 넘기지
+              않는다 — 그러면 사진이 버튼이 아니고 체크 배지도 빠진다.
+
+              isEn 은 false 로 고정한다. 이 컴포넌트에는 언어 분기가 없다. */}
+          <ScheduleRoute items={schedule.items} isEn={false} />
 
           {schedule.basis_note && (
             <p className="rounded-xl bg-chip px-3 py-2.5 text-[11px] leading-relaxed text-muted">
