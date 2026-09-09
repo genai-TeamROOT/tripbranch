@@ -431,7 +431,15 @@ export function ChatPage() {
 
   return (
     <main className="relative flex h-full flex-col overflow-hidden">
-      <AppHeader location={locationChip} />
+      {/*
+       * 헤더도 스크롤 영역 **위에 겹친다**(2026-09-09). 컴포저와 같은 이유다 —
+       * 흐름 안에 두면 그 자리가 죽은 칸이 되어 내용이 헤더 밑에서 잘려 보인다.
+       * 겹치는 만큼 아래 스크롤 칸이 위를 비운다(--tb-header-h, AppHeader가
+       * 자기 높이를 재서 알려준다).
+       */}
+      <div className="absolute inset-x-0 top-0 z-20">
+        <AppHeader location={locationChip} />
+      </div>
 
       {/*
        * **스크롤은 이 칸만 한다**(2026-09-09). 전에는 main 자체가 스크롤러였고
@@ -444,7 +452,7 @@ export function ChatPage() {
        * 만큼(--tb-composer-h) 아래에 자리를 비워 둔다 — 안 그러면 마지막
        * 메시지가 컴포저에 영영 가린다.
        */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-[var(--tb-composer-h,0px)]">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-[var(--tb-composer-h,0px)] pt-[var(--tb-header-h,0px)]">
         <div
           ref={messagesContainerRef}
           className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
@@ -515,11 +523,9 @@ export function ChatPage() {
           숨을 때 aria-hidden과 tabIndex=-1을 함께 준다 — 보이지 않는 버튼이
           스크린리더에 읽히거나 탭 순서에 남지 않게.
 
-          **sticky를 뗐다**(2026-09-09). 컴포저가 스크롤 밖으로 나오면서 이
-          래퍼도 스크롤 칸과 컴포저 사이의 형제가 됐다 — 자리가 고정이라 붙일
-          대상이 없고, iOS에서 sticky가 죽는 문제도 같이 비켜간다(ChatComposer
-          주석). h-0 + items-end 라 버튼은 그 경계선에서 위로 자라 컴포저 바로
-          위에 뜬다. tb-keyboard-lift 로 컴포저와 같은 만큼 올라간다.
+          **sticky를 뗐다**(2026-09-09). 컴포저가 스크롤 위에 겹치는 absolute가
+          되면서 이 띠도 같은 방식으로 컴포저 바로 위에 세운다 — 스크롤과 무관한
+          자리라 붙일 대상이 없다. tb-keyboard-lift 로 컴포저와 같은 만큼 올라간다.
 
           **이동 버튼과 일정 칩이 한 띠를 쓴다**(2026-09-09). 칩은 전에 헤더
           오른쪽에 있었는데, 눌러야 하는 두 동작이 화면 위아래로 갈려 있었다.

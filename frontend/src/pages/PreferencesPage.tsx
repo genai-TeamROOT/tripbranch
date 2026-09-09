@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
+import { useElementHeightVar } from "../hooks/useElementHeightVar";
 import { loadPreferences, type SavedPreference } from "../state/preferenceStorage";
 import { pushPreferences, syncPreferences } from "../state/preferenceSync";
 import { useTripState } from "../state/TripContext";
@@ -96,6 +97,11 @@ function toSavedPreference(label: string): SavedPreference {
 }
 
 export function PreferencesPage() {
+  /* 저장 바가 스크롤 영역 위에 겹치므로, 겹치는 만큼 그쪽이 아래를 비워야
+     마지막 항목이 바에 영영 가리지 않는다(useElementHeightVar). */
+  const bottomBarRef = useRef<HTMLDivElement>(null);
+  useElementHeightVar(bottomBarRef, "--tb-bottombar-h");
+
   const navigate = useNavigate();
   const { language } = useTripState();
   const isEn = language === "en";
@@ -264,128 +270,144 @@ export function PreferencesPage() {
         : `${MAX_SELECTED - selected.size}개 더 고를 수 있어요`;
 
   return (
-    <main className="flex h-full flex-col overflow-y-auto">
-      <AppHeader keepStrip />
+    <main className="relative flex h-full flex-col overflow-hidden">
       {/*
-       * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
-       * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
+       * 헤더와 저장 바는 스크롤 영역 **위에 겹친다**(2026-09-09). 흐름 안에 두면
+       * 그 자리가 죽은 칸이 되어 내용이 위아래로 잘려 보이고, `sticky` 로 두면
+       * iOS 에서 갱신이 멈춰 스크롤할 때 화면 밖으로 밀려난다(ChatComposer 주석).
+       * 겹치는 만큼 스크롤 칸이 위아래를 비운다.
        */}
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
-        <div>
-          <h1 className="text-2xl font-bold leading-snug text-ink">
-            {isEn ? (
-              <>
-                What kind of moments
-                <br />
-                draw you in?
-              </>
-            ) : (
-              <>
-                어떤 순간에
-                <br />
-                끌리시나요?
-              </>
-            )}
-          </h1>
-          <p className="mt-2 text-sm leading-relaxed text-muted">
-            {isEn
-              ? `Your picks shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
-              : `고르신 취향이 추천 결과에 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
-          </p>
-
-          {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
-          {/* 좁은 화면에서는 초기화가 다음 줄로 내려간다(ml-auto가 오른쪽에 붙인다).
-                안내 문구를 줄임표로 자르지 않기 위해서다 — 자르면 지금 무엇을 해야
-                하는지가 사라진다. */}
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            {/* 최소와 최대를 함께 낸다. `N / 5`만 내면 3개를 채워야 저장된다는
-                  사실이 이 자리에서 안 보인다. */}
-            <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-              {isEn
-                ? `${selected.size} of ${MIN_SELECTED}–${MAX_SELECTED} selected`
-                : `${MIN_SELECTED}–${MAX_SELECTED}개 중 ${selected.size}개 선택됨`}
-            </span>
-            {/*
-             * 라이브 영역으로 두지 않는다. 아래 "지웠어요" 안내가 이미 role=status라
-             * 둘이 되고, 칩을 누를 때마다 매번 울려 시끄럽다. 상한에 걸렸다는 사실은
-             * 칩이 disabled가 되는 것으로 이미 전달된다.
-             */}
-            <span className="text-xs text-muted">{limitHint}</span>
-            <button
-              type="button"
-              onClick={handleReset}
-              disabled={selected.size === 0}
-              className="ml-auto text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
-            >
-              {isEn ? "Clear selection" : "선택 초기화"}
-            </button>
-          </div>
-        </div>
-
-        <ChipGroup
-          icon={Sparkles}
-          label={isEn ? "Mood" : "분위기"}
-          options={MOOD_OPTIONS}
-          selected={selected}
-          onToggle={toggle}
-          blockUnselected={atMax}
-          isEn={isEn}
-        />
-        <ChipGroup
-          icon={Compass}
-          label={isEn ? "Theme" : "테마"}
-          options={THEME_OPTIONS}
-          selected={selected}
-          onToggle={toggle}
-          blockUnselected={atMax}
-          isEn={isEn}
-        />
-        {/* 동행만 하나짜리다 — 라벨에도 그렇게 적는다. 규칙을 눌러 보고 알게
-              하지 않는다. */}
-        <ChipGroup
-          icon={Users}
-          label={isEn ? "Companions (pick one)" : "동행 (1개만)"}
-          options={COMPANION_OPTIONS}
-          selected={selected}
-          onToggle={toggleCompanion}
-          blockUnselected={atMax && !companionPicked}
-          isEn={isEn}
-        />
-
-        {customKeywords.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {customKeywords.map((keyword) => (
-              <button
-                key={keyword}
-                type="button"
-                aria-pressed={selected.has(keyword)}
-                disabled={!selected.has(keyword) && atMax}
-                onClick={() => toggle(keyword)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
-                  selected.has(keyword) ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
-                }`}
-              >
-                {keyword}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {errorMessage && <ErrorBanner message={errorMessage} />}
-
-        {cleared && (
-          <p
-            role="status"
-            className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
-          >
-            {isEn
-              ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
-              : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
-          </p>
-        )}
+      <div className="absolute inset-x-0 top-0 z-20">
+        <AppHeader keepStrip />
       </div>
 
-      <div className="sticky bottom-0 z-20 mx-auto w-full max-w-2xl bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-7 pt-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-[var(--tb-bottombar-h,0px)] pt-[var(--tb-header-h,0px)]">
+        {/*
+         * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
+         * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
+         */}
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
+          <div>
+            <h1 className="text-2xl font-bold leading-snug text-ink">
+              {isEn ? (
+                <>
+                  What kind of moments
+                  <br />
+                  draw you in?
+                </>
+              ) : (
+                <>
+                  어떤 순간에
+                  <br />
+                  끌리시나요?
+                </>
+              )}
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {isEn
+                ? `Your picks shape your recommendations. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
+                : `고르신 취향이 추천 결과에 반영돼요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
+            </p>
+
+            {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
+            {/* 좁은 화면에서는 초기화가 다음 줄로 내려간다(ml-auto가 오른쪽에 붙인다).
+                안내 문구를 줄임표로 자르지 않기 위해서다 — 자르면 지금 무엇을 해야
+                하는지가 사라진다. */}
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              {/* 최소와 최대를 함께 낸다. `N / 5`만 내면 3개를 채워야 저장된다는
+                  사실이 이 자리에서 안 보인다. */}
+              <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
+                {isEn
+                  ? `${selected.size} of ${MIN_SELECTED}–${MAX_SELECTED} selected`
+                  : `${MIN_SELECTED}–${MAX_SELECTED}개 중 ${selected.size}개 선택됨`}
+              </span>
+              {/*
+               * 라이브 영역으로 두지 않는다. 아래 "지웠어요" 안내가 이미 role=status라
+               * 둘이 되고, 칩을 누를 때마다 매번 울려 시끄럽다. 상한에 걸렸다는 사실은
+               * 칩이 disabled가 되는 것으로 이미 전달된다.
+               */}
+              <span className="text-xs text-muted">{limitHint}</span>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={selected.size === 0}
+                className="ml-auto text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
+              >
+                {isEn ? "Clear selection" : "선택 초기화"}
+              </button>
+            </div>
+          </div>
+
+          <ChipGroup
+            icon={Sparkles}
+            label={isEn ? "Mood" : "분위기"}
+            options={MOOD_OPTIONS}
+            selected={selected}
+            onToggle={toggle}
+            blockUnselected={atMax}
+            isEn={isEn}
+          />
+          <ChipGroup
+            icon={Compass}
+            label={isEn ? "Theme" : "테마"}
+            options={THEME_OPTIONS}
+            selected={selected}
+            onToggle={toggle}
+            blockUnselected={atMax}
+            isEn={isEn}
+          />
+          {/* 동행만 하나짜리다 — 라벨에도 그렇게 적는다. 규칙을 눌러 보고 알게
+              하지 않는다. */}
+          <ChipGroup
+            icon={Users}
+            label={isEn ? "Companions (pick one)" : "동행 (1개만)"}
+            options={COMPANION_OPTIONS}
+            selected={selected}
+            onToggle={toggleCompanion}
+            blockUnselected={atMax && !companionPicked}
+            isEn={isEn}
+          />
+
+          {customKeywords.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {customKeywords.map((keyword) => (
+                <button
+                  key={keyword}
+                  type="button"
+                  aria-pressed={selected.has(keyword)}
+                  disabled={!selected.has(keyword) && atMax}
+                  onClick={() => toggle(keyword)}
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
+                    selected.has(keyword)
+                      ? "bg-brand text-white"
+                      : "bg-white text-ink shadow-resting"
+                  }`}
+                >
+                  {keyword}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {errorMessage && <ErrorBanner message={errorMessage} />}
+
+          {cleared && (
+            <p
+              role="status"
+              className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
+            >
+              {isEn
+                ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
+                : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div
+        ref={bottomBarRef}
+        className="absolute inset-x-0 bottom-0 z-20 mx-auto w-full max-w-2xl bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-7 pt-4"
+      >
         <button
           type="button"
           disabled={!canSave || isSaving}

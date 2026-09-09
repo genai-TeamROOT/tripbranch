@@ -316,7 +316,15 @@ export function HomePage() {
 
   return (
     <main className="relative flex h-full flex-col overflow-hidden">
-      <AppHeader location={locationChip} />
+      {/*
+       * 헤더도 스크롤 영역 **위에 겹친다**(2026-09-09). 컴포저와 같은 이유다 —
+       * 흐름 안에 두면 그 자리가 죽은 칸이 되어 내용이 헤더 밑에서 잘려 보인다.
+       * 겹치는 만큼 아래 스크롤 칸이 위를 비운다(--tb-header-h, AppHeader가
+       * 자기 높이를 재서 알려준다).
+       */}
+      <div className="absolute inset-x-0 top-0 z-20">
+        <AppHeader location={locationChip} />
+      </div>
 
       {/*
        * **스크롤은 이 칸만 한다**(2026-09-09). 전에는 main 자체가 스크롤러였고
@@ -326,7 +334,7 @@ export function HomePage() {
        * 만큼(--tb-composer-h, 컴포저가 자기 높이를 재서 알려준다) 아래에 자리를
        * 비워 둔다 — 안 그러면 마지막 내용이 컴포저에 영영 가린다.
        */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-[var(--tb-composer-h,0px)]">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-[var(--tb-composer-h,0px)] pt-[var(--tb-header-h,0px)]">
         {/*
          * 세로 간격을 gap 하나로 고르게 주지 않는다. 헤드라인이 위를, 오브가 남는
          * 가운데를 갖고, 나머지는 컴포저 쪽으로 내려붙는다 — 요소를 빼거나 순서를

@@ -8,6 +8,7 @@
 
 import { Send, Square } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useElementHeightVar } from "../../hooks/useElementHeightVar";
 import type { Language } from "../../types";
 import { PhotoInputButton } from "./PhotoInputButton";
 import { VoiceInputButton } from "./VoiceInputButton";
@@ -74,30 +75,11 @@ export function ChatComposer({
    */
   /*
    * 컴포저는 스크롤 영역 **위에 겹쳐** 선다 — 그래야 예전처럼 내용이 유리 뒤로
-   * 지나간다(2026-09-09). 겹치는 만큼 스크롤 영역 아래에 자리를 비워 두어야
-   * 마지막 내용이 영영 가리지 않는데, 그 높이를 여기서 재서 알려준다.
-   * 입력창이 여러 줄로 자라면 이 값도 따라 자란다.
-   *
-   * 붙이는 곳은 가장 가까운 main/section 이다 — 화면마다 그 안에서
-   * `pb-[var(--tb-composer-h)]` 로 받아 쓴다.
+   * 지나간다(2026-09-09). 겹치는 만큼 스크롤 영역이 아래를 비워야 하므로 높이를
+   * 재서 알려준다. 화면마다 `pb-[var(--tb-composer-h)]` 로 받아 쓴다.
    */
   const dockRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const dock = dockRef.current;
-    const host = dock?.closest("main, section");
-    if (!dock || !(host instanceof HTMLElement)) return;
-
-    const publish = () => {
-      host.style.setProperty("--tb-composer-h", `${Math.round(dock.offsetHeight)}px`);
-    };
-    publish();
-    const observer = new ResizeObserver(publish);
-    observer.observe(dock);
-    return () => {
-      observer.disconnect();
-      host.style.removeProperty("--tb-composer-h");
-    };
-  }, []);
+  useElementHeightVar(dockRef, "--tb-composer-h");
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
