@@ -69,7 +69,6 @@ from app.schemas import (
     TravelOrigin,
     UserConditions,
 )
-from app.service_area import supported_district_label
 from app.services.runtime import agent_runtime as agent_runtime_module
 from app.services.runtime.agent_runtime import (
     _MEASURED_ROUTE_CANDIDATE_LIMIT,
@@ -4603,7 +4602,7 @@ async def test_no_data_asks_to_adjust_conditions_without_calling_recommendation(
     assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
     assert response.llm_output.clarification is not None
     assert response.llm_output.clarification.code == "no_data_empty"
-    assert f"{supported_district_label()} 안에서 찾지 못했어요" in response.message
+    assert "서비스 지역 안에서 찾지 못했어요" in response.message
     option_ids = {option.id for option in response.llm_output.clarification.options}
     assert option_ids == {"widen_radius", "widen_category"}
     # 일시적 장애 문구로 새면 안 된다.

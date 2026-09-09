@@ -770,10 +770,11 @@ test("복원한 대화의 후속 질문은 마지막 답변에만 남는다", as
 });
 
 /*
- * 화면에 실제로 나가는 순서는 카드가 먼저고 답변이 그 아래다(스트리밍이 result를
- * 먼저 내보낸다). 되돌릴 때 답변을 위에 놓으면 그때 본 화면과 위아래가 뒤집힌다.
+ * 화면에 실제로 나가는 순서는 캡션 → 답변(LLM 팁) → 카드다(2026-09-09, LLM
+ * 팁이 카드 위에서 실시간 생성되도록 바뀜). 되돌릴 때 카드를 위에 놓으면 그때
+ * 본 화면과 위아래가 뒤집힌다.
  */
-test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async () => {
+test("복원한 대화에서 답변이 추천 카드보다 위에 온다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
@@ -781,9 +782,9 @@ test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async
     within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
   );
 
-  const card = await screen.findByText("국립중앙박물관");
-  const answer = screen.getByText("실내를 찾아볼게요");
-  expect(card.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const answer = await screen.findByText("실내를 찾아볼게요");
+  const card = screen.getByText("국립중앙박물관");
+  expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 /*

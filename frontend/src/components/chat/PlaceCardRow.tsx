@@ -14,10 +14,12 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNo
 
 interface PlaceCardRowProps {
   caption?: string;
+  /** 캡션과 같은 줄, 오른쪽에 붙는 보조설명(예: 추천 기준). caption 없이는 안 쓴다. */
+  note?: string;
   children: ReactNode;
 }
 
-export function PlaceCardRow({ caption, children }: PlaceCardRowProps) {
+export function PlaceCardRow({ caption, note, children }: PlaceCardRowProps) {
   const scrollRef = useRef<HTMLUListElement | null>(null);
   const drag = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
 
@@ -51,7 +53,12 @@ export function PlaceCardRow({ caption, children }: PlaceCardRowProps) {
 
   return (
     <section className="flex flex-col gap-1.5">
-      {caption && <p className="px-1 text-[11px] font-semibold text-muted">{caption}</p>}
+      {caption && (
+        <div className="flex items-baseline justify-between gap-2 px-1">
+          <p className="text-[11px] font-semibold text-muted">{caption}</p>
+          {note && <p className="text-[11px] text-muted">{note}</p>}
+        </div>
+      )}
       <motion.ul
         ref={scrollRef}
         onPointerDown={handlePointerDown}

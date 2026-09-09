@@ -580,6 +580,15 @@ export type ChatMessage =
       status: SessionContextResponse | null;
       error: string | null;
     }
+  /*
+   * 추천 카드 앞에 뜨는 고정 안내 한 줄(+작은 회색 보조설명). 문구는 언어별로
+   * 고정이라 필드를 안 싣는다 — 렌더링 컴포넌트가 language로 직접 고른다
+   * (2026-09-09, 카드 캡션 문구 통합). 결과가 0건인 턴에는 만들지 않는다.
+   */
+  | {
+      id: string;
+      type: "recommendation_caption";
+    }
   | {
       id: string;
       type: "recommendation_result";
