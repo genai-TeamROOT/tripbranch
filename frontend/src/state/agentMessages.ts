@@ -17,9 +17,61 @@
 import type {
   AgentResponse,
   ChatMessage,
+  PhotoSimilarPlacesResponse,
   RecommendationItem,
   TravelOriginToggle,
 } from "../types";
+
+/*
+ * 화면 기록이 사진 검색 턴임을 알리는 표시. 서버가 붙인다
+ * (routes/photo_similar.py의 PHOTO_SEARCH_RECORD_KIND).
+ *
+ * **표시가 없으면 AgentResponse다.** 이 키가 생기기 전의 기록에는 없으므로,
+ * 없는 쪽을 기존 동작으로 두는 것이 하위 호환이다.
+ */
+const PHOTO_SIMILAR_RECORD_KIND = "photo_similar";
+
+/*
+ * 화면 기록 하나가 사진 검색 턴인지 가른다.
+ *
+ * 사진 검색은 조건 병합을 타지 않아 payload가 AgentResponse가 아니다 — 가르지
+ * 않고 buildAgentMessages에 넘기면 `response.llm_output.intent`를 읽다가 터져
+ * 그 대화 전체가 복원되지 않는다.
+ */
+export function isPhotoSimilarRecord(
+  payload: unknown,
+): payload is PhotoSimilarPlacesResponse & { kind: string } {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    (payload as { kind?: unknown }).kind === PHOTO_SIMILAR_RECORD_KIND
+  );
+}
+
+/*
+ * 사진 검색 턴 하나를 되돌린다.
+ *
+ * **사진은 없다.** 원본은 서버가 임베딩만 하고 버렸고 축소본은 그 브라우저의
+ * sessionStorage에만 있어, 다른 기기에서 열면 가져올 데가 없다. 사진 자리에는
+ * 왜 안 보이는지를 대신 놓는다(restored) — 빈 자리만 남으면 사용자는 사진이
+ * 사라진 것인지 원래 없던 것인지 알 수 없다.
+ */
+export function buildPhotoSimilarMessage(
+  payload: PhotoSimilarPlacesResponse,
+): ChatMessage {
+  return {
+    id: createMessageId("photo"),
+    type: "photo_similar_result",
+    imageUrl: null,
+    restored: true,
+    status: "done",
+    centerName: payload.center_name,
+    places: payload.places,
+    candidateCount: payload.candidate_count,
+    // 복원에는 잴 대상이 없다. buildAgentMessages가 지연시간에 0을 넘기는 것과 같다.
+    elapsedMs: 0,
+  };
+}
 
 export function createMessageId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {

@@ -94,8 +94,16 @@ def _response(
     )
 
 
-def _request(user_input: str = "경복궁 근처 카페 추천해줘") -> AgentRequest:
-    return AgentRequest(user_input=user_input, session_id="sess_follow_up")
+def _request(
+    user_input: str = "경복궁 근처 카페 추천해줘",
+    *,
+    recent_follow_ups: list[str] | None = None,
+) -> AgentRequest:
+    return AgentRequest(
+        user_input=user_input,
+        session_id="sess_follow_up",
+        recent_follow_ups=recent_follow_ups or [],
+    )
 
 
 @pytest.mark.asyncio
@@ -357,3 +365,71 @@ async def test_search_place_reaches_the_model() -> None:
     await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
 
     assert llm.calls[0]["search_place"] == "안국역"
+
+
+@pytest.mark.asyncio
+async def test_already_shown_suggestions_are_dropped() -> None:
+    """최근에 버튼으로 보여준 문구는 다시 올리지 않는다.
+
+    이 기능이 없을 때는 같은 세 개가 턴마다 되풀이됐다. 셋을 다 눌러봐도 다음 턴에 또
+    같은 셋이 나와서, 이어물을 곳이 사실상 없었다.
+    """
+    llm = _RecordingLLM(["다른 곳도 보여줘", "이 장소들로 일정 짜줘"])
+
+    suggestions = await suggest_follow_ups(
+        _request(recent_follow_ups=["다른 곳도 보여줘"]),
+        _response(),
+        llm=llm,  # type: ignore[arg-type]
+    )
+
+    assert suggestions == ["이 장소들로 일정 짜줘"]
+
+
+@pytest.mark.asyncio
+async def test_already_shown_comparison_ignores_spacing_and_question_marks() -> None:
+    """표기만 다른 같은 문구도 같은 것으로 본다.
+
+    글자 그대로 비교하면 물음표 하나, 띄어쓰기 하나 차이로 같은 버튼이 다시 나온다 —
+    사용자에게는 구분되지 않는 차이다.
+    """
+    llm = _RecordingLLM(["여기 주차 되나요", "경복궁 지금 붐벼?"])
+
+    suggestions = await suggest_follow_ups(
+        _request(recent_follow_ups=["여기 주차되나요?"]),
+        _response(),
+        llm=llm,  # type: ignore[arg-type]
+    )
+
+    assert suggestions == ["경복궁 지금 붐벼?"]
+
+
+@pytest.mark.asyncio
+async def test_already_shown_list_reaches_the_model() -> None:
+    """걸러내기만으로는 부족하다 — 모델이 처음부터 다른 방향을 잡아야 한다.
+
+    제외 목록을 안 넘기면 모델은 매번 같은 셋을 만들고, 호출부가 그걸 다 버려서 버튼이
+    한 개도 안 남는 턴이 생긴다.
+    """
+    llm = _RecordingLLM()
+
+    await suggest_follow_ups(
+        _request(recent_follow_ups=["다른 곳도 보여줘"]),
+        _response(),
+        llm=llm,  # type: ignore[arg-type]
+    )
+
+    assert llm.calls[0]["already_suggested"] == ["다른 곳도 보여줘"]
+
+
+@pytest.mark.asyncio
+async def test_everything_filtered_out_yields_no_buttons() -> None:
+    """다 걸러지면 빈 목록이다. 억지로 채우지 않는다."""
+    llm = _RecordingLLM(["다른 곳도 보여줘"])
+
+    suggestions = await suggest_follow_ups(
+        _request(recent_follow_ups=["다른 곳도 보여줘"]),
+        _response(),
+        llm=llm,  # type: ignore[arg-type]
+    )
+
+    assert suggestions == []

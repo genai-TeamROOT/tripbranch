@@ -719,6 +719,7 @@ function seedDeviceLocation(deviceLocation: string): void {
     device_location_snoozed_until: null,
     awaiting_clarification: false,
     saved_places: [],
+    recent_follow_ups: [],
     agentProgress: null,
     streamingIntent: null,
   } satisfies TripState);

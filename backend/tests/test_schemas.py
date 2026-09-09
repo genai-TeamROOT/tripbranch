@@ -13,7 +13,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import ModifyPayload, ModifyType, ScheduleItem, UserConditions
+from app.schemas import (
+    MAX_RECENT_FOLLOW_UPS,
+    AgentRequest,
+    ModifyPayload,
+    ModifyType,
+    ScheduleItem,
+    UserConditions,
+)
 
 
 def test_fields_outside_changed_fields_are_cleared_even_when_populated() -> None:
@@ -131,3 +138,34 @@ def test_cluster_id가_없는_옛_스냅샷도_그대로_읽힌다() -> None:
 
     assert item.cluster_id is None
     assert item.estimated_duration_min == 60
+
+
+def test_recent_follow_ups_keeps_only_the_newest_entries() -> None:
+    """제외 목록은 프롬프트에 실리므로 최근 것만 남긴다."""
+    request = AgentRequest(
+        user_input="카페 추천해줘",
+        recent_follow_ups=[f"문구 {i}" for i in range(MAX_RECENT_FOLLOW_UPS + 5)],
+    )
+
+    assert len(request.recent_follow_ups) == MAX_RECENT_FOLLOW_UPS
+    assert request.recent_follow_ups[-1] == f"문구 {MAX_RECENT_FOLLOW_UPS + 4}"
+
+
+def test_recent_follow_ups_drops_malformed_entries_without_failing_the_turn() -> None:
+    """화면이 보내는 값이라 무엇이든 올 수 있다.
+
+    **422로 막지 않는다.** 버튼 중복을 막자고 대화를 끊을 이유가 없다 — 못 쓸 항목만
+    버리고 나머지로 진행한다.
+    """
+    request = AgentRequest(
+        user_input="카페 추천해줘",
+        recent_follow_ups=["  다른 곳도 보여줘  ", "", "   ", "가" * 41, 123, None],
+    )
+
+    assert request.recent_follow_ups == ["다른 곳도 보여줘"]
+
+
+def test_recent_follow_ups_ignores_a_value_that_is_not_a_list() -> None:
+    request = AgentRequest(user_input="카페 추천해줘", recent_follow_ups="다른 곳도 보여줘")
+
+    assert request.recent_follow_ups == []

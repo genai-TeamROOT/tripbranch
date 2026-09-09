@@ -311,6 +311,7 @@ class LLMProvider(Protocol):
         place_names: list[str],
         search_place: str | None,
         transport: str | None,
+        already_suggested: list[str],
         max_suggestions: int,
         max_label_length: int,
     ) -> ProviderResult[list[str]]:
@@ -328,6 +329,11 @@ class LLMProvider(Protocol):
 
         transport는 B가 누적한 이동수단 조건(walk/public/car, 없으면 None)이다 —
         도보·대중교통으로 움직이는 사용자에게 주차 질문을 권하지 않기 위해 넘긴다.
+
+        already_suggested는 화면이 최근에 버튼으로 보여준 문구다. 같은 세 개가 턴마다
+        되풀이돼 사용자가 이어물을 곳이 없어지는 것을 막으려고 넘긴다. **서버가 만들 수
+        없는 값이다** — 세션에 남는 것은 사용자가 실제로 한 말뿐이라, 보여줬는데 누르지
+        않은 문구는 화면 말고 아는 곳이 없다.
 
         개수·길이 상한은 호출부가 코드로 다시 검사한다. 실패해도 답변 자체는 이미
         확정돼 있으므로 호출부는 빈 목록으로 낮춰야 한다.

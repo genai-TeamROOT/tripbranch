@@ -39,8 +39,10 @@ import type {
 } from "../types";
 import {
   buildAgentMessages,
+  buildPhotoSimilarMessage,
   buildRecommendationMessages,
   createMessageId,
+  isPhotoSimilarRecord,
 } from "./agentMessages";
 import { hasTimeGap } from "./timeSeparator";
 import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
@@ -88,6 +90,21 @@ export interface TripState {
    */
   awaiting_clarification: boolean;
   /*
+   * 최근에 후속 질문 버튼으로 보여준 문구(오래된 것이 앞, 최대 MAX_RECENT_FOLLOW_UPS개).
+   * 다음 발화에 함께 보내면 서버가 같은 문구를 다시 권하지 않는다.
+   *
+   * **메시지 목록에서 뽑아 쓸 수 없어서 따로 쌓는다.** 후속 질문 버튼은 다음 발화가
+   * 나가는 순간 걷어내므로(isPastTurnControl) 화면에는 늘 최신 한 벌만 있고 그것도 곧
+   * 사라진다. 여기 쌓이는 것은 지우지 않는 별개의 기록이다.
+   *
+   * **누른 것과 안 누른 것을 함께 담는다.** 누른 문구는 발화로 남아 서버도 알지만,
+   * 보여주기만 하고 안 누른 문구는 화면 말고 아는 곳이 없다 — 그게 이 값이 필요한
+   * 이유다. 그래서 화면에 올리는 순간 쌓고, 눌렀는지는 보지 않는다.
+   *
+   * 대화를 새로 시작하거나 지난 대화를 열면 초기 상태로 돌아가 비워진다.
+   */
+  recent_follow_ups: string[];
+  /*
    * 사용자가 담은 장소(담은 순서). 서버가 보관하는 상태를 화면이 비추기만 하며,
    * 진실의 원천은 항상 서버다 — 담기/빼기 응답과 세션 조회 결과로만 갱신한다.
    * 순서는 서버가 준 그대로 유지한다. 개수 상한 초과 시 이 순서로 잘리므로
@@ -116,6 +133,7 @@ const initialTripState: TripState = {
   device_location_snoozed_until: null,
   awaiting_clarification: false,
   saved_places: [],
+  recent_follow_ups: [],
   agentProgress: null,
   streamingIntent: null,
 };
@@ -182,6 +200,8 @@ type TripAction =
       type: "RESOLVE_PHOTO_SIMILAR";
       payload: {
         messageId: string;
+        /* 서버가 발급했을 수 있다 — 홈에서 발화 없이 사진부터 올린 경우가 그렇다. */
+        sessionId: string;
         centerName: string;
         places: PhotoSimilarPlace[];
         candidateCount: number;
@@ -190,6 +210,9 @@ type TripAction =
     }
   /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
   | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
+  /* 보낼 위치가 없어 요청을 아예 하지 않았을 때. 실패와 나누는 이유는 사용자가
+     할 일이 달라서다 — 이쪽은 위치를 먼저 정해야 한다. */
+  | { type: "PHOTO_SIMILAR_NEEDS_LOCATION"; payload: { messageId: string } }
   /*
    * 실패한 턴을 대화에 한 줄로 남긴다(TP-245). SET_ERROR와 달리 state.error를
    * 건드리지 않는다 — 채팅 화면에서 오류가 배너와 메시지 두 곳으로 갈리면
@@ -243,6 +266,34 @@ export function isPastTurnControl(message: ChatMessage): boolean {
     message.type === "recommendation_actions" ||
     message.type === "schedule_actions"
   );
+}
+
+/*
+ * 다음 발화에 함께 보낼 "이미 보여준 후속 질문" 목록의 상한.
+ * backend/app/schemas.py의 MAX_RECENT_FOLLOW_UPS와 같은 값이다 — 더 보내도 서버가
+ * 뒤에서부터 자른다. 왜 셋인지는 그쪽 주석에 있다 — 넓히면 권할 것이 남지 않는다.
+ */
+export const MAX_RECENT_FOLLOW_UPS = 3;
+
+/*
+ * 두 문구가 같은 말인지 견주기 위한 표기 정리. 공백과 문장 끝 부호만 지운다.
+ * 서버(follow_up_suggester._comparable)와 같은 규칙이라 양쪽이 같은 것을 같다고 본다.
+ */
+function comparableFollowUp(label: string): string {
+  return label.replace(/\s+/g, "").replace(/[?？!！.。]+$/, "").toLowerCase();
+}
+
+/*
+ * 이번 턴에 보여준 문구를 기록에 얹는다. 겹치는 것은 새 쪽만 남기고, 상한을 넘으면
+ * 오래된 것부터 버린다.
+ *
+ * 상한이 세 개라 사실상 직전 턴의 버튼만 남는다. 직전 턴이 두 개만 냈으면 그 앞 턴의
+ * 문구 하나가 자리에 남으므로, 매번 최신 한 벌로 갈아치우는 것과는 다르다.
+ */
+export function mergeRecentFollowUps(existing: string[], incoming: string[]): string[] {
+  const incomingKeys = new Set(incoming.map(comparableFollowUp));
+  const kept = existing.filter((label) => !incomingKeys.has(comparableFollowUp(label)));
+  return [...kept, ...incoming].slice(-MAX_RECENT_FOLLOW_UPS);
 }
 
 /*
@@ -420,6 +471,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       if (action.payload.restore_from_messages) {
         const lastIndex = action.payload.messages.length - 1;
         action.payload.messages.forEach((record, index) => {
+          /*
+           * 사진 검색 턴은 AgentResponse가 아니다 — 조건 병합을 타지 않아 그
+           * 턴의 응답이 그대로 들어 있다. 여기서 가르지 않으면 아래
+           * buildAgentMessages가 llm_output을 읽다가 터져 대화 전체가 복원되지
+           * 않는다.
+           *
+           * 발화 말풍선을 따로 만들지 않는 이유는 컴포넌트가 사진 자리 아래에
+           * 그 문구를 직접 그리기 때문이다 — 여기서도 만들면 두 번 나온다.
+           */
+          if (isPhotoSimilarRecord(record.payload)) {
+            restored.push(buildPhotoSimilarMessage(record.payload));
+            return;
+          }
           if (record.user_input) {
             restored.push({
               id: createMessageId("user"),
@@ -711,6 +775,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       const messages = [...streamedMessages, ...trailingMessages];
       return {
         ...state,
+        // 누른 것과 안 누른 것을 가리지 않고, 화면에 올린 순간 기록에 얹는다.
+        recent_follow_ups: mergeRecentFollowUps(
+          state.recent_follow_ups,
+          response.suggested_follow_ups ?? [],
+        ),
         interpreted_conditions: conditions ?? state.interpreted_conditions,
         recommendations: recommendations?.recommendations ?? state.recommendations,
         unverified_recommendations:
@@ -800,6 +869,10 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       if (action.payload.suggestions.length === 0) return state;
       return {
         ...state,
+        recent_follow_ups: mergeRecentFollowUps(
+          state.recent_follow_ups,
+          action.payload.suggestions,
+        ),
         // 이 턴에 이미 붙은 버튼이 있으면 갈아끼운다. 단발 /api/chat 폴백은 응답
         // 안에 문구를 실어 보내므로, 두 경로가 겹쳐 두 벌이 쌓이는 것을 막는다.
         messages: [
@@ -874,6 +947,21 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "RESOLVE_PHOTO_SIMILAR":
       return {
         ...state,
+        /*
+         * 서버가 발급한 세션을 여기서 받는다. 홈에서 발화 없이 사진부터 올리면
+         * 보낼 때는 세션이 없고 이 응답이 그 대화의 시작이다 — 저장하지 않으면
+         * 이어지는 발화가 또 새 대화를 만들어 사진 턴이 혼자 남는다.
+         */
+        session_id: action.payload.sessionId,
+        /*
+         * 사진 검색도 끝난 턴이다. phase를 그대로 두면 사진으로 시작한 대화가
+         * 사이드바 목록에 안 나타난다 — 목록을 다시 받는 조건이 "phase가 ready이고
+         * session_id가 있을 때"라(SideDrawerContent), 초기값 idle에 머물러 있으면
+         * 다음 발화가 ready로 바꿀 때까지 갱신이 안 걸린다.
+         *
+         * 입력창에는 영향이 없다. isLoading은 interpreting·recommending만 본다.
+         */
+        phase: "ready" as const,
         messages: state.messages.map((message) =>
           message.id === action.payload.messageId && message.type === "photo_similar_result"
             ? {
@@ -884,6 +972,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 candidateCount: action.payload.candidateCount,
                 elapsedMs: action.payload.elapsedMs,
               }
+            : message,
+        ),
+      };
+    case "PHOTO_SIMILAR_NEEDS_LOCATION":
+      /*
+       * 오류 배너(FAIL_TURN)를 띄우지 않는다. 이것은 실패가 아니라 아직 답하지
+       * 않은 물음이고, 무엇을 하라는 안내는 사진 바로 아래에 붙어야 읽힌다.
+       */
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, status: "location_required" as const }
             : message,
         ),
       };
