@@ -38,8 +38,9 @@ from app.providers.factory import (
 from app.schemas import (
     AgentRequest,
     AgentResponse,
-    InfoPlaceCard,
     PlacePreferenceInsight,
+    PlaceReasonRequest,
+    PlaceReasonResponse,
     RecommendationPlaceDetailRequest,
     RecommendationPlaceDetailResponse,
 )
@@ -214,56 +215,72 @@ async def recommendation_place_details(
             status="no_data",
             requested_place_id=request.place_id,
         )
-    insights: list[PlacePreferenceInsight] = []
     if place_card.place_id:
-        async with create_external_client() as client:
-            preference_repository = get_place_details_repository(client)
-            if preference_repository is not None:
-                try:
-                    rows = await preference_repository.find_preference_insights(place_card.place_id)
-                    insights = [PlacePreferenceInsight.model_validate(row) for row in rows]
-                    place_card = place_card.model_copy(update={"preference_insights": insights})
-                except Exception:
-                    logger.exception("상세 카드 취향 근거 조회 실패 — 기본 카드로 응답한다")
+        place_card = place_card.model_copy(
+            update={"preference_insights": await _place_preference_insights(place_card.place_id)}
+        )
     return RecommendationPlaceDetailResponse(
         status="success",
         requested_place_id=request.place_id,
         place_card=place_card,
-        ai_reason=await _place_ai_reason(request, place_card, insights),
     )
 
 
-async def _place_ai_reason(
-    request: RecommendationPlaceDetailRequest,
-    place_card: InfoPlaceCard,
-    insights: list[PlacePreferenceInsight],
-) -> str | None:
-    """상세 카드의 "AI가 추천하는 이유" 문장을 만든다. 못 만들면 None이다.
+async def _place_preference_insights(place_id: str) -> list[PlacePreferenceInsight]:
+    """그 장소의 취향 태그와 태그별 후기 근거를 읽는다. 못 읽으면 빈 목록이다.
+
+    조회 실패를 부르는 쪽의 실패로 만들지 않는다 — 취향 근거는 상세 카드에도
+    추천 이유 문장에도 부가 정보라, 이것 때문에 카드 전체가 안 나가는 것이 훨씬
+    나쁘다. 상세조회와 이유 문장 두 경로가 같은 값을 읽어 여기로 모았다.
+    """
+
+    async with create_external_client() as client:
+        preference_repository = get_place_details_repository(client)
+        if preference_repository is None:
+            return []
+        try:
+            rows = await preference_repository.find_preference_insights(place_id)
+            return [PlacePreferenceInsight.model_validate(row) for row in rows]
+        except Exception:
+            logger.exception("상세 카드 취향 근거 조회 실패 — 취향 근거 없이 응답한다")
+            return []
+
+
+@router.post("/chat/place-details/reason", response_model=PlaceReasonResponse)
+async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReasonResponse:
+    """상세 카드의 "AI가 추천하는 이유" 문장을 만든다. 못 만들면 ai_reason이 None이다.
+
+    **상세조회(`/chat/place-details`)와 나눈 별도 호출이다.** 처음에는 상세 응답에
+    문장을 실었는데, 그러면 문장 생성에 드는 1~2초가 주소·운영시간·사진이 뜨는
+    시각 전체를 뒤로 밀었다 — 모델이 느려지거나 폴백까지 가면 그만큼 상세 카드가
+    통째로 멈춘다. 화면이 카드를 먼저 그리고 문장은 도착하는 대로 채우도록,
+    기다리는 쪽을 이 호출 하나로 좁혔다.
 
     **취향 태그가 있는 장소에만 만든다.** 근거로 쓸 것이 태그 집계와 후기 문장뿐이라
     태그가 없으면 쓸 재료가 없고, 그때 억지로 부르면 카드에 없는 사실을 지어낼 여지만
     준다. 태그 미수집 장소는 기존 고정 문장 한 줄만 남는다.
 
-    **실패를 이 라우트의 실패로 만들지 않는다.** 이 문장이 없어도 절이 성립하도록
-    화면을 만들었으므로(카드가 이미 들고 있는 `recommendation_reason`이 위에 있다),
-    LLM이 죽어도 상세 카드는 지금까지처럼 그대로 나가야 한다 — 부가 문장 하나 때문에
-    운영시간·주소가 안 보이는 것이 훨씬 나쁘다. 추천 요약(compose_recommendation_summary)이
-    같은 이유로 같은 선택을 한다.
+    **실패를 오류 응답으로 만들지 않는다.** 이 문장이 없어도 절이 성립하도록 화면을
+    만들었으므로(카드가 이미 들고 있는 `recommendation_reason`이 위에 있다), LLM이
+    죽어도 화면은 지금까지처럼 그대로 있어야 한다. 추천
+    요약(compose_recommendation_summary)이 같은 이유로 같은 선택을 한다.
     """
 
-    if not request.want_ai_reason or not settings.place_reason_enabled or not insights:
-        return None
+    if not settings.place_reason_enabled:
+        return PlaceReasonResponse()
+    insights = await _place_preference_insights(request.place_id)
+    if not insights:
+        return PlaceReasonResponse()
     try:
         result = await get_llm_provider().generate_place_reason(
-            place_name=place_card.place_name or request.place_name,
+            place_name=request.place_name,
             category_label=request.category_label,
             insights=insights,
         )
     except Exception:
         logger.warning("상세 카드 추천 이유 생성 실패 — 고정 문장만 보여준다", exc_info=True)
-        return None
-    reason = result.data.strip()
-    return reason or None
+        return PlaceReasonResponse()
+    return PlaceReasonResponse(ai_reason=result.data.strip() or None)
 
 
 @router.post("/chat/stream")

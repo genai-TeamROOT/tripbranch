@@ -460,17 +460,22 @@ export interface RecommendationPlaceDetailResponse {
   status: "success" | "no_data" | "unavailable";
   requested_place_id: string | null;
   place_card: InfoPlaceCard | null;
-  /**
-   * 그 장소의 취향 태그·후기 근거만으로 만든 추천 이유 1~2문장.
-   *
-   * **null이 정상 값이다.** 요청이 켜지 않았거나(want_ai_reason), 취향 태그가 없는
-   * 장소이거나, 서버 설정이 꺼졌거나, 생성이 실패한 경우 전부 null이다. 화면은
-   * 그때 카드가 이미 들고 있는 `recommendation_reason` 한 줄만 보여준다.
-   *
-   * 서버는 항상 이 키를 싣는다. `?`는 부분 응답을 만드는 테스트 픽스처를 위한
-   * 것이고(`InfoPlaceCard.road_incident_counts`와 같은 이유), 읽는 쪽은 undefined와
-   * null을 같게 다룬다 — 둘 다 "문장이 없다"다.
-   */
+}
+
+/**
+ * "AI가 추천하는 이유" 문장 단건 응답. 상세조회와 **다른 호출**로 받는다 — 한
+ * 응답에 묶으면 문장 생성에 드는 1~2초가 주소·운영시간·사진이 뜨는 시각을 그대로
+ * 민다.
+ *
+ * **null이 정상 값이다.** 취향 태그가 없는 장소이거나, 서버 설정이 꺼졌거나,
+ * 생성이 실패한 경우 전부 null이다. 화면은 그때 카드가 이미 들고 있는
+ * `recommendation_reason` 한 줄만 보여준다.
+ *
+ * 서버는 항상 이 키를 싣는다. `?`는 부분 응답을 만드는 테스트 픽스처를 위한
+ * 것이고(`InfoPlaceCard.road_incident_counts`와 같은 이유), 읽는 쪽은 undefined와
+ * null을 같게 다룬다 — 둘 다 "문장이 없다"다.
+ */
+export interface PlaceReasonResponse {
   ai_reason?: string | null;
 }
 

@@ -33,6 +33,7 @@ import type {
   SavedPreferenceItem,
   InterpretedConditions,
   LLMOutput,
+  PlaceReasonResponse,
   RecommendationPlaceDetailResponse,
   RecommendationsResponse,
   SessionContextResponse,
@@ -109,16 +110,27 @@ export function getRecommendations(
 export function fetchRecommendationPlaceDetails(request: {
   place_id?: string | null;
   place_name: string;
-  /**
-   * "AI가 추천하는 이유" 문장을 함께 만들지. 추천/수정 카드로 열었을 때만 켠다 —
-   * INFO 카드와 사진 검색 결과에는 그 절이 없어서, 켜면 읽히지 않을 문장에
-   * 클릭마다 LLM 값을 치른다.
-   */
-  want_ai_reason?: boolean;
-  /** 문장이 장소 종류를 잘못 말하지 않게 넘기는 분류 라벨. 카드만 알고 있는 값이다. */
-  category_label?: string | null;
 }) {
   return apiClient.post<RecommendationPlaceDetailResponse>("/chat/place-details", request);
+}
+
+/**
+ * "AI가 추천하는 이유" 문장을 만들어 받는다. 상세조회가 끝난 **뒤에** 부른다 —
+ * 한 호출로 묶으면 이 문장을 기다리는 동안 주소·운영시간·사진이 통째로 안 나온다.
+ *
+ * 추천/수정 카드로 열었을 때만 부른다. INFO 카드와 사진 검색 결과에는 그 절이
+ * 없어서, 부르면 읽히지 않을 문장에 클릭마다 LLM 값을 치른다.
+ *
+ * `place_id`가 필수인 것은 서버가 문장의 근거(취향 태그·후기)를 그 id로 다시 읽기
+ * 때문이다. `category_label`은 문장이 장소 종류를 잘못 말하지 않게 넘기는 값으로,
+ * 카드만 알고 있다(서버가 읽는 상세에는 분류 필드가 없다).
+ */
+export function fetchPlaceAiReason(request: {
+  place_id: string;
+  place_name: string;
+  category_label?: string | null;
+}) {
+  return apiClient.post<PlaceReasonResponse>("/chat/place-details/reason", request);
 }
 
 export function runAgentDebug(request: AgentDebugRequest) {
