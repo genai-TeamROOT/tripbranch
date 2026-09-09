@@ -33,11 +33,15 @@
  * 색을 받고, 배지는 묶음이 시작되는 자리에 한 번만 붙는다.
  */
 
-import { useState } from "react";
-import { Check } from "lucide-react";
+import { useState, type CSSProperties } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 import { RecommendationDetailPreviewModal } from "../chat/RecommendationDetailPreviewModal";
-import { SCHEDULE_TRAVEL_ESTIMATE_HINT, scheduleTravelLabel } from "../../utils/scheduleTravel";
+import {
+  isSameCluster,
+  SCHEDULE_TRAVEL_ESTIMATE_HINT,
+  scheduleTravelLabel,
+} from "../../utils/scheduleTravel";
 import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
 import type { ScheduleItem } from "../../types";
 
@@ -91,12 +95,19 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
   const furthestVisited = visitedStops.size > 0 ? Math.max(...visitedStops) : -1;
 
   return (
-    <ol className="flex flex-col gap-2">
+    /* gap 은 카드와 다음 줄(이동 줄 또는 묶음 배지) 사이 간격이다. 이동 줄의
+       pb-4 와 짝이라 한쪽만 바꾸면 글자가 가운데를 벗어난다. */
+    <ol className="flex flex-col gap-4">
       {items.map((item, index) => {
         const isVisited = visitedStops.has(index);
         const isSkipped = !isVisited && index < furthestVisited;
         const previous = items[index - 1];
         const leg = previous ? travelLine(previous, isEn) : null;
+        /* 이 구간이 묶음 안쪽인가. 맞으면 점선과 화살촉이 앞뒤 카드의 테두리와
+           같은 색을 받는다 — 카드는 브랜드색 테두리인데 둘을 잇는 선만 회색이면
+           묶음이 한 덩어리로 읽히지 않는다. 예전 ScheduleTravelSegment 의
+           `clustered` 가 하던 일이고, 한 벌로 합치면서 빠졌다(2026-09-09). */
+        const legClustered = previous !== undefined && isSameCluster(previous, item);
         const clusterSize = badgeSize(items, index);
         return (
           <li key={item.place_id}>
@@ -116,9 +127,41 @@ export function ScheduleRoute({ items, isEn, visited, onToggleVisited }: Schedul
                 title={
                   previous?.travel_to_next_measured ? undefined : SCHEDULE_TRAVEL_ESTIMATE_HINT
                 }
-                className="relative py-2 pl-10 text-xs tabular-nums text-muted before:absolute before:bottom-0 before:left-[19px] before:top-0 before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--color-border)_0_4px,transparent_4px_8px)]"
+                /* 점선과 화살촉이 한 색을 쓰도록 변수 하나로 묶는다. 값은 앞뒤
+                   카드의 테두리와 같은 것을 쓴다 — `border-brand/40`은 Tailwind v4
+                   에서 이 color-mix 로 컴파일되므로 같은 식을 그대로 적는다.
+                   따로 적으면 한쪽 색만 바뀌어도 조용히 어긋난다. */
+                style={
+                  {
+                    "--tb-leg-color": legClustered
+                      ? "color-mix(in oklab, var(--color-brand) 40%, transparent)"
+                      : "var(--color-border)",
+                  } as CSSProperties
+                }
+                /* 글자를 두 카드 사이 세로 가운데에 둔다.
+                   위쪽 간격은 `ol`의 gap-4(16px)가 이미 만들고 있어서, 여기서 위에
+                   패딩을 또 주면 위 32px·아래 16px 로 아래쪽 카드에 붙어 보인다.
+                   그래서 아래만 pb-4 로 주고 위는 gap 에 맡긴다 — 위 16px·아래 16px.
+                   **한쪽을 바꾸면 다른 쪽도 바꾼다**(gap-4 ↔ pb-4).
+
+                   점선은 그만큼 위로 늘려(-top-4) 카드 바닥에서 시작하게 한다.
+                   패딩을 뗀 만큼 짧아지면 선이 글자 옆에서 끊겨 보인다. */
+                className="relative pb-4 pl-10 text-xs tabular-nums text-muted before:absolute before:-top-4 before:bottom-2.5 before:left-[19px] before:w-0.5 before:bg-[repeating-linear-gradient(to_bottom,var(--tb-leg-color)_0_4px,transparent_4px_8px)]"
               >
                 {leg}
+                {/* 점선 끝에 화살촉을 얹는다 — 선만 있으면 카드 사이를 가르는
+                    구분선으로 읽히고, 이 선이 "다음 곳으로 이동"이라는 방향을
+                    갖는다는 것이 드러나지 않는다. 선(before)이 화살대 역할을
+                    하므로 대를 또 그리는 ArrowDown 이 아니라 촉만 있는
+                    ChevronDown 을 쓴다. */}
+                <ChevronDown
+                  size={12}
+                  aria-hidden
+                  /* `color:` 를 붙여야 한다 — `text-[var(--x)]` 만 쓰면 Tailwind 가
+                     색인지 글자 크기인지 판단할 수 없어 규칙을 아예 만들지 않고,
+                     빌드된 CSS 에 그 클래스가 없어서 화살촉이 글자색을 물려받는다. */
+                  className="pointer-events-none absolute bottom-0 left-[14px] text-[color:var(--tb-leg-color)]"
+                />
               </p>
             )}
             {/* 묶인 자리는 테두리에 색을 준다(TP-243) — 배지가 말로 하는 것을
