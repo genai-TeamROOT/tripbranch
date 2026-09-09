@@ -558,6 +558,25 @@ def build_recommendation_summary_instruction(
     )
 
 
+def build_place_reason_instruction() -> str:
+    """상세 카드 "AI가 추천하는 이유" 1~2문장 생성용 system instruction.
+
+    **페르소나 파일을 꽂지 않는다.** 다른 생성 슬롯과 다른 유일한 점이고 의도다 —
+    trivi.md는 886자라 이 호출의 입력을 700토큰가량 늘리는데, 이 슬롯이 클릭당
+    별도 호출이라 그 증가가 클릭 수만큼 곱해진다. 말투만 필요하므로 템플릿 안의
+    "~해요체" 규칙 한 줄로 대신한다(실측 입력 494토큰, 2026-09-09).
+
+    인자가 없다. 순위·조건 축·사용자 조건을 넘기지 않기로 한 결정이 그대로 반영된
+    모양이다 — 순위와 축은 카드가 이미 들고 있는 고정 문장이 말하고, 사용자 조건은
+    이 경로(`/chat/place-details`)에 세션이 없어 읽을 수 없다.
+    """
+
+    return render_text(
+        "recommend/place_reason_instruction.md",
+        chatbot_name=CHATBOT_NAME,
+    )
+
+
 def build_compare_summary_instruction(criteria: CompareCriteria) -> str:
     """C의 검증된 COMPARE 결과를 사용자용 문장으로 바꾸는 system instruction."""
 
@@ -787,6 +806,7 @@ __all__ = [
     "build_general_answer_instruction",
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
+    "build_place_reason_instruction",
     "build_follow_up_suggestion_instruction",
     "build_closure_extraction_instruction",
     "build_mode_judge_instruction",

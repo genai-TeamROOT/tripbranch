@@ -59,6 +59,7 @@ from app.schemas import (
     IntentClassificationResult,
     LLMOutput,
     PlaceCandidate,
+    PlacePreferenceInsight,
     RecommendationResponse,
     UserConditions,
 )
@@ -227,6 +228,24 @@ class LLMProvider(Protocol):
 
         카드에 없는 사실, 내부 점수/가중치/feature_scores/warnings는 말하지 않는다.
         실패해도 추천 카드 응답 자체는 유지되어야 하므로 호출부는 템플릿으로 fallback한다.
+        """
+        ...
+
+    async def generate_place_reason(
+        self,
+        *,
+        place_name: str,
+        category_label: str | None,
+        insights: Sequence[PlacePreferenceInsight],
+    ) -> ProviderResult[str]:
+        """장소 상세 카드의 "AI가 추천하는 이유" 1~2문장을 만든다.
+
+        근거는 그 장소의 취향 태그 집계와 후기 문장뿐이다 — 순위·점수·조건 축은
+        넘기지 않는다(카드가 이미 들고 있는 고정 문장이 그 역할을 한다). 태그가
+        없는 장소는 호출부가 아예 부르지 않는다.
+
+        실패해도 상세 카드 자체는 성립해야 하므로 호출부는 이 문장을 비운 채
+        응답한다 — 화면은 기존 고정 문장 한 줄만 보여준다.
         """
         ...
 

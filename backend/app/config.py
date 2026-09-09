@@ -328,6 +328,26 @@ class Settings(BaseSettings):
     llm_generation_model_name: str = "gemini-3.5-flash"
     llm_generation_fallback_model_names: str = "gemini-3.5-flash-lite"
 
+    # 장소 상세 카드의 "AI가 추천하는 이유" 1~2문장 생성 전용 모델 묶음.
+    #
+    # **세 번째 티어를 만든 이유**는 이 호출이 fast·generation 어느 쪽 특성도 아니기
+    # 때문이다. 판단이 아니라 문장 생성이라 fast(구조화 판단)가 아니고, 사용자가
+    # 기다리는 답변 본문이 아니라 카드 클릭 후 한 줄이라 generation의 품질 예산을
+    # 쓸 이유도 없다. 사실 근거(태그·후기 문장)를 전부 쥐어주고 말투만 맡기는 작업이다.
+    #
+    # gemini-3.1-flash-lite가 기본값인 근거는 실측이다(2026-09-09, 한옥카페 선운각
+    # 실데이터 1호출): 입력 494 · 출력 64토큰, 지연 1,465ms, 사고 토큰 0. 출력 단가가
+    # 3.5-flash-lite의 40% 싸고($1.50 대 $2.50 /1M) 이 호출은 출력 비중이 크다.
+    # 두 lite 모두 2027-01-01에 단가가 2배가 되지만 서로의 비율은 그대로다.
+    #
+    # 폴백은 5xx/타임아웃 대비다. 폴백까지 실패하면 카드는 기존 고정 문장 한 줄만
+    # 보여준다 — 이 문장이 없어도 화면이 성립하도록 만들었다(routes/chat.py).
+    place_reason_model_name: str = "gemini-3.1-flash-lite"
+    place_reason_fallback_model_names: str = "gemini-3.5-flash-lite"
+    # 끄면 상세 카드가 기존 고정 문장만 보여준다. LLM 호출이 통째로 사라지므로
+    # 비용·지연 회수의 손잡이이자, 문장 품질 문제가 생겼을 때의 즉시 차단 수단이다.
+    place_reason_enabled: bool = True
+
     # 음성 입력을 텍스트로 바꿀 때 사용할 Gemini 모델. 음성 전사는 채팅 답변 생성과
     # 독립 호출이라, 비용·지연 특성에 맞는 멀티모달 모델을 따로 둔다. gemini-3.5-flash는
     # 2026-08-18 한국어 대표 발화 실측에서 전사를 확인한 기본값이다.
@@ -487,6 +507,14 @@ class Settings(BaseSettings):
         return self._model_list(
             self.llm_generation_model_name,
             self.llm_generation_fallback_model_names,
+        )
+
+    @property
+    def resolved_place_reason_models(self) -> list[str]:
+        """상세 카드 추천 이유 문장 생성에 사용할 Gemini 시도 순서."""
+        return self._model_list(
+            self.place_reason_model_name,
+            self.place_reason_fallback_model_names,
         )
 
     @property

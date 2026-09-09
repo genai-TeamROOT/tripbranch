@@ -74,6 +74,7 @@ from app.schemas import (
     OutputStatus,
     PlaceCandidate,
     PlaceContext,
+    PlacePreferenceInsight,
     PlaceTag,
     PlaceType,
     QuestionType,
@@ -1142,6 +1143,28 @@ class FakeLLMProvider:
         # 이미 보여준 문구를 맨 앞에 되돌려 준다(위 docstring 참고).
         return provider_result(
             [*already_suggested[-1:], *suggestions], source=ProviderSource.FAKE_LLM
+        )
+
+    async def generate_place_reason(
+        self,
+        *,
+        place_name: str,
+        category_label: str | None,
+        insights: Sequence[PlacePreferenceInsight],
+    ) -> ProviderResult[str]:
+        """결정적 한 문장. 상위 태그 라벨을 그대로 이어 붙인다.
+
+        **문장을 그럴듯하게 만들지 않는다.** Fake가 실제 LLM처럼 읽히는 문장을
+        내면 프롬프트가 깨진 것을 화면에서 알아챌 수 없다(D-042와 같은 성격) —
+        태그가 실제로 넘어왔는지만 눈으로 확인할 수 있게 나열한다.
+        """
+
+        labels = [insight.label for insight in insights[:3] if insight.label]
+        if not labels:
+            return provider_result("", source=ProviderSource.FAKE_LLM)
+        return provider_result(
+            f"후기에서 {' · '.join(labels)} 점이 자주 언급돼요.",
+            source=ProviderSource.FAKE_LLM,
         )
 
     async def stream_recommendation_summary(
