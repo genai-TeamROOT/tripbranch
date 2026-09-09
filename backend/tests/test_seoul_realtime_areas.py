@@ -14,9 +14,11 @@ from app.agent_context.seoul_realtime_areas import (
     COMMERCIAL_AREAS,
     POPULATION_AREAS,
     _load_areas,
+    population_areas_in_district,
     select_nearest_commercial_area,
     select_nearest_population_area,
 )
+from app.service_area import find_containing_district
 
 # 실시간 도시데이터 매뉴얼 V8.5(2026-04) 표 2-2/표 3-9에 실린 카테고리별 개수.
 _MANUAL_POPULATION_COUNTS = {
@@ -144,3 +146,47 @@ def test_loader_rejects_missing_required_field(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="필수 필드가 없습니다"):
         _load_areas(path)
+
+
+def test_catalog_district_matches_the_coordinate() -> None:
+    """파일에 적어 둔 구가 좌표로 판정한 구와 같은지 본다.
+
+    **이 테스트가 파일에 적는 방식의 값이다.** 좌표를 고치면서 구를 안 고치면 두 값이
+    조용히 어긋나는데, 그때 틀어지는 것은 "강서구 지금 사람 많아?"의 답 전체다.
+    전수 대조가 121곳 + 82곳에 18ms 남짓이라 매번 돌려도 부담이 없다.
+    """
+
+    for area in (*POPULATION_AREAS, *COMMERCIAL_AREAS):
+        district = find_containing_district(area.latitude, area.longitude)
+        expected = district.name if district else None
+        assert area.district == expected, (
+            f"{area.name}: 파일 {area.district!r} vs 좌표 {expected!r}"
+        )
+
+
+def test_areas_outside_seoul_have_no_district() -> None:
+    """서울 경계 밖이거나 구 경계에 걸친 곳은 구가 비어 있다.
+
+    서울대공원은 과천이고 아차산은 광진구·중랑구 경계에 놓인다. 이 둘이 None인 것은
+    버그가 아니라 사실이므로, 나중에 "왜 두 곳만 비었지?"로 다시 파지 않게 못박는다.
+    """
+
+    without_district = {area.name for area in POPULATION_AREAS if area.district is None}
+
+    assert without_district == {"서울대공원", "아차산"}
+
+
+def test_population_areas_in_district_finds_every_area_in_it() -> None:
+    names = [area.name for area in population_areas_in_district("강서구")]
+
+    assert names == ["발산역", "서울식물원·마곡나루역", "김포공항", "강서한강공원"]
+
+
+def test_population_areas_in_district_is_empty_where_seoul_provides_none() -> None:
+    """중랑구에는 실시간 인구 지역이 하나도 없다.
+
+    호출부는 이 경우를 되묻기가 아니라 "제공 지역이 없다"는 답으로 다뤄야 한다 —
+    되물어봐야 사용자가 내놓을 수 있는 답이 없다.
+    """
+
+    assert population_areas_in_district("중랑구") == ()

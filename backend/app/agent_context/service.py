@@ -205,6 +205,12 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_traffic",
 }
 _PUBLIC_PARKING_QUESTION_TYPE = "realtime_public_parking"
+
+# 구 이름만으로 물어도 구 단위 조회로 답할 수 있는 주차 질문. 서울시 GetParkingInfo가
+# 원래 구 단위 API라, 특정 장소를 못 집어도 답이 나온다.
+_DISTRICT_PARKING_QUESTION_TYPES = frozenset(
+    {"parking", "realtime_parking", _PUBLIC_PARKING_QUESTION_TYPE}
+)
 _PUBLIC_TOILET_QUESTION_TYPE = "public_toilet"
 # 급해서 묻는 질문이라 걸어갈 수 있는 거리만 본다. 1km를 넘기면 "근처"가 아니고,
 # 실측(인사동 기준 1km 내 101곳)상 이 범위 안에서 답이 충분히 나온다.
@@ -620,8 +626,17 @@ class ContextService:
 
         current_activity_candidate = _is_current_activity_candidate(request)
         current_population_candidate = _is_current_population_candidate(request, self._clock())
+        # 구 이름 하나로 주차를 물었나("강서구 공영주차장 자리 있어?"). 그렇다면 지역
+        # 검색으로 관광지 후보를 찾는 대신 행정구역 좌표로 확정한다(아래 skip_local_search).
+        #
+        # **세 유형을 함께 본다.** 전에는 `parking`만 봤는데, 그러면 공영주차장을 명시한
+        # 질문(realtime_public_parking)이 오히려 이 경로에서 빠졌다 — 구 단위
+        # GetParkingInfo를 쓰겠다고 가장 분명히 말한 발화가 되묻기로 끝나고, 되묻기
+        # 선택지가 그 구 이름 하나뿐이라 눌러도 같은 자리로 돌아왔다(TP-261).
         parking_district = (
-            _supported_district_name(place_name) if request.question_type == "parking" else None
+            _supported_district_name(place_name)
+            if request.question_type in _DISTRICT_PARKING_QUESTION_TYPES
+            else None
         )
         is_realtime_citydata_purpose = (
             request.question_type == "realtime_commercial"
