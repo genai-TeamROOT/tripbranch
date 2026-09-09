@@ -18,10 +18,11 @@
  * 맨 위에 직접 둔다 — `?saved=` 조회가 실패했을 때도 상세 자리에 오류와 함께
  * 이 버튼이 뜬다(목록을 같이 그리지 않는다).
  *
- * 카드 레이아웃은 ChatMessageList가 쓰는 ScheduleCard/ScheduleTravelSegment와
- * 다르다 — 그 둘은 대화 중 짧게 보여주는 용도로 이미 확정돼 있고(Phase 4/5),
- * 이 화면은 Figma가 별도로 그린 전용 시트 레이아웃(이미지+도착 배지를 카드
- * 안에 함께 두는 방식)이라 여기서만 따로 그린다.
+ * **카드 레이아웃은 채팅과 같다**(2026-09-09). 예전에는 채팅이 ScheduleCard·
+ * ScheduleTravelSegment 한 벌을 따로 갖고 있었고, 이 화면만 Figma가 그린 전용
+ * 시트 레이아웃(이미지+도착 시각을 카드 안에 함께 두는 방식)이었다. 같은 일정이
+ * 화면마다 다르게 보여서 이 화면 쪽으로 합쳤다 — 이제 둘 다 ScheduleRoute 를
+ * 쓰고, 채팅은 체크(다녀왔어요)만 넘기지 않는다.
  */
 
 import { ChevronLeft, Route as RouteIcon, ThumbsDown, ThumbsUp } from "lucide-react";

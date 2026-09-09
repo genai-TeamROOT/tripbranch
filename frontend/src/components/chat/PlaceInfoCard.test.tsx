@@ -56,7 +56,7 @@ it("질문 답과 썸네일은 바로 보이고, 클릭하면 같은 상세 모�
   expect(screen.queryByText("조선 왕조의 법궁이다.")).not.toBeInTheDocument();
   expect(screen.getByRole("img", { name: "경복궁 이미지" })).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = screen.getByRole("dialog", { name: "경복궁" });
   expect(within(dialog).getByText("조선 왕조의 법궁이다.")).toBeInTheDocument();
@@ -82,7 +82,7 @@ it("관련 정보의 URL은 클릭 가능한 링크로 보여준다", async () =
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByRole("link", { name: "https://instagram.com/gyeongbokgung" })).toHaveAttribute(
@@ -98,7 +98,7 @@ it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준
     <PlaceInfoCard card={{ ...card, answer_fields: { homepage: "www.royalpalace.go.kr" } }} />,
   );
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   const link = dialog.getByRole("link", { name: "www.royalpalace.go.kr" });
@@ -123,7 +123,7 @@ it("요금 항목과 ※ 안내를 각각 줄바꿈해 표시한다", async () =
     "whitespace-pre-line",
   );
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByText("- 성인 10,000원")).toHaveClass("whitespace-pre-line");
@@ -148,7 +148,7 @@ it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async (
   expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
   expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
@@ -182,7 +182,7 @@ it("주소 INFO 카드도 클릭하면 전체 장소 상세를 보강 조회한�
   });
 
   renderWithTrip(<PlaceInfoCard card={minimalCard} />);
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   await waitFor(() => {
     expect(fetchRecommendationPlaceDetails).toHaveBeenCalledWith({
@@ -213,7 +213,7 @@ it("혼잡도 카드(place_id 없음)도 이름으로 상세를 보강 조회한
   });
 
   renderWithTrip(<PlaceInfoCard card={concentrationCard} />);
-  await user.click(screen.getByRole("button", { name: "창덕궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   await waitFor(() => {
     expect(fetchRecommendationPlaceDetails).toHaveBeenCalledWith(
@@ -256,7 +256,7 @@ it("실시간 도시데이터 카드는 모달에서 추가 항목과 출처를 
   };
 
   renderWithTrip(<PlaceInfoCard card={realtimeCard} />);
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("실시간 지역 정보")).toBeInTheDocument();
@@ -329,7 +329,7 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-emerald-700");
   expect(screen.getByText("세종로 공영주차장")).toBeInTheDocument();
   expect(screen.getByText("공영")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByText("서울시 데이터")).toBeInTheDocument();
@@ -425,7 +425,7 @@ it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미�
   };
 
   renderWithTrip(<PlaceInfoCard card={populationCard} />);
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("혼잡도 안내")).toBeInTheDocument();
@@ -483,7 +483,7 @@ it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 �
     ),
   ).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByLabelText("현재 인구 혼잡도 약간 붐빔")).toBeInTheDocument();
@@ -530,7 +530,7 @@ it("도로소통 카드는 단계 게이지를 요약 카드와 상세 모달 �
   renderWithTrip(<PlaceInfoCard card={trafficCard} />);
   expect(screen.getByLabelText("현재 도로소통 단계 원활")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+  await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByLabelText("현재 도로소통 단계 원활")).toBeInTheDocument();
