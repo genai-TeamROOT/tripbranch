@@ -190,7 +190,26 @@ def _to_seoul_realtime_summary(
     )
 
 
-def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
+# 카드가 "껍데기뿐인가"를 볼 때 내용으로 치지 않는 필드.
+#
+# 장소명과 좌표는 카드가 무엇에 대한 것인지를 말할 뿐 사용자가 읽을 내용이 아니다.
+# question_type도 마찬가지다.
+_CARD_SKELETON_FIELDS = frozenset(
+    {"question_type", "place_id", "place_name", "latitude", "longitude"}
+)
+
+
+def _has_content(card: InfoPlaceCard) -> bool:
+    """카드에 사용자가 읽을 것이 하나라도 있는가."""
+
+    return any(
+        value not in (None, [], {}, "")
+        for key, value in card.model_dump().items()
+        if key not in _CARD_SKELETON_FIELDS
+    )
+
+
+def _build_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
     """장소가 확인된 모든 INFO 결과를 카드 묶음으로 AgentResponse에 전달한다.
 
     C의 ``location_info``·혼잡도·행사 경로는 비용을 아끼기 위해 PlaceDetails를
@@ -198,6 +217,16 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
     답변 아래에서 같은 장소 맥락을 확인할 수 있도록, C가 이미 확정한 장소명과
     답변 사실만으로 최소 카드를 만든다. Overview·썸네일 같은 상세는 C가 제공한
     경우에만 채운다.
+
+    **다만 읽을 것이 하나도 없으면 카드를 만들지 않는다.** 답변이 "확인할 수 없어요"인데
+    상세 보기 버튼이 함께 나가고, 눌러 보면 빈 화면이었다. 좌표만 실려 있으면 길찾기
+    버튼까지 떠서 "강서구로 길찾기"가 열렸다 — 사용자가 구청에 가려던 것이 아니다
+    (2026-09-09: 강서구 운영시간·입장료·편의시설, 식당의 혼잡도).
+
+    **판정을 여기 한 곳에 둔다.** 결과 종류마다 카드 만드는 함수가 여섯 개인데, 각자
+    빈 경우를 따로 챙기면 새 종류가 생길 때마다 빠뜨린다. 구 단위 혼잡도는 이미 자기
+    함수에서 걸렀지만(areas가 비면 None), 그 방식을 나머지로 넓히는 대신 공통 자리로
+    올린다.
     """
 
     result = response.result
@@ -229,6 +258,36 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
             ],
         )
     return None
+
+
+def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
+    """모달 상세 조회용. 껍데기라도 그대로 돌려준다.
+
+    `/api/chat/place-details`가 이 함수를 쓴다. 그 경로에서 카드는 읽을거리가 아니라
+    **좌표를 실어 나르는 그릇**이다 — 모달이 길찾기를 열려면 목적지가 필요한데, 첫
+    응답에 좌표가 없는 카드(혼잡도·행사 등)는 여기서 이름으로 다시 조회해 받는다.
+    껍데기를 버리면 그 길이 막힌다.
+
+    채팅 답변에 붙일 카드는 `to_answer_info_place_card()`를 쓴다.
+    """
+
+    return _build_info_place_card(response)
+
+
+def to_answer_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
+    """채팅 답변 아래에 붙일 카드. 읽을 것이 없으면 만들지 않는다.
+
+    답이 "확인할 수 없어요"인데 상세 보기 버튼이 함께 나가고, 눌러 보면 빈 화면이었다.
+    좌표만 실려 있으면 길찾기 버튼까지 떠서 "강서구로 길찾기"가 열렸다 — 사용자가
+    구청에 가려던 것이 아니다(2026-09-09: 강서구 운영시간·입장료·편의시설, 식당의
+    혼잡도, 지원 지역 밖 장소의 혼잡도).
+
+    **상세 조회와 갈라 둔다.** 같은 카드라도 두 자리에서 뜻이 다르다 — 여기서는 읽을거리라
+    비면 소용이 없지만, 저쪽에서는 좌표 그릇이라 껍데기에도 쓸모가 있다.
+    """
+
+    card = _build_info_place_card(response)
+    return card if card is not None and _has_content(card) else None
 
 
 def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:

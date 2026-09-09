@@ -21,7 +21,10 @@ from app.agent_context.info_schemas import (
     RoadIncidentCategoryCountInfo,
     SeoulRealtimeSummaryInfo,
 )
-from app.services.runtime.info_response_transform import to_info_place_card
+from app.services.runtime.info_response_transform import (
+    to_answer_info_place_card,
+    to_info_place_card,
+)
 
 
 def _response(
@@ -687,3 +690,72 @@ def test_district_card_has_no_source_link() -> None:
     assert card.realtime_source_url is None
     assert card.realtime_map_url is None
     assert card.population_forecasts == []
+
+
+def test_card_without_anything_to_read_is_not_made() -> None:
+    """답이 "확인할 수 없어요"인데 상세 보기 버튼이 함께 나가지 않는다.
+
+    장소명과 좌표만 있는 카드는 껍데기다. 열어 보면 빈 화면이고, 좌표 때문에 길찾기
+    버튼까지 떠서 "강서구로 길찾기"가 열렸다 — 사용자가 구청에 가려던 것이 아니다.
+    """
+
+    card = to_answer_info_place_card(
+        InfoContextResponse(
+            request_id="empty",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="강서구",
+                resolved_place_name="서울특별시 강서구",
+                fields={},
+            ),
+        )
+    )
+
+    assert card is None
+
+
+def test_card_with_one_readable_field_survives() -> None:
+    """읽을 것이 하나라도 있으면 만든다. 껍데기만 걸러내는 것이지 카드를 아끼는 게 아니다."""
+
+    card = to_answer_info_place_card(
+        InfoContextResponse(
+            request_id="one-field",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"operating_hours": "09:00~18:00"},
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.answer_fields == {"operating_hours": "09:00~18:00"}
+
+
+def test_detail_lookup_keeps_the_bare_card() -> None:
+    """상세 조회 경로는 껍데기라도 그대로 받는다.
+
+    거기서 카드는 읽을거리가 아니라 좌표를 실어 나르는 그릇이다 — 모달이 길찾기를
+    열려면 목적지가 필요한데, 첫 응답에 좌표가 없는 카드는 이름으로 다시 조회해 받는다.
+    껍데기를 버리면 그 길이 막힌다.
+    """
+
+    response = InfoContextResponse(
+        request_id="detail",
+        status="success",
+        result=PlaceInfoResult(
+            status="success",
+            question_type="general_info",
+            requested_place_name="창덕궁",
+            resolved_place_name="창덕궁",
+            fields={},
+        ),
+    )
+
+    assert to_info_place_card(response) is not None
+    assert to_answer_info_place_card(response) is None
