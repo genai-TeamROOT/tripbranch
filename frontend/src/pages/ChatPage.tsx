@@ -22,7 +22,6 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesChip } from "../components/chat/SavedPlacesChip";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
-import { useVisualViewportHeight } from "../hooks/useVisualViewportHeight";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
@@ -95,7 +94,6 @@ export function ChatPage() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   /* 입력창에 포커스가 가서 모바일 키보드가 뜨면 이 값이 채워진다 — 헤더까지
      함께 스크롤되어 밀려 올라가는 대신, 아래에서 <main> 자체의 높이를 줄인다. */
-  const visualViewportHeight = useVisualViewportHeight();
   useAutoScrollToBottom(messagesContainerRef, isLoading);
   const {
     isVisible: isScrollButtonVisible,
@@ -436,73 +434,79 @@ export function ChatPage() {
   );
 
   return (
-    <main
-      className="flex h-full flex-col overflow-y-auto"
-      style={visualViewportHeight != null ? { height: visualViewportHeight } : undefined}
-    >
-      {/* 담은 장소가 있으면 헤더 오른쪽에 "N곳 일정 짜기"가 뜬다. 전에는 이
-          동작이 입력창 바로 위(SavedPlacesBar)에 있어서, 하트를 누른 뒤 맨
-          아래까지 내려가야 보였다 — 카드를 보며 담는 동안에는 안 보인다. */}
-      <AppHeader
-        location={locationChip}
-        trailing={
-          <SavedPlacesChip
-            onPlanFromSaved={planFromSaved}
-            isLoading={isLoading}
-            language={state.language}
-          />
-        }
-      />
+    <main className="relative flex h-full flex-col overflow-hidden">
+      {/*
+       * 헤더도 스크롤 영역 **위에 겹친다**(2026-09-09). 컴포저와 같은 이유다 —
+       * 흐름 안에 두면 그 자리가 죽은 칸이 되어 내용이 헤더 밑에서 잘려 보인다.
+       * 겹치는 만큼 아래 스크롤 칸이 위를 비운다(--tb-header-h, AppHeader가
+       * 자기 높이를 재서 알려준다).
+       */}
+      <div className="absolute inset-x-0 top-0 z-20">
+        <AppHeader location={locationChip} />
+      </div>
 
-      <div
-        ref={messagesContainerRef}
-        className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
-      >
-        {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
+      {/*
+       * **스크롤은 이 칸만 한다**(2026-09-09). 전에는 main 자체가 스크롤러였고
+       * 컴포저가 그 안에서 sticky 로 바닥에 붙어 있었는데, iOS 에서 소프트
+       * 키보드가 뜬 동안 그 sticky 가 죽었다(ChatComposer 주석). 채팅에서는
+       * 자동 바닥 붙임이 늘 맨 아래로 끌어당겨 티가 안 났을 뿐, 같은 버그가
+       * 여기에도 있었다 — 키보드를 띄운 채 위로 올려 읽으면 드러난다.
+       *
+       * 컴포저는 이 칸의 형제이면서 absolute 로 그 위에 겹치므로, 겹치는
+       * 만큼(--tb-composer-h) 아래에 자리를 비워 둔다 — 안 그러면 마지막
+       * 메시지가 컴포저에 영영 가린다.
+       */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-[var(--tb-composer-h,0px)] pt-[var(--tb-header-h,0px)]">
+        <div
+          ref={messagesContainerRef}
+          className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
+        >
+          {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
             6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다.
             화면 설명 문구도 뺐다 — 무엇을 하는 화면인지는 대화 자체로 드러난다. */}
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={() => navigate("/dev-chat")}
-            className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
-          >
-            {text.developer}
-          </button>
-        </div>
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => navigate("/dev-chat")}
+              className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
+            >
+              {text.developer}
+            </button>
+          </div>
 
-        <ChatMessageList
-          messages={state.messages}
-          showDebug={false}
-          isLoading={isLoading}
-          deviceLocation={state.device_location}
-          onRequestMore={() => void requestSend(text.requestMore)}
-          onRelaxRadius={() => void requestSend(text.relaxRadius)}
-          onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
-          // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
-          // 것과 같은 경로로 분류를 태운다.
-          onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
-          onSetLocation={() => navigate("/location")}
-          onRetryTurn={(input) => void requestSend(input)}
-          onToggleTravelOrigin={(toggle) => {
-            const label =
-              toggle.alternative_origin === "search_center"
-                ? text.basedOn(toggle.alternative_origin_name)
-                : text.currentLocation;
-            void requestSend(label, undefined, toggle.alternative_origin);
-          }}
-          locationRefresh={
-            pendingLocationRefresh
-              ? {
-                  ageMinutes: locationAgeMinutes,
-                  onUsePrevious: usePreviousLocation,
-                  onRefreshLocation: () => void refreshBrowserLocation(),
-                }
-              : null
-          }
-          progress={state.agentProgress}
-          language={state.language}
-        />
+          <ChatMessageList
+            messages={state.messages}
+            showDebug={false}
+            isLoading={isLoading}
+            deviceLocation={state.device_location}
+            onRequestMore={() => void requestSend(text.requestMore)}
+            onRelaxRadius={() => void requestSend(text.relaxRadius)}
+            onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+            // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
+            // 것과 같은 경로로 분류를 태운다.
+            onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
+            onSetLocation={() => navigate("/location")}
+            onRetryTurn={(input) => void requestSend(input)}
+            onToggleTravelOrigin={(toggle) => {
+              const label =
+                toggle.alternative_origin === "search_center"
+                  ? text.basedOn(toggle.alternative_origin_name)
+                  : text.currentLocation;
+              void requestSend(label, undefined, toggle.alternative_origin);
+            }}
+            locationRefresh={
+              pendingLocationRefresh
+                ? {
+                    ageMinutes: locationAgeMinutes,
+                    onUsePrevious: usePreviousLocation,
+                    onRefreshLocation: () => void refreshBrowserLocation(),
+                  }
+                : null
+            }
+            progress={state.agentProgress}
+            language={state.language}
+          />
+        </div>
       </div>
 
       {/* **움직일 때만 뜨고, 움직인 방향으로 간다**(2026-09-08). 전에는 상시로
@@ -510,20 +514,33 @@ export function ChatPage() {
           가렸고, 위로 올리는 중인데 아래로 가는 버튼이 보이는 경우가 있었다.
           판정은 useScrollEdgeButton에 있다.
 
-          **버튼을 붙였다 떼지 않는다.** 이 래퍼는 sticky라 스크롤 흐름에서
-          자리를 차지하는데, 조건부로 렌더하면 뜰 때마다 scrollHeight가 40px
-          늘고 사라질 때 40px 줄었다(실측 4691 ↔ 4731). 맨 아래에 있으면 줄어든
-          만큼 브라우저가 scrollTop을 깎고(3879 → 3839) 그 이벤트가 "위로
-          올렸다"로 읽혀, 버튼이 다시 뜨고 또 사라지는 고리가 됐다. 지금은 항상
-          두고 opacity로만 보이거나 숨긴다 — 높이가 흔들리지 않는다.
+          **버튼을 붙였다 떼지 않는다.** 지금은 이 띠가 흐름 밖(absolute)이라
+          붙였다 떼도 스크롤 높이가 흔들리지 않지만, 그래도 항상 두고 opacity로만
+          보이거나 숨긴다 — 사라지는 애니메이션이 돌 자리가 필요하다.
 
-          그래서 `h-0 items-end`다. 래퍼가 흐름 높이를 0으로 두고 버튼은 그
-          바닥선에서 위로 자라므로, 짧은 대화에서 빈 자리 40px이 생기지 않고
-          버튼 위치도 전과 같다.
+          원래 이유는 달랐다(2026-09-08). 그때는 이 래퍼가 sticky라 흐름에서
+          자리를 차지해서, 조건부로 렌더하면 뜰 때마다 scrollHeight가 40px 늘고
+          사라질 때 40px 줄었다(실측 4691 ↔ 4731). 맨 아래에 있으면 줄어든 만큼
+          브라우저가 scrollTop을 깎고(3879 → 3839) 그 이벤트가 "위로 올렸다"로
+          읽혀, 버튼이 다시 뜨고 또 사라지는 고리가 됐다. **그 고리는 흐름 밖으로
+          나오면서 사라졌다** — 다시 흐름 안으로 들일 일이 있으면 되살아난다.
 
           숨을 때 aria-hidden과 tabIndex=-1을 함께 준다 — 보이지 않는 버튼이
-          스크린리더에 읽히거나 탭 순서에 남지 않게. */}
-      <div className="pointer-events-none sticky bottom-20 z-30 mx-auto flex h-0 w-full max-w-2xl items-end justify-end px-4 md:bottom-24">
+          스크린리더에 읽히거나 탭 순서에 남지 않게.
+
+          **sticky를 뗐다**(2026-09-09). 컴포저가 스크롤 위에 겹치는 absolute가
+          되면서 이 띠도 같은 방식으로 컴포저 바로 위에 세운다 — 스크롤과 무관한
+          자리라 붙일 대상이 없다. tb-keyboard-lift 로 컴포저와 같은 만큼 올라간다.
+
+          **이동 버튼과 일정 칩이 한 띠를 쓴다**(2026-09-09). 칩은 전에 헤더
+          오른쪽에 있었는데, 눌러야 하는 두 동작이 화면 위아래로 갈려 있었다.
+          지금은 손이 가는 자리인 입력창 바로 위에 모인다.
+
+          양옆 flex-1이 같은 폭이라 가운데 버튼이 **칩 너비와 무관하게** 정중앙에
+          선다. 칩은 담은 곳이 없으면 스스로 사라지는데, 그때도 버튼 자리는 그대로다.
+          items-end 라 높이가 다른 둘의 아랫변이 맞는다. */}
+      <div className="tb-keyboard-lift pointer-events-none absolute inset-x-0 bottom-[var(--tb-composer-h,0px)] z-30 mx-auto flex w-full max-w-2xl items-end px-4">
+        <div className="flex-1" />
         <motion.button
           type="button"
           animate={{
@@ -541,6 +558,13 @@ export function ChatPage() {
         >
           {scrollButtonDirection === "up" ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </motion.button>
+        <div className="pointer-events-auto flex flex-1 justify-end">
+          <SavedPlacesChip
+            onPlanFromSaved={planFromSaved}
+            isLoading={isLoading}
+            language={state.language}
+          />
+        </div>
       </div>
 
       <ChatComposer

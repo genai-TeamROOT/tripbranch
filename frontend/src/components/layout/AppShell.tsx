@@ -13,6 +13,8 @@
 
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
+import { useEdgeSwipeBackGuard } from "../../hooks/useEdgeSwipeBackGuard";
+import { useKeyboardInset } from "../../hooks/useKeyboardInset";
 import { AppRoutes } from "./AppRoutes";
 import { AppShellProvider, useAppShell } from "./AppShellContext";
 import { PageTransition } from "./PageTransition";
@@ -33,6 +35,14 @@ function AppShellInner() {
   const { drawerOpen, closeDrawer } = useAppShell();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const location = useLocation();
+
+  /* 소프트 키보드가 가린 높이를 CSS 변수로 흘려보낸다. 화면마다 걸지 않고
+     여기 한 번만 거는 이유는 훅 주석에 있다. 셸과 컴포저가 그 값을 읽는다. */
+  useKeyboardInset();
+
+  /* 왼쪽 가장자리 스와이프로 브라우저가 뒤로 가지 않게 막는다 — 그 제스처가 도는
+     동안 셸 뒤의 드로어가 드러난다. 스와이프로 드로어를 여는 기능은 없다. */
+  useEdgeSwipeBackGuard();
 
   useEffect(() => {
     try {

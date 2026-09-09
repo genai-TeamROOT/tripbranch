@@ -142,7 +142,12 @@
     color-scheme: light;
     overflow-x: hidden;
     height: 100%;
-    overscroll-behavior-y: none;
+    /*
+     * 세로는 고무줄 바운스를, **가로는 "끝까지 밀면 뒤로 가기"를** 막는다
+     * (2026-09-09). Android Chrome 은 이 한 줄로 잡히고, iOS 사파리의 가장자리
+     * 제스처는 CSS 로 안 잡혀서 useEdgeSwipeBackGuard 가 따로 막는다.
+     */
+    overscroll-behavior: none;
   }
 
   body {
@@ -155,7 +160,7 @@
     position: fixed;
     inset: 0;
     overflow: hidden;
-    overscroll-behavior-y: none;
+    overscroll-behavior: none;
   }
 
   /* min-height가 아니라 height다 — min-height는 내용이 넘치면 그만큼 자라서
@@ -204,6 +209,80 @@
     /* Chrome 이 transform 종료 후 합성 레이어를 애니메이션 중간 크기로
        남기는 경우가 있다. 미리 승격해두면 안정적. */
     will-change: transform;
+  }
+
+  /*
+   * 채팅 입력창을 화면 맨 아래에 세우고, 소프트 키보드가 뜨면 그만큼 올린다
+   * (2026-09-09, useKeyboardInset). 올리는 것(.tb-keyboard-lift)과 아래 여백
+   * (.tb-composer-dock)을 나눠 둔 것은, 컴포저 위에 뜨는 스크롤 이동 버튼이
+   * 올리기만 같이 받아야 하기 때문이다(ChatPage).
+   *
+   * **올리는 것은 translate 다.** 높이나 margin 을 건드리면 위쪽 본문이 다시
+   * 배치된다 — 요구사항은 "입력창만 움직이고 본문은 그대로"다.
+   *
+   * 아래 여백은 홈 인디케이터(Safe Area)를 피하는 값인데, **키보드가 떠 있으면
+   * 그 자리를 키보드가 덮고 있어 의미가 없다.** 가린 만큼 빼면 음수가 되어
+   * max() 가 1rem 을 고르고, 키보드가 내려가면 다시 Safe Area 값이 이긴다.
+   */
+  /*
+   * **키보드가 떠 있는 동안에만 걸린다.**(2026-09-09) 값이 0이어도 `translate`
+   * 속성이 붙어 있으면 그 요소는 이동 변환이 있는 것으로 취급된다 — 조상이
+   * 그러면 안쪽 `backdrop-filter` 가 뒤를 못 읽어 컴포저의 유리 배경이 흰
+   * 박스로 칠해지고(실기기 확인), `position: sticky` 도 갱신을 멈춘다.
+   * 평소에는 이 규칙 자체가 적용되지 않아 HEAD 와 같은 화면이 된다.
+   */
+  /*
+   * **셸의 직계 자식만 고른다.** .tb-page-enter 는 화면 전환 래퍼라 한 화면 안에
+   * 또 나올 수 있다(일정 화면이 목록↔상세 전환에 한 겹 더 쓴다). 그냥
+   * `.tb-page-enter` 로 잡으면 중첩된 만큼 보정이 겹쳐서 두 배로 내려간다
+   * (2026-09-09에 실제로 그랬다). 셸 바로 아래 한 겹만 움직이면 된다.
+   */
+  :root[data-tb-kb] .tb-shell > .tb-page-enter {
+    /*
+     * 브라우저가 밀어 올린 만큼 도로 내려 **본문을 제자리에 둔다**. iOS 사파리는
+     * 포커스된 입력칸을 보이게 하려고 보이는 창을 문서 아래쪽으로 내려붙인다
+     * (실측: offsetTop 0 → 301, offsetTop + 창높이 = 레이아웃 높이). body 가
+     * position:fixed 라 문서는 안 움직이는데 창만 움직여서, 화면 전체가 위로
+     * 뜬 것처럼 보인다.
+     *
+     * **셸이 아니라 셸 안쪽을 내린다**(2026-09-09). 셸을 통째로 내렸더니 위쪽에
+     * 셸이 비운 자리가 생겼고, 그 자리로 뒤에 있던 드로어가 드러났다(실기기
+     * 확인 — 키보드를 띄운 채 스크롤하면 사이드바가 비쳤다). 셸은 제자리에서
+     * 화면을 덮고 있고 그 안의 화면만 내려가면 그런 자리가 안 생긴다. 넘치는
+     * 아래쪽은 셸의 overflow 가 잘라 준다.
+     *
+     * **높이는 건드리지 않는다.** 줄이면 안쪽 flex 배치가 다시 계산돼 본문이
+     * 재배치되고 스크롤 위치까지 흔들린다.
+     *
+     * **`transform` 이 아니라 `translate` 다.** 이 요소에는 화면 전환 애니메이션이
+     * transform 으로 걸리고, .tb-shell 에는 드로어를 미는
+     * `transition: transform 0.28s ease` 가 있다. translate 는 별개 속성이라
+     * 어느 쪽도 덮어쓰지 않고 함께 쌓인다.
+     */
+    translate: 0 var(--tb-vv-top, 0px);
+  }
+
+  :root[data-tb-kb] .tb-keyboard-lift {
+    translate: 0 calc(-1 * var(--tb-kb, 0px));
+  }
+
+  .tb-composer-dock {
+    padding-bottom: max(1rem, calc(env(safe-area-inset-bottom) - var(--tb-kb, 0px)));
+  }
+
+  /*
+   * 키보드가 **내려갈 때만** 컴포저가 따라 내려가는 것을 보여준다.
+   *
+   * 브라우저는 내려가는 키보드의 위치를 한 번도 알려주지 않는다 — `resize` 가
+   * 방향당 1회고, 내려갈 때는 그 순간 이미 최종값이 온다(2026-09-09 실측).
+   * 올라갈 때는 즉시가 맞다(컴포저가 먼저 서고 키보드가 뒤따라 그 아래로 온다).
+   * 내려갈 때만 즉시로 두면 컴포저가 아직 키보드가 덮은 자리로 곧장 가서
+   * 0.25초 동안 사라진다.
+   *
+   * 180ms 는 훅의 KEYBOARD_RESTORE_MS 와 같아야 한다(테스트가 대조한다).
+   */
+  :root[data-tb-kb="closing"] .tb-keyboard-lift {
+    transition: translate 180ms ease-out;
   }
 
   @media (max-width: 767px) {
@@ -291,6 +370,35 @@
  * 이걸 하나로 묶어 전부 껐더니, 동작 줄이기를 켜 둔 환경에서는 전환이 예전과
  * 똑같이 딱딱했다(2026-09-02 실제로 그랬다).
  */
+/*
+ * **터치 기기에서 입력칸 글자는 16px 아래로 내려가지 않는다**(2026-09-09).
+ *
+ * iOS 사파리는 16px 미만인 입력칸에 포커스가 가면 읽으라고 화면을 확대하고,
+ * 되돌려 주지 않는다. 일정 검색·즐겨찾기 이름 바꾸기가 그랬고, 채팅 입력창만
+ * 멀쩡했던 것은 거기만 text-base(16px)였기 때문이다.
+ *
+ * **`@layer base` 안에 두면 안 된다.** 캐스케이드는 특이도보다 레이어 순서를
+ * 먼저 따진다 — base 에 둔 이 규칙은 utilities 레이어의 `.text-sm` 에 무조건
+ * 진다. 처음에 base 안에 넣었다가 실기기에서 그대로 확대됐다. 레이어 밖 규칙은
+ * 모든 레이어를 이기므로 여기(레이어 밖)에 둔다.
+ *
+ * `maximum-scale=1` 로 확대 자체를 막는 방법도 있지만 쓰지 않는다 — 눈이 불편한
+ * 사용자가 손으로 확대하는 길까지 함께 막힌다. 글자를 키우는 쪽이 원인을 없앤다.
+ *
+ * 마우스 환경(pointer: fine)은 그대로 둔다 — 거기서는 확대가 일어나지 않고,
+ * 촘촘한 화면의 글자 크기는 디자인이 정한 값이 맞다.
+ *
+ * **입력칸에 16px보다 큰 글자를 의도한 곳이 생기면 이 규칙이 그것도 깎는다.**
+ * 지금은 그런 곳이 없다(전수 조사 결과 가장 큰 것이 text-base).
+ */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
 @keyframes tb-page-fade {
   from {
     opacity: 0;

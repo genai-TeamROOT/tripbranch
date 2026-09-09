@@ -482,7 +482,7 @@ export function DeveloperChatPage() {
         onRefresh={() => void loadExchanges()}
       />
 
-      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+      <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden">
         <header className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
           <div className="min-w-0">
             <h1 className="text-xl font-bold">TripBranch</h1>
@@ -538,7 +538,10 @@ export function DeveloperChatPage() {
           </div>
         </header>
 
-        <div ref={chatScrollRef} className="min-h-0 flex-1 overflow-auto px-5 py-5">
+        <div
+          ref={chatScrollRef}
+          className="min-h-0 flex-1 overflow-auto px-5 py-5 pb-[var(--tb-composer-h,0px)]"
+        >
           {state.error && (
             <ErrorBanner
               message={state.error}
@@ -603,14 +606,17 @@ export function DeveloperChatPage() {
             isLoading={isLoading}
             language={state.language}
           />
-          <ChatComposer
-            disabled={isLoading}
-            onSubmit={handleFollowUp}
-            placeholder={text.composer}
-            language={state.language}
-            onPhotoSelect={handlePhotoSelect}
-          />
         </div>
+
+        {/* 스크롤 칸 밖의 형제다 — 컴포저는 더 이상 sticky 가 아니다
+            (2026-09-09, ChatComposer 주석). */}
+        <ChatComposer
+          disabled={isLoading}
+          onSubmit={handleFollowUp}
+          placeholder={text.composer}
+          language={state.language}
+          onPhotoSelect={handlePhotoSelect}
+        />
       </section>
 
       <DeveloperAuditPanel
