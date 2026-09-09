@@ -1096,9 +1096,15 @@ class LLMCallMetadata(BaseModel):
     # "안 썼다"와 "모른다"가 구분되지 않는다.
     # thoughts_tokens는 Gemini 3.x 계열의 사고 토큰이다. 과금 대상인데
     # candidates_token_count에 안 잡혀서 따로 세지 않으면 비용이 과소 집계된다.
+    # cached_tokens는 입력 중 캐시에서 읽힌 몫이다. Gemini는 2.5 이상에서 자동
+    # 캐싱이 기본으로 켜져 있고 캐시된 입력은 정가의 10분의 1로 과금되는데,
+    # prompt_token_count에는 캐시분까지 합쳐서 들어온다 — 이 값을 따로 세지
+    # 않으면 "적중했는데 비싸게 계산"하거나 "한 번도 적중 안 했는데 싸다고
+    # 착각"하는 것을 구분할 수 없다(2026-09-09).
     input_tokens: int | None = None
     output_tokens: int | None = None
     thoughts_tokens: int | None = None
+    cached_tokens: int | None = None
     total_tokens: int | None = None
     # 같은 모델에 대해 타임아웃·429·5xx로 다시 시도한 횟수(0 = 첫 시도에서 끝남).
     # latency_ms가 유독 크게 보일 때 "모델이 느렸다"와 "타임아웃 후 재시도가

@@ -315,6 +315,9 @@ def _token_usage(usage: object | None) -> dict[str, int]:
         "input_tokens": "prompt_token_count",
         "output_tokens": "candidates_token_count",
         "thoughts_tokens": "thoughts_token_count",
+        # 캐시에서 읽힌 입력 몫. prompt_token_count에 이미 포함돼 오므로
+        # 더하지 말고 "그중 얼마"로 읽는다.
+        "cached_tokens": "cached_content_token_count",
         "total_tokens": "total_token_count",
     }
     collected: dict[str, int] = {}
@@ -342,6 +345,12 @@ def _usage_details(usage: dict[str, int]) -> dict[str, int] | None:
         details["output"] = output + usage.get("thoughts_tokens", 0)
     if "thoughts_tokens" in usage:
         details["thoughts"] = usage["thoughts_tokens"]
+    # **input에서 빼지 않는다.** 캐시분은 prompt_token_count에 이미 들어 있고,
+    # 여기서 빼면 Langfuse의 입력 토큰 합계가 실제 전송량과 어긋난다. 별도 키로
+    # 얹어 "그중 얼마가 캐시였나"만 보이게 한다 — 단가 반영은 Langfuse 비용
+    # 설정의 몫이라 이 함수가 정하지 않는다.
+    if "cached_tokens" in usage:
+        details["cached"] = usage["cached_tokens"]
     if "total_tokens" in usage:
         details["total"] = usage["total_tokens"]
     return details or None

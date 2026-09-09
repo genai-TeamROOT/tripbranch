@@ -49,6 +49,7 @@ def record_llm_call(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     thoughts_tokens: int | None = None,
+    cached_tokens: int | None = None,
     total_tokens: int | None = None,
     retry_count: int | None = None,
 ) -> None:
@@ -62,6 +63,7 @@ def record_llm_call(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         thoughts_tokens=thoughts_tokens,
+        cached_tokens=cached_tokens,
         total_tokens=total_tokens,
         retry_count=retry_count,
     )
