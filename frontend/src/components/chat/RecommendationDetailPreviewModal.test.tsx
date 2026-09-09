@@ -367,6 +367,22 @@ it("로딩 중에도 이미 아는 운영시간을 먼저 보여준다", async (
   expect(screen.getByText("영업 중")).toBeInTheDocument();
 });
 
+it("상시 개방인 곳은 영업 중이 아니라 24시간 운영이라고 말한다", async () => {
+  /* 공원·산책로에 "영업 중"은 장사하는 곳처럼 들린다. 남은 시간이 있어도(상시라
+     항상 있다) 그 문구를 쓰지 않는다. */
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ operating_hours_display: "24시간", remaining_minutes: 600 })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(await screen.findByText("24시간 운영")).toBeInTheDocument();
+  expect(screen.queryByText("영업 중")).not.toBeInTheDocument();
+});
+
 /* INFO·사진 검색 경로는 item 자체가 없어 참고할 값이 없다 — 근거 없이 지어내지 않는다. */
 it("운영시간을 미리 알 수 없으면 미리보기를 그리지 않는다", async () => {
   mockedFetch.mockReturnValue(new Promise(() => {}));

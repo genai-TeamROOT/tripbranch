@@ -36,6 +36,7 @@ import { fetchPlaceAiReason, fetchRecommendationPlaceDetails } from "../../api/t
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import { placeCategoryLabel } from "../../utils/placeCategory";
 import { getBrowserDeviceLocation } from "../../utils/geolocation";
+import { isAlwaysOpen } from "../../utils/operatingHours";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
 import { openNaverMapSearch } from "../../utils/naverDirections";
@@ -122,6 +123,13 @@ const ACCESSIBILITY_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIc
  */
 function operatingStatusSuffix(item: RecommendationItem | undefined, isEn: boolean): string | null {
   if (!item) return null;
+  /* 상시 개방인 곳은 남은 시간을 말하지 않는다. 공원·산책로에 "영업 중"은 장사
+     하는 곳처럼 들리고, 그보다 "시간을 안 보고 가도 된다"가 이 장소에 대해 알려줄
+     것이 더 많다. "운영"은 이 배지가 닫힌 상태에 이미 쓰는 말이라(운영 종료)
+     매장에도 공원에도 같이 붙는다. 판정은 목록 카드와 같은 규칙을 쓴다. */
+  if (item.operating_hours_display && isAlwaysOpen(item.operating_hours_display)) {
+    return isEn ? "Open 24h" : "24시간 운영";
+  }
   if (isEn) return item.remaining_minutes === null ? "Closed" : "Open";
   return item.remaining_minutes === null ? "운영 종료" : "영업 중";
 }

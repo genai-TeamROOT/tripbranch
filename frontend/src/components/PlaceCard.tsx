@@ -17,6 +17,7 @@
 import { ChevronRight, Heart, MapPin } from "lucide-react";
 import type { Language, RecommendationItem } from "../types";
 import { PlaceThumbnail } from "./PlaceThumbnail";
+import { isAlwaysOpen } from "../utils/operatingHours";
 import { travelValue } from "../utils/travelDisplay";
 
 interface PlaceCardProps {
@@ -53,17 +54,6 @@ function formatClosingTime(remainingMinutes: number, language: Language): string
   return language === "en"
     ? `Closes at ${time} (${formatRemainingDuration(remainingMinutes, language)})`
     : `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes, language)})`;
-}
-
-function isAlwaysOpen(operatingHours: string): boolean {
-  const normalized = operatingHours.replaceAll(/\s/g, "").toLowerCase();
-  return (
-    normalized.includes("24시간") ||
-    normalized.includes("상시개방") ||
-    normalized.includes("연중무휴") ||
-    normalized === "00:00~24:00" ||
-    normalized === "00:00-24:00"
-  );
 }
 
 function hoursRemainingLabel(item: RecommendationItem, language: Language): string {
