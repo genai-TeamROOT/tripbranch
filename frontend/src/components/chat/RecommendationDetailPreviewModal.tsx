@@ -933,15 +933,16 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
 function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
   return (
     <div className="flex flex-wrap gap-2">
+      {/* **출처는 링크가 아니라 라벨이다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
+          신청 안내라 사용자가 읽을 화면이 아니다. 어디서 온 값인지만 밝히고 누를 수는
+          없게 둔다 — 화살표(↗)를 떼고 hover 반응도 없앤 것이 그 표시다.
+          **색은 옆 칩들과 같은 파랑으로 남긴다.** 회색으로 낮췄더니 눌리지 않는 칩이
+          아니라 비활성된 버튼처럼 보였다(2026-09-09). 옆의 두 칩(주차정보 포털·혼잡도
+          지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
       {card.realtime_source_url && (
-        <a
-          href={card.realtime_source_url}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
-        >
-          서울시 데이터 출처 ↗
-        </a>
+        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300">
+          서울시 데이터
+        </span>
       )}
       {isRealtimeParkingCard(card) && (
         <a

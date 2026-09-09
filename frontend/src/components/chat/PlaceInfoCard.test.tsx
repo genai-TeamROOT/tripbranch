@@ -262,10 +262,10 @@ it("실시간 도시데이터 카드는 모달에서 추가 항목과 출처를 
   expect(within(dialog).getByText("실시간 지역 정보")).toBeInTheDocument();
   expect(within(dialog).getByText("광화문·덕수궁 · 8월 20일 16:20 기준")).toBeInTheDocument();
   expect(within(dialog).getByRole("img", { name: "테스트 행사 이미지" })).toBeInTheDocument();
-  expect(within(dialog).getByRole("link", { name: "서울시 데이터 출처 ↗" })).toHaveAttribute(
-    "href",
-    "https://data.seoul.go.kr/example",
-  );
+  /* 출처는 라벨이다. 서울 열린데이터광장 페이지는 데이터셋 설명이라 사용자가 읽을
+     화면이 아니어서, 어디서 온 값인지만 밝히고 누를 수 있게 두지 않는다. */
+  expect(within(dialog).getByText("서울시 데이터")).toBeInTheDocument();
+  expect(within(dialog).queryByRole("link", { name: /서울시 데이터/ })).not.toBeInTheDocument();
   expect(within(dialog).getByRole("link", { name: "자세히 보기 ↗" })).toHaveAttribute(
     "href",
     "https://example.test/event",
@@ -332,10 +332,8 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
-  expect(dialog.getByRole("link", { name: "서울시 데이터 출처 ↗" })).toHaveAttribute(
-    "href",
-    parkingCard.realtime_source_url,
-  );
+  expect(dialog.getByText("서울시 데이터")).toBeInTheDocument();
+  expect(dialog.queryByRole("link", { name: /서울시 데이터/ })).not.toBeInTheDocument();
   expect(dialog.getByRole("link", { name: "서울시 실시간 주차정보 ↗" })).toHaveAttribute(
     "href",
     "https://parking.seoul.go.kr/",
