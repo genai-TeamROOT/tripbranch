@@ -70,6 +70,12 @@ _EDIT_DISTANCE_LIMIT = 1
 # 다른 동네를 가리킬 수 있다.
 _MIN_QUERY_LEN_FOR_FUZZY_MATCH = 3
 
+# 역 이름 줄임말("교대", "홍대") 재검색용 접미사. "교대"를 그대로 지역 검색하면
+# 동명 대학·상호("서울교육대학교", "교대갈비집")에 밀려 역이 상위 5건에 아예
+# 안 잡힌다(실측, 2026-09-09) — "교대역"으로 검색해야 잡힌다. 이미 "역"으로
+# 끝나는 질의("안국역")에는 다시 붙이지 않는다("안국역역" 방지).
+_STATION_SUFFIX = "역"
+
 
 def _bounded_edit_distance(a: str, b: str, *, limit: int) -> int:
     """길이 차가 limit을 넘으면 즉시 limit+1(무조건 탈락)을 반환해 DP를 아낀다.
@@ -491,7 +497,9 @@ class ResolveLocationTool:
             item for item in result.data if item.latitude is not None and item.longitude is not None
         )
         if not candidates:
-            return None
+            return await self._lookup_local_search_as_station(
+                requested_query, purpose=purpose, enforce_service_area=enforce_service_area
+            )
         selected = _select_local_search_candidate(candidates, requested_query)
         if selected is None:
             # 정확히 같은 이름의 후보가 있으면(동명이인, 예: "쌈지길" 2건) 이건
@@ -558,14 +566,20 @@ class ResolveLocationTool:
                 # 여기서 다시 구현하지 않기 위해서다.
                 selected = pickable_candidates[0]
             elif not names_source and not has_exact_match:
-                # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 —
-                # "성수동"처럼 동 이름이 지역 검색에서 카페·식당 상호명으로만
-                # 잡힌 경우다(실측, 2026-08-26). None을 돌려주면 execute()의
-                # 별칭/Geocoding 사다리로 넘어간다. Naver Geocoding은 행정동/
-                # 법정동 이름을 직접 인식하므로(docs/api-samples.md) "성수동"이
-                # 여기서 좌표로 풀린다 — 실측 결과 그 좌표만으로도 기본 검색
-                # 반경(2km) 안에 실제 상권·역이 다 들어와 굳이 구 단위로 넓힐
-                # 필요가 없었다.
+                # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 — 두 가지
+                # 원인이 있다. (a) "성수동"처럼 동 이름이 지역 검색에서 카페·식당
+                # 상호명으로만 잡힌 경우(실측, 2026-08-26), (b) "교대"처럼 역
+                # 줄임말이 동명 대학·상호에 밀려 이 지역 검색 자체에 역이 후보로
+                # 아예 안 잡힌 경우(실측, 2026-09-09). 먼저 (b)를 "역"을 붙인
+                # 재검색으로 풀어보고, 그래도 안 풀리면 None을 돌려줘 execute()의
+                # 별칭/Geocoding 사다리로 넘긴다 — Naver Geocoding은 행정동/법정동
+                # 이름을 직접 인식하므로(docs/api-samples.md) "성수동"류는 거기서
+                # 풀린다.
+                station_result = await self._lookup_local_search_as_station(
+                    requested_query, purpose=purpose, enforce_service_area=enforce_service_area
+                )
+                if station_result is not None:
+                    return station_result
                 return None
             else:
                 # 후보를 하나로 못 좁혀도 대표 좌표(1순위 후보)는 실어 보낸다 —
@@ -592,10 +606,83 @@ class ResolveLocationTool:
         # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
         # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
         # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
+        return await self._finalize_local_search_selection(
+            requested_query,
+            selected,
+            result.metadata,
+            purpose=purpose,
+            enforce_service_area=enforce_service_area,
+        )
+
+    async def _lookup_local_search_as_station(
+        self,
+        requested_query: str,
+        *,
+        purpose: LocationPurpose,
+        enforce_service_area: bool,
+    ) -> ResolveLocationResult | None:
+        """역/명소 후보를 하나도 못 찾았을 때 "역"을 붙여 한 번 더 지역 검색한다.
+
+        "교대", "홍대"처럼 역 이름의 줄임말은 그 글자 그대로 지역 검색하면 동명
+        대학·상호에 밀려 역이 상위 결과에 아예 안 잡힌다(실측, 2026-09-09:
+        "교대" 검색 상위 5건은 서울교육대학교·식당뿐이고 "교대역"은 없다.
+        "교대역"으로 검색하면 바로 잡힌다). 이미 "역"으로 끝나는 질의는 다시
+        붙이지 않는다("안국역" → "안국역역" 방지).
+
+        이름이 원 질의와 비슷한지는 보지 않는다 — "홍대"+"역"="홍대역"의 실제
+        역명은 "홍대입구역"이라 기존 정확/첫토큰/편집거리 매칭이 전부 실패하지만
+        (실측), "역"을 붙여 찾은 교통 카테고리 후보가 하나뿐이면(환승역이라
+        노선별로 여럿이어도 전부 같은 자리면 `_is_same_transit_place`로 이미
+        묶는다) 그게 정답이라고 본다. 서로 다른 역인데 못 좁히면(교통 후보가
+        여럿인데 같은 자리가 아니면) 조용히 실패해 상위 호출부가 별칭/Geocoding
+        사다리로 넘기게 둔다 — 엉뚱한 역을 임의로 고르지 않는다.
+        """
+        if self._local_search_provider is None or requested_query.endswith(_STATION_SUFFIX):
+            return None
+        try:
+            result = await self._local_search_provider.search_places_by_name(
+                f"{requested_query}{_STATION_SUFFIX}"
+            )
+        except AppError:
+            return None
+        transit_candidates = tuple(
+            item
+            for item in result.data
+            if item.latitude is not None
+            and item.longitude is not None
+            and _is_transit_place(item)
+        )
+        if not transit_candidates:
+            return None
+        if len(transit_candidates) > 1 and not _is_same_transit_place(transit_candidates):
+            return None
+        selected = transit_candidates[0]
+        return await self._finalize_local_search_selection(
+            requested_query,
+            selected,
+            result.metadata,
+            purpose=purpose,
+            enforce_service_area=enforce_service_area,
+        )
+
+    async def _finalize_local_search_selection(
+        self,
+        requested_query: str,
+        selected: LocalSearchPlace,
+        metadata: ProviderMetadata,
+        *,
+        purpose: LocationPurpose,
+        enforce_service_area: bool,
+    ) -> ResolveLocationResult:
+        """선택된 지역 검색 후보 하나를 공통 성공 경로로 마무리한다.
+
+        원 후보 경로와 "역" 재검색 경로가 지원 구 검사·저장소 재조회·성공
+        결과 조립을 여기 하나로 공유한다.
+        """
         if selected.latitude is not None and selected.longitude is not None:
             if enforce_service_area:
                 outside = self._outside_service_area_result(
-                    selected.latitude, selected.longitude, (result.metadata,)
+                    selected.latitude, selected.longitude, (metadata,)
                 )
                 if outside is not None:
                     return outside
@@ -608,7 +695,7 @@ class ResolveLocationTool:
             stored = await self._lookup_stored_place(requested_query, lookup_name=selected.name)
             if stored is not None and stored.status is ResolveLocationStatus.SUCCESS:
                 return stored
-        return self._local_search_success(requested_query, selected, result.metadata)
+        return self._local_search_success(requested_query, selected, metadata)
 
     @staticmethod
     def _local_search_success(
