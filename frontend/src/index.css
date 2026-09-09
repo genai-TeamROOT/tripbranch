@@ -142,7 +142,12 @@
     color-scheme: light;
     overflow-x: hidden;
     height: 100%;
-    overscroll-behavior-y: none;
+    /*
+     * 세로는 고무줄 바운스를, **가로는 "끝까지 밀면 뒤로 가기"를** 막는다
+     * (2026-09-09). Android Chrome 은 이 한 줄로 잡히고, iOS 사파리의 가장자리
+     * 제스처는 CSS 로 안 잡혀서 useEdgeSwipeBackGuard 가 따로 막는다.
+     */
+    overscroll-behavior: none;
   }
 
   body {
@@ -155,7 +160,7 @@
     position: fixed;
     inset: 0;
     overflow: hidden;
-    overscroll-behavior-y: none;
+    overscroll-behavior: none;
   }
 
   /* min-height가 아니라 height다 — min-height는 내용이 넘치면 그만큼 자라서
