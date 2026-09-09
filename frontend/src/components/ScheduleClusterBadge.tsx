@@ -18,7 +18,7 @@ interface ScheduleClusterBadgeProps {
 
 export function ScheduleClusterBadge({ count, isEn = false }: ScheduleClusterBadgeProps) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-chip px-2 py-0.5 text-[11px] font-semibold text-brand">
+    <span className="inline-flex items-center gap-1 rounded-full border border-brand bg-white px-2 py-0.5 text-[11px] font-semibold text-brand">
       <Footprints size={12} aria-hidden />
       {clusterBadgeLabel(count, isEn)}
     </span>

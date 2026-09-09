@@ -8,15 +8,42 @@
  * **체크의 저장·복원은 여기서 안 본다** — `useScheduleVisited.test.ts`가 잠근다.
  * 이 파일은 `visited`/`onToggleVisited`를 그냥 props로 받는다고 가정하고, 그
  * 값이 카드에 옳게 반영되는지만 본다(부모 역할은 작은 테스트용 컴포넌트가 한다).
+ *
+ * **채팅도 이 컴포넌트를 쓴다**(2026-09-09). 체크를 넘기지 않는 경우(채팅)까지
+ * 여기서 함께 잠근다 — 예전에는 채팅용 ScheduleCard 가 따로 있어 테스트도
+ * 갈라져 있었고, 그래서 두 화면이 다르게 굳는 것을 아무 테스트도 못 잡았다.
+ *
+ * **모달을 통째로 모킹한다.** 여기서 잠글 것은 "어느 항목의 값으로 여는가"
+ * 하나이고, 모달 자체는 상세 조회·지도 링크·위치 훅을 들고 있어 그것까지
+ * 끌고 오면 이 파일이 검증하려는 배선이 그 뒤로 숨는다.
  */
 
 import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import type { ScheduleItem } from "../../types";
 import { ScheduleRoute } from "./ScheduleRoute";
+
+vi.mock("../chat/RecommendationDetailPreviewModal", () => ({
+  RecommendationDetailPreviewModal: ({
+    placeId,
+    placeName,
+    onClose,
+  }: {
+    placeId?: string;
+    placeName?: string;
+    onClose: () => void;
+  }) => (
+    <div data-testid="detail-modal" data-place-id={placeId}>
+      {placeName}
+      <button type="button" onClick={onClose}>
+        모달 닫기
+      </button>
+    </div>
+  ),
+}));
 
 function stop(name: string, extra: Partial<ScheduleItem> = {}): ScheduleItem {
   return {
@@ -255,4 +282,100 @@ test("건너뛴 카드의 체크 배지도 건너뛰었어요와 같은 색이�
     .getByRole("button", { name: "국립현대미술관 서울 다녀왔어요 체크" })
     .querySelector("span");
   expect(badge).toHaveClass("bg-gold");
+});
+
+/* ── 체크를 넘기지 않는 화면(채팅) ──────────────────────────────────────── */
+
+/** 채팅(ScheduleResultMessage)이 부르는 방식 그대로. */
+function renderWithoutCheck(items = ITEMS) {
+  return render(
+    <MemoryRouter>
+      <ScheduleRoute items={items} isEn={false} />
+    </MemoryRouter>,
+  );
+}
+
+test("체크를 넘기지 않으면 사진이 버튼이 아니다", () => {
+  /* 누를 수 없는 자리에 눌리는 표시를 남기면 채팅에서 사진을 계속 눌러보게
+     된다. 체크 버튼이 하나도 없어야 한다 — 상세보기 버튼은 정류장마다 남는다. */
+  renderWithoutCheck();
+
+  expect(screen.queryByRole("button", { name: /다녀왔어요 체크/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /체크 되돌리기/ })).not.toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "장소 상세보기" })).toHaveLength(ITEMS.length);
+});
+
+test("체크가 없어도 같은 카드 내용을 그린다", () => {
+  /* 채팅과 일정 상세가 같은 카드를 쓴다는 것이 이 변경의 요지다 — 도착 시각·
+     장소명·이유·머무는 시간이 체크 유무와 무관하게 나와야 한다. */
+  renderWithoutCheck();
+
+  expect(screen.getByText("14:10 도착")).toBeInTheDocument();
+  expect(screen.getByText("국립현대미술관 서울")).toBeInTheDocument();
+  expect(screen.getByText("국립현대미술관 서울을 고른 이유입니다.")).toBeInTheDocument();
+  expect(screen.getByText("90분 머무름")).toBeInTheDocument();
+  /* 다녀왔어요·건너뛰었어요는 체크가 있는 화면만의 상태다. */
+  expect(screen.queryByText("다녀왔어요")).not.toBeInTheDocument();
+  expect(screen.queryByText("건너뛰었어요")).not.toBeInTheDocument();
+});
+
+/* ── 이동 줄 툴팁 ─────────────────────────────────────────────────────── */
+
+test("추정 구간에만 설명 툴팁이 붙는다", () => {
+  /* 왜 "약"이 붙었는지 밝히는 자리다. 예전에는 채팅 쪽 컴포넌트에만 있고
+     일정 상세에는 없어서 같은 구간이 화면마다 다르게 설명됐다. */
+  renderRoute();
+
+  /* 두 번째 정류장 앞 구간 — 첫 정류장이 measured: true 다. */
+  expect(screen.getByText("걸어서 6분")).not.toHaveAttribute("title");
+  /* 세 번째 정류장 앞 구간 — 두 번째 정류장이 measured: false 다. */
+  expect(screen.getByText("대중교통으로 약 21분")).toHaveAttribute("title");
+});
+
+/* ── 장소 상세보기 입구 ───────────────────────────────────────────────── */
+
+test("카드에서 장소 상세를 열 수 있다", async () => {
+  renderRoute();
+
+  expect(screen.queryByTestId("detail-modal")).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getAllByRole("button", { name: "장소 상세보기" })[0]);
+
+  expect(screen.getByTestId("detail-modal")).toBeInTheDocument();
+});
+
+test("상세는 누른 카드가 가리키는 장소로 연다", async () => {
+  /* 다른 카드의 장소가 열리면 사용자는 자기가 누른 곳이 아닌 곳의 운영시간을
+     보고 일정을 판단한다. 이름만 보면 통과할 수 있어 place_id까지 잠근다. */
+  renderRoute();
+
+  await userEvent.click(screen.getAllByRole("button", { name: "장소 상세보기" })[1]);
+
+  const modal = screen.getByTestId("detail-modal");
+  expect(modal).toHaveAttribute("data-place-id", "p-서울공예박물관");
+  expect(modal).toHaveTextContent("서울공예박물관");
+});
+
+test("닫으면 상세가 사라진다", async () => {
+  /* onClose가 상태를 되돌리지 않으면 한 번 연 뒤로 목록이 모달에 덮인 채
+     남는다 — 다른 카드를 누를 수 없게 된다. */
+  renderRoute();
+
+  await userEvent.click(screen.getAllByRole("button", { name: "장소 상세보기" })[0]);
+  await userEvent.click(screen.getByRole("button", { name: "모달 닫기" }));
+
+  expect(screen.queryByTestId("detail-modal")).not.toBeInTheDocument();
+});
+
+test("채팅에서도 장소 상세를 열 수 있다", async () => {
+  /* 체크가 없는 경로에서도 상세 입구가 살아 있어야 한다 — 예전에 채팅 카드에만
+     이 입구가 없어서 한쪽이 고장으로 보였던 이력이 있다. */
+  renderWithoutCheck();
+
+  await userEvent.click(screen.getAllByRole("button", { name: "장소 상세보기" })[0]);
+
+  expect(screen.getByTestId("detail-modal")).toHaveAttribute(
+    "data-place-id",
+    "p-국립현대미술관 서울",
+  );
 });

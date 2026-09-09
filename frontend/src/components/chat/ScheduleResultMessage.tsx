@@ -2,8 +2,8 @@
  * 역할: 일정 편성 API 응답을 채팅 메시지 안에서 세로 타임라인으로 렌더링한다.
  * 입력: ScheduleResult(items/route_summary/total_duration_min/basis_note),
  *   저장에 함께 보낼 run_id·session_id.
- * 출력: 제목과 저장(책갈피) 버튼, 정류장(ScheduleCard)과 이동 구간
- *   (ScheduleTravelSegment)이 번갈아 이어지는 타임라인, 근거 시각 안내.
+ * 출력: 제목과 저장 버튼, 정류장 목록(ScheduleRoute — 일정 상세 화면과 같은
+ *   컴포넌트다), 근거 시각 안내.
  *   재편성 버튼("다른 코스 보기"·"검색 범위 넓혀서 다시 찾기")은 여기 없다 —
  *   턴이 지나면 걷어내야 해서 ScheduleActionsMessage로 갈라져 있다.
  *   총 소요 시간·동선 요약 문구는 여기서 만들지 않는다 —
@@ -25,15 +25,12 @@
  */
 
 import { Bookmark } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { deleteSavedSchedule, saveSchedule } from "../../api/trip";
 import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
-import { clusterStartSize, isSameCluster } from "../../utils/scheduleTravel";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
-import { ScheduleCard } from "../ScheduleCard";
-import { ScheduleClusterBadge } from "../ScheduleClusterBadge";
-import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
+import { ScheduleRoute } from "../schedule/ScheduleRoute";
 
 function formatDuration(milliseconds: number | undefined) {
   if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
@@ -51,9 +48,6 @@ interface ScheduleResultMessageProps {
   runId?: string;
   sessionId?: string;
 }
-
-/* 알림이 스스로 사라지기까지. 읽을 만큼은 두되 오래 남아 방해하지 않는 길이다. */
-const NOTICE_MS = 2500;
 
 export function ScheduleResultMessage({
   schedule,
@@ -80,15 +74,6 @@ export function ScheduleResultMessage({
   const [savedId, setSavedId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  // 알림은 잠깐 떴다 사라진다. 화면을 떠나면 타이머도 함께 걷는다.
-  useEffect(() => {
-    if (notice === null) return;
-    const timer = window.setTimeout(() => setNotice(null), NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
   /*
    * 저장은 낙관적으로 그리지 않는다. 보관함 담기와 달리 이건 목록에 새 줄을
    * 만드는 동작이라, 실패했는데 저장된 것처럼 보이면 사용자가 나중에 목록에서
@@ -107,11 +92,9 @@ export function ScheduleResultMessage({
           runId,
         });
         setSavedId(saved.id);
-        setNotice("저장했어요");
       } else {
         await deleteSavedSchedule(savedId);
         setSavedId(null);
-        setNotice("저장을 해제했어요");
       }
       /* 저장 목록을 바로 갱신한다. 저장하고 목록을 봤는데 없으면 사용자는
          저장이 안 된 줄 안다 — 실제로 새로고침해야 보였다. */
@@ -149,20 +132,23 @@ export function ScheduleResultMessage({
             <h3 className="min-w-0 truncate text-sm font-bold text-ink">
               {defaultScheduleTitle(schedule.items)}
             </h3>
+            {/* 이름은 보이는 글자가 맡는다 — aria-label 을 따로 주면 화면에 보이는
+                말과 스크린리더가 읽는 말이 갈리고, 음성 명령으로 보이는 대로
+                말해도 걸리지 않는다. 누르면 무엇이 되는지를 말해야 해서 문구는
+                상태에 따라 바뀐다. */}
             <button
               type="button"
               disabled={isBusy}
               onClick={() => void handleToggleSave()}
-              /* 아이콘만 있는 버튼이라 이름을 여기서 준다. 누르면 무엇이 되는지를
-                 말해야 해서 상태에 따라 문구가 바뀐다. */
-              aria-label={savedId === null ? "이 일정 저장" : "저장 해제"}
               aria-pressed={savedId !== null}
-              className="shrink-0 text-muted transition-colors hover:text-brand disabled:opacity-50"
+              className={`flex shrink-0 items-center gap-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                savedId !== null ? "text-brand" : "text-muted hover:text-brand"
+              }`}
             >
               {/* 저장되면 같은 모양이 색으로 찬다 — 모양이 바뀌면 다른 버튼처럼
                   보여서, 누를 때마다 오가는 토글이라는 것이 덜 읽힌다. */}
               <Bookmark
-                size={18}
+                size={14}
                 className={
                   savedId !== null
                     ? "fill-brand text-brand"
@@ -171,13 +157,8 @@ export function ScheduleResultMessage({
                       : undefined
                 }
               />
+              {savedId === null ? "일정 저장하기" : "저장 취소"}
             </button>
-            {/* 저장했는지를 아이콘 색만으로 알아채기 어려워 잠깐 말로도 알린다. */}
-            {notice && (
-              <span role="status" className="text-xs text-brand">
-                {notice}
-              </span>
-            )}
           </div>
           {error && (
             <p role="alert" className="text-xs text-rust">
@@ -185,44 +166,14 @@ export function ScheduleResultMessage({
             </p>
           )}
 
-          <ul className="flex flex-col">
-            {schedule.items.flatMap((item, index) => {
-              const next = schedule.items[index + 1];
-              const linkedToNext = next !== undefined && isSameCluster(item, next);
-              /* 묶음이 시작하는 자리에서 한 번만 알린다(TP-243) — 구간마다
-                 붙이면 세 곳이 묶였을 때 같은 말이 두 번 반복된다. */
-              const clusterSize = clusterStartSize(schedule.items, index);
-              const nodes = [
-                <ScheduleCard
-                  key={item.place_id}
-                  item={item}
-                  isLast={index === schedule.items.length - 1}
-                  linkedToNext={linkedToNext}
-                />,
-              ];
-              if (clusterSize !== null) {
-                nodes.unshift(
-                  <li key={`${item.place_id}-cluster`} className="mb-1.5 pl-10">
-                    <ScheduleClusterBadge count={clusterSize} />
-                  </li>,
-                );
-              }
-              if (item.travel_to_next_min !== null) {
-                nodes.push(
-                  <ScheduleTravelSegment
-                    key={`${item.place_id}-travel`}
-                    minutes={item.travel_to_next_min}
-                    mode={item.travel_to_next_mode}
-                    measured={item.travel_to_next_measured}
-                    /* 묶음은 구간에 표시한다 — 붙어 있다는 건 두 곳 사이의
-                       이야기라 카드 하나에 얹으면 어느 쪽 이야기인지 흐려진다. */
-                    clustered={linkedToNext}
-                  />,
-                );
-              }
-              return nodes;
-            })}
-          </ul>
+          {/* 일정 상세(/schedule)와 같은 카드를 쓴다 — 예전에는 채팅만 쓰는
+              ScheduleCard·ScheduleTravelSegment 한 벌이 따로 있어서 같은 일정이
+              화면마다 다르게 보였다(사진 유무, 도착 시각 자리, 경고 표시,
+              상세보기 위치). 체크는 채팅에 없으므로 onToggleVisited 를 넘기지
+              않는다 — 그러면 사진이 버튼이 아니고 체크 배지도 빠진다.
+
+              isEn 은 false 로 고정한다. 이 컴포넌트에는 언어 분기가 없다. */}
+          <ScheduleRoute items={schedule.items} isEn={false} />
 
           {schedule.basis_note && (
             <p className="rounded-xl bg-chip px-3 py-2.5 text-[11px] leading-relaxed text-muted">
