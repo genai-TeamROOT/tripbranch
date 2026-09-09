@@ -27,6 +27,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 from app.agent_context.factory import get_context_provider
 from app.agent_context.info_schemas import InfoContextRequest
 from app.auth.dependency import OptionalPrincipal
+from app.config import settings
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
 from app.providers.factory import (
@@ -37,6 +38,7 @@ from app.providers.factory import (
 from app.schemas import (
     AgentRequest,
     AgentResponse,
+    InfoPlaceCard,
     PlacePreferenceInsight,
     RecommendationPlaceDetailRequest,
     RecommendationPlaceDetailResponse,
@@ -212,29 +214,56 @@ async def recommendation_place_details(
             status="no_data",
             requested_place_id=request.place_id,
         )
+    insights: list[PlacePreferenceInsight] = []
     if place_card.place_id:
         async with create_external_client() as client:
             preference_repository = get_place_details_repository(client)
             if preference_repository is not None:
                 try:
-                    insights = await preference_repository.find_preference_insights(
-                        place_card.place_id
-                    )
-                    place_card = place_card.model_copy(
-                        update={
-                            "preference_insights": [
-                                PlacePreferenceInsight.model_validate(insight)
-                                for insight in insights
-                            ]
-                        }
-                    )
+                    rows = await preference_repository.find_preference_insights(place_card.place_id)
+                    insights = [PlacePreferenceInsight.model_validate(row) for row in rows]
+                    place_card = place_card.model_copy(update={"preference_insights": insights})
                 except Exception:
                     logger.exception("상세 카드 취향 근거 조회 실패 — 기본 카드로 응답한다")
     return RecommendationPlaceDetailResponse(
         status="success",
         requested_place_id=request.place_id,
         place_card=place_card,
+        ai_reason=await _place_ai_reason(request, place_card, insights),
     )
+
+
+async def _place_ai_reason(
+    request: RecommendationPlaceDetailRequest,
+    place_card: InfoPlaceCard,
+    insights: list[PlacePreferenceInsight],
+) -> str | None:
+    """상세 카드의 "AI가 추천하는 이유" 문장을 만든다. 못 만들면 None이다.
+
+    **취향 태그가 있는 장소에만 만든다.** 근거로 쓸 것이 태그 집계와 후기 문장뿐이라
+    태그가 없으면 쓸 재료가 없고, 그때 억지로 부르면 카드에 없는 사실을 지어낼 여지만
+    준다. 태그 미수집 장소는 기존 고정 문장 한 줄만 남는다.
+
+    **실패를 이 라우트의 실패로 만들지 않는다.** 이 문장이 없어도 절이 성립하도록
+    화면을 만들었으므로(카드가 이미 들고 있는 `recommendation_reason`이 위에 있다),
+    LLM이 죽어도 상세 카드는 지금까지처럼 그대로 나가야 한다 — 부가 문장 하나 때문에
+    운영시간·주소가 안 보이는 것이 훨씬 나쁘다. 추천 요약(compose_recommendation_summary)이
+    같은 이유로 같은 선택을 한다.
+    """
+
+    if not request.want_ai_reason or not settings.place_reason_enabled or not insights:
+        return None
+    try:
+        result = await get_llm_provider().generate_place_reason(
+            place_name=place_card.place_name or request.place_name,
+            category_label=request.category_label,
+            insights=insights,
+        )
+    except Exception:
+        logger.warning("상세 카드 추천 이유 생성 실패 — 고정 문장만 보여준다", exc_info=True)
+        return None
+    reason = result.data.strip()
+    return reason or None
 
 
 @router.post("/chat/stream")

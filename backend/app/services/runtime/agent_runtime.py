@@ -102,7 +102,6 @@ from app.schemas import (
     TravelOrigin,
     UserConditions,
 )
-from app.service_area import supported_district_label
 from app.service_area_landmarks import (
     DISTRICT_LANDMARKS,
     find_district_by_gps,
@@ -651,8 +650,9 @@ _CUSTOM_CONDITIONS = "custom_conditions"
 _WIDEN_RADIUS_MAX_TRAVEL_TIME = math.ceil(MAX_PLACE_SEARCH_RADIUS_KM / WALKING_SPEED_KM_PER_MINUTE)
 
 _NO_DATA_EMPTY_MESSAGE = (
-    f"말씀하신 조건에 맞는 곳을 {supported_district_label()} 안에서 찾지 못했어요. "
-    "검색 범위를 넓혀볼까요, 아니면 다른 종류의 장소도 함께 볼까요?"
+    "말씀하신 조건에 맞는 곳을 서비스 지역 안에서 찾지 못했어요. 찾으시는 종류가 없거나 "
+    "검색 반경이 좁아서일 수 있어요. 검색 범위를 넓혀볼까요, 아니면 다른 종류의 장소도 "
+    "함께 볼까요?"
 )
 _NO_DATA_EMPTY_OPTIONS: tuple[tuple[str, str], ...] = (
     (_WIDEN_RADIUS, "검색 범위 넓히기"),
@@ -5223,9 +5223,12 @@ async def _finalize_recommendation_response(
             principal=principal,
         )
 
-    # 8) A: 추천 카드의 고정 안내는 즉시 노출하고, 그 아래의 선택 팁만 LLM으로
-    #    스트리밍한다. 카드의 순위·근거는 D 결과 그대로라 LLM 생성 대기 때문에
-    #    사용자가 추천 결과를 늦게 보지 않는다.
+    # 8) A: 카드는 전송 순서상 즉시 내보내고, 선택 팁만 LLM으로 스트리밍한다.
+    #    카드의 순위·근거는 D 결과 그대로라 LLM 생성 대기 때문에 사용자가 추천
+    #    결과를 늦게 보지 않는다 — 이 전송 순서는 그대로다. 화면에서 팁이 카드
+    #    위로 보이는 건 프론트가 스트리밍 말풍선을 카드 앞자리에 끼워 넣기
+    #    때문이다(frontend/src/state/streamingMessage.ts의
+    #    findStreamInsertionIndex, 2026-09-09).
     result_payload = {
         "llm_output": llm_output.model_dump(mode="json"),
         "state": state_response.model_dump(mode="json"),
@@ -5243,8 +5246,9 @@ async def _finalize_recommendation_response(
 
     should_stream_summary = stream_recommendation_summary and bool(shown)
     if should_stream_summary:
-        # 프론트는 result의 고정 안내문과 카드부터 추가한다. 그 다음 message_start가
-        # 카드 아래의 "추천 팁" 로딩 말풍선을 열어, 화면 순서가 안내 → 카드 → 팁이 된다.
+        # 카드부터 즉시 전송한다(지연 없이). 그 다음 message_start가 "추천 팁"
+        # 로딩 말풍선을 여는데, 프론트가 이걸 카드 앞자리에 끼워 넣어 화면
+        # 순서는 캡션 → 팁(로딩→실시간 채워짐) → 카드가 된다.
         await emit_recommendation_result()
         await _begin_streamed_message(
             stream_event_sink,

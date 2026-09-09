@@ -3,7 +3,8 @@
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
  * 출력: 추천 결과 메시지와 PlaceCard 목록 — **줄은 언제나 하나다**("추천 장소").
  *   운영시간을 확인하지 못한 후보(원문이 없거나 지금 폐점)도 이 줄에 함께
- *   들어간다(2026-09-08, 아래 rankedRecommendations 주석).
+ *   들어간다(2026-09-08, 아래 rankedRecommendations 주석). 그 줄 오른쪽에는
+ *   추천 기준 보조설명이 붙는다(PlaceCardRow의 note, 2026-09-09).
  *
  * **동작 버튼과 취향 표는 여기 없다.** 각각 RecommendationActionsMessage와
  * PreferenceTagSummaryTable이 별도 메시지로 그린다 — 버튼은 다음 발화가 나가면
@@ -52,14 +53,14 @@ export function RecommendationResultMessage({
   const text =
     language === "en"
       ? {
-          summary: "Here are some places that match your preferences.",
           noResults: "We couldn’t find a place that matches those conditions.",
           recommendations: "Recommended places",
+          recommendationsNote: "Ranked by distance, weather, your preferences, and more",
         }
       : {
-          summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
           noResults: "조건에 맞는 장소를 찾지 못했어요.",
           recommendations: "추천 장소",
+          recommendationsNote: "거리·날씨·취향 등을 고려했어요",
         };
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
@@ -97,14 +98,13 @@ export function RecommendationResultMessage({
 
   return (
     <article className="mr-auto flex w-full flex-col gap-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm text-ink">{text.summary}</p>
-        {showElapsedTime && (
+      {showElapsedTime && (
+        <div className="flex flex-wrap items-baseline justify-end gap-2">
           <p className="text-xs text-muted">
             {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
           </p>
-        )}
-      </div>
+        </div>
+      )}
 
       {hasNoResults ? (
         /* 버튼은 여기 없다 — RecommendationActionsMessage가 뒤이어 그린다.
@@ -115,7 +115,7 @@ export function RecommendationResultMessage({
       ) : (
         <>
           {rankedRecommendations.length > 0 && (
-            <PlaceCardRow caption={text.recommendations}>
+            <PlaceCardRow caption={text.recommendations} note={text.recommendationsNote}>
               {rankedRecommendations.map((item, index) => (
                 <PlaceCard
                   key={item.place_id}

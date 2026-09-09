@@ -47,6 +47,7 @@ from app.schemas import (
     Intent,
     IntentClassificationResult,
     LLMOutput,
+    PlacePreferenceInsight,
     RecommendationItem,
     RecommendationResponse,
     UserConditions,
@@ -68,6 +69,12 @@ class _RecommendationSummary(BaseModel):
     """generate_recommendation_summary() 전용 wire 모델."""
 
     message: str
+
+
+class _PlaceReason(BaseModel):
+    """generate_place_reason() 전용 wire 모델."""
+
+    reason: str
 
 
 class _ComparisonSummary(BaseModel):
@@ -189,6 +196,30 @@ _REJECTS_ZERO_THINKING_BUDGET = frozenset(
         "gemini-3.6-flash",
     }
 )
+
+# gemini-3.1-flash-lite는 **이 목록에 넣지 않는다** — 숫자 0을 거부하지 않는다.
+# 2026-09-09 실 API로 셋을 나란히 재봤다(모델 하나, 같은 프롬프트):
+#
+#   thinking_budget=0 (숫자)   → 성공, thoughts_token_count=None
+#   thinking_level=MINIMAL     → 성공, thoughts_token_count=None
+#   미설정(모델 기본값)         → 성공, thoughts_token_count=None
+#
+# **셋 다 되고 셋 다 사고 토큰이 0이다.** 그래서 "무엇을 보내야 하는가"는 이 모델에서
+# 선택의 문제가 아니고, `_thinking_config_for()`가 0을 MINIMAL로 바꾸는 지금 경로가
+# 그대로 안전하다.
+#
+# **None이 "추론 0"을 뜻한다는 것은 대조군으로 확인했다.** 같은 모델에
+# thinking_level=HIGH를 걸면 thoughts_token_count=766이 찍힌다(계산 문제 1건).
+# 즉 그 필드는 채워지는 필드이고, MINIMAL에서 비는 것은 실제로 사고 토큰이 없다는
+# 뜻이다 — "필드를 안 준다"가 아니다.
+#
+# **기본값에 기대지 않고 명시적으로 끈다.** 미설정도 지금은 사고 토큰이 0이지만,
+# gemini-2.5-flash → 3.5-flash에서 기본값이 MEDIUM으로 바뀌며 답변 5곳의 최적화가
+# 조용히 사라진 이력이 있다(`_thinking_config_for()` docstring). 모델 기본값은
+# 계약이 아니다.
+#
+# SDK에 OFF 단계는 없다 — ThinkingLevel은 UNSPECIFIED/MINIMAL/LOW/MEDIUM/HIGH이고
+# MINIMAL이 최하단이다(google-genai 2.14.0).
 
 
 def _resolve_thinking_budget(model_name: str, operation: str, requested: int | None) -> int | None:
@@ -396,6 +427,7 @@ class RealGeminiProvider:
         *,
         fast_model_names: list[str] | None = None,
         generation_model_names: list[str] | None = None,
+        place_reason_model_names: list[str] | None = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
@@ -408,6 +440,9 @@ class RealGeminiProvider:
         legacy_models = model_names or []
         self._fast_model_names = fast_model_names or legacy_models
         self._generation_model_names = generation_model_names or legacy_models
+        # 상세 카드 추천 이유 전용 티어. 안 넘기면 생성 묶음을 그대로 쓴다 —
+        # 이 티어를 모르는 기존 생성자 호출(테스트 다수)이 그대로 돌아야 한다.
+        self._place_reason_model_names = place_reason_model_names or self._generation_model_names
         if not self._fast_model_names or not self._generation_model_names:
             raise ValueError("빠른 판단·응답 생성 모델은 각각 최소 1개 이상이어야 합니다.")
         self._client = genai.Client(
@@ -714,6 +749,104 @@ class RealGeminiProvider:
             history=history,
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
+
+    # 상세 카드 문장에 넘길 태그 수와 태그별 근거 문장 수·길이 상한.
+    #
+    # 저장소는 한 장소에 태그 5개와 근거 최대 30건(각 500자)을 준다
+    # (`find_preference_insights`). 그걸 그대로 넘기면 입력이 5,000토큰을 넘어가
+    # 클릭당 호출로 아낀 것이 통째로 사라진다 — 상한이 이 기능의 비용 설계다.
+    # 1~2문장을 쓰는 데 상위 3태그 × 1문장이면 충분하다는 것은 실측으로 확인했다
+    # (2026-09-09: 태그 3개·근거 2문장으로 입력 494토큰).
+    _REASON_MAX_TAGS = 3
+    _REASON_MAX_EVIDENCE_PER_TAG = 1
+    _REASON_MAX_EVIDENCE_CHARS = 220
+
+    async def generate_place_reason(
+        self,
+        *,
+        place_name: str,
+        category_label: str | None,
+        insights: Sequence[PlacePreferenceInsight],
+    ) -> ProviderResult[str]:
+        instruction = gemini_prompts.build_place_reason_instruction()
+        payload = self._place_reason_payload(
+            place_name=place_name, category_label=category_label, insights=insights
+        )
+        result = await self._call_structured(
+            instruction,
+            json.dumps(payload, ensure_ascii=False),
+            _PlaceReason,
+            operation="generate_place_reason",
+            model_names=self._place_reason_model_names,
+            # thinking_budget=0 — 답변·요약 계열과 같은 이유다. 이 호출은 사실 근거를
+            # 전부 쥐어주고 말투만 맡기는 작업이라 추론이 만들 이득이 없고, 모달이
+            # 열린 채 기다리는 시간에 그대로 붙는다. 3.1-flash-lite에서 0이 실제로
+            # 사고 토큰 0을 만든다는 것은 실측했다(_REJECTS_ZERO_THINKING_BUDGET 주석).
+            thinking_budget=0,
+        )
+        return provider_result(result.reason, source=ProviderSource.GEMINI)
+
+    @classmethod
+    def _place_reason_payload(
+        cls,
+        *,
+        place_name: str,
+        category_label: str | None,
+        insights: Sequence[PlacePreferenceInsight],
+    ) -> dict[str, object]:
+        """상세 카드 문장 생성에 넘겨도 되는 값만 상한 안에서 남긴다.
+
+        **순위·점수·조건 축을 넣지 않는다.** 그 정보는 카드가 이미 들고 있는 고정
+        문장이 말하고, 이 문장은 그 아래에 붙는다(recommend/HISTORY.md의
+        place_reason v1.0.0). 초안 실측에서 순위·축을 넘겨도 모델이 문장에 쓰지
+        않았는데, 쓰게 고치는 대신 같은 말을 두 번 하지 않는 쪽을 골랐다.
+
+        `source_url`도 넣지 않는다 — 문장은 출처 링크를 말하지 않고, 링크는 화면이
+        태그 근거로 따로 보여준다.
+
+        **근거 문장은 태그를 가로질러 중복을 없앤다.** 후기 한 문장이 여러 태그에
+        동시에 걸리는 것이 예외가 아니라 흔한 경우다 — 실측에서 선운각의 상위 3태그
+        (문화·예술 / 전망 / 자연)가 **같은 문장 하나**를 각자의 근거로 들고 있었고,
+        태그별로 모으면 그 문장이 3번 실려 입력의 2/3가 같은 글자였다(2026-09-09).
+        중복은 비용만 늘리는 것이 아니라 그 문장을 세 번 강조된 근거처럼 보이게 한다.
+        """
+
+        seen: set[str] = set()
+        tags: list[dict[str, object]] = []
+        evidence: list[str] = []
+        negative: list[str] = []
+
+        def _take(text: str, into: list[str]) -> None:
+            """중복이 아니면 상한 안에서 담는다. 판정은 자르기 **전** 원문으로 한다."""
+            normalized = " ".join(text.split())
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            into.append(normalized[: cls._REASON_MAX_EVIDENCE_CHARS])
+
+        for insight in insights[: cls._REASON_MAX_TAGS]:
+            tags.append({"label": insight.label, "mention_count": insight.mention_count})
+            taken_here = len(evidence)
+            for quote in insight.evidence:
+                # 부정 근거는 태그 안에 섞지 않고 따로 모은다. 섞으면 모델이 그 문장을
+                # 그 태그의 장점 근거로 읽어 "사진 찍기 좋은" 밑에 불만을 칭찬처럼
+                # 옮길 수 있다.
+                if quote.polarity == "negative":
+                    _take(quote.text, negative)
+                    continue
+                if len(evidence) - taken_here >= cls._REASON_MAX_EVIDENCE_PER_TAG:
+                    continue
+                _take(quote.text, evidence)
+
+        payload: dict[str, object] = {
+            "name": place_name,
+            "category_label": category_label,
+            "preference_tags": tags,
+            "tag_evidence": evidence,
+        }
+        if negative:
+            payload["negative_evidence"] = negative[: cls._REASON_MAX_TAGS]
+        return payload
 
     async def generate_follow_up_suggestions(
         self,

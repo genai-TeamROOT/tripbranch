@@ -1520,6 +1520,16 @@ class RecommendationPlaceDetailRequest(BaseModel):
 
     place_id: str | None = Field(default=None, max_length=100)
     place_name: str = Field(min_length=1, max_length=200)
+    # 상세 카드의 "AI가 추천하는 이유" 문장을 생성할지. **기본이 False다** —
+    # 이 라우트는 추천 카드 클릭 외에도 INFO 카드와 사진 검색 결과가 함께 쓰는데,
+    # 그 화면들에는 그 절이 없다. 켜는 쪽을 기본으로 두면 읽히지 않을 문장에
+    # 클릭마다 LLM 값을 치른다. 프론트는 추천/수정 카드(item)로 열었을 때만 켠다.
+    want_ai_reason: bool = False
+    # 카드가 화면에 쓰는 분류 라벨("카페/전통찻집"). `want_ai_reason`일 때만 쓰고,
+    # 문장이 장소 종류를 잘못 말하지 않게 근거로 넘긴다. 이 라우트가 읽는
+    # `InfoPlaceCard`에는 분류 필드가 없어서(관광 상세는 분류를 안 싣는다) 카드를
+    # 이미 들고 있는 프론트에서 받는다.
+    category_label: str | None = Field(default=None, max_length=100)
 
     @field_validator("place_id", "place_name")
     @classmethod
@@ -1536,6 +1546,13 @@ class RecommendationPlaceDetailResponse(BaseModel):
     status: Literal["success", "no_data", "unavailable"]
     requested_place_id: str | None = None
     place_card: InfoPlaceCard | None = None
+    # 그 장소의 취향 태그·후기 근거만으로 만든 추천 이유 1~2문장.
+    #
+    # **None이 정상 값이다.** 요청이 켜지 않았거나(want_ai_reason=False), 취향
+    # 태그가 없는 장소이거나, 설정이 꺼졌거나(PLACE_REASON_ENABLED), 생성이
+    # 실패한 경우 전부 None이다. 화면은 그때 카드가 이미 들고 있는 고정 문장
+    # (`recommendation_reason`) 한 줄만 보여주므로, 이 값이 없어도 절이 성립한다.
+    ai_reason: str | None = None
 
 
 class AgentResponse(BaseModel):

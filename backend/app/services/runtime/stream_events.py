@@ -63,9 +63,10 @@ async def begin_streamed_message(
 ) -> None:
     """LLM 답변이 시작되기 전, 로딩 말풍선을 먼저 연다.
 
-    RECOMMEND/MODIFY는 카드(result)를 먼저 보낸 뒤 이 이벤트로 카드 아래의 선택 팁
-    로딩 말풍선을 연다. GENERAL/INFO는 카드가 없거나 본문이 먼저라 기존처럼 바로
-    답변 말풍선을 연다.
+    RECOMMEND/MODIFY는 카드(result)를 먼저 보낸 뒤 이 이벤트로 선택 팁 로딩
+    말풍선을 연다 — 전송 순서일 뿐, 화면에서는 프론트가 이 말풍선을 카드
+    앞자리에 끼워 넣는다(frontend/src/state/streamingMessage.ts). GENERAL/INFO는
+    카드가 없거나 본문이 먼저라 기존처럼 바로 답변 말풍선을 연다.
     """
 
     await emit_progress(sink, "composing_message", progress_message)

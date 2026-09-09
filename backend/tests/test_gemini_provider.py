@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from app.providers.gemini import (
     RealGeminiProvider,
     _ComparisonSummary,
     _GeneralAnswer,
+    _PlaceReason,
     _RecommendationSummary,
 )
 from app.schedule.budget import derive_item_range
@@ -50,6 +52,8 @@ from app.schemas import (
     ModifyType,
     OutputStatus,
     PlaceContext,
+    PlacePreferenceInsight,
+    PreferenceEvidenceQuote,
     QuestionType,
     RecommendationItem,
     RecommendationResponse,
@@ -911,6 +915,154 @@ async def _capture_budgets(
             "sys", "user", IntentClassificationResult, operation, thinking_budget=thinking_budget
         )
     return captured
+
+
+@pytest.mark.asyncio
+async def test_place_reason_turns_thinking_off_on_its_own_model() -> None:
+    """상세 카드 문장 호출은 자기 티어의 모델에 MINIMAL을 실어 추론을 끈다.
+
+    두 가지를 함께 못 박는다.
+
+    1. **모델**: generation이 아니라 place_reason 묶음으로 간다. 이 티어를 만든
+       이유가 그것이므로(config.py `place_reason_model_name`), 배선이 끊기면
+       비싼 모델로 조용히 흘러도 응답은 정상이라 아무도 모른다.
+    2. **추론**: thinking_level=MINIMAL이 실린다. gemini-3.1-flash-lite는 숫자 0도
+       MINIMAL도 받고 둘 다 사고 토큰이 0이지만(2026-09-09 실측), 모델 기본값에
+       기대지 않고 명시적으로 끈다 — 기본값이 바뀌며 최적화가 조용히 사라진
+       이력이 있다(gemini-2.5-flash → 3.5-flash).
+    """
+
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model"],
+        place_reason_model_names=["gemini-3.1-flash-lite"],
+        timeout_seconds=1.0,
+    )
+    captured: list[tuple[str, object]] = []
+
+    async def succeed(*args: object, **kwargs: object) -> _FakeResponse:
+        thinking_config = kwargs["config"].thinking_config
+        value = None
+        if thinking_config is not None:
+            value = (
+                thinking_config.thinking_budget
+                if thinking_config.thinking_budget is not None
+                else thinking_config.thinking_level
+            )
+        captured.append((kwargs["model"], value))
+        return _FakeResponse(_PlaceReason(reason="숲속 한옥에서 쉬기 좋아요."))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=succeed):
+        result = await provider.generate_place_reason(
+            place_name="한옥카페 선운각",
+            category_label="카페/전통찻집",
+            insights=[
+                PlacePreferenceInsight(
+                    code="nature",
+                    label="자연을 즐기기 좋은",
+                    mention_count=14,
+                    positive_document_count=14,
+                    negative_document_count=0,
+                )
+            ],
+        )
+
+    assert result.data == "숲속 한옥에서 쉬기 좋아요."
+    assert captured == [("gemini-3.1-flash-lite", genai_types.ThinkingLevel.MINIMAL)]
+
+
+def test_place_reason_payload_caps_evidence_and_hides_ranking() -> None:
+    """상한이 이 기능의 비용 설계다 — 저장소가 주는 것을 그대로 넘기지 않는다.
+
+    `find_preference_insights`는 태그 5개와 근거 최대 30건(각 500자)을 준다. 그대로
+    넘기면 입력이 5,000토큰을 넘어 클릭당 호출로 아낀 것이 사라진다.
+
+    순위·점수·조건 축이 없는 것도 함께 확인한다 — 그 말은 카드가 이미 들고 있는
+    고정 문장이 하고, 같은 말을 두 번 하면 두 줄이 서로를 지운다.
+    """
+
+    insights = [
+        PlacePreferenceInsight(
+            code=f"tag{index}",
+            label=f"태그{index}",
+            mention_count=20 - index,
+            positive_document_count=20 - index,
+            negative_document_count=1,
+            # 태그마다 다른 문장이다 — 태그를 가로지르는 중복 제거는 별도 테스트가
+            # 본다. 여기서 같은 글자를 쓰면 상한이 아니라 중복 제거를 재게 된다.
+            evidence=[
+                PreferenceEvidenceQuote(
+                    polarity="positive", text=f"{index}번 " + "좋" * 500,
+                    source_type="naver_post", source_url="https://example.test/post",
+                ),
+                PreferenceEvidenceQuote(
+                    polarity="positive", text=f"{index}번 둘째 문장", source_type="naver_post",
+                ),
+                PreferenceEvidenceQuote(
+                    polarity="negative", text=f"{index}번은 주말에 자리가 없었어요.",
+                    source_type="naver_post",
+                ),
+            ],
+        )
+        for index in range(5)
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각", category_label="카페/전통찻집", insights=insights
+    )
+
+    assert len(payload["preference_tags"]) == 3, "태그 5개를 그대로 넘기고 있다"
+    assert len(payload["tag_evidence"]) == 3, "태그별 근거를 1문장으로 자르지 않았다"
+    assert all(len(text) <= 220 for text in payload["tag_evidence"]), "500자 원문이 그대로 넘어간다"
+    # 부정 근거는 태그 안에 섞지 않고 따로 모은다 — 섞으면 불만이 장점 근거로 읽힌다.
+    assert payload["negative_evidence"] == [
+        f"{index}번은 주말에 자리가 없었어요." for index in range(3)
+    ]
+    assert not any(
+        key in payload for key in ("rank", "scoring_axes", "score", "recommendation_reason")
+    ), "순위·조건 축을 넘기고 있다 — 고정 문장과 같은 말을 두 번 하게 된다"
+    # 출처 링크는 문장이 말하지 않는다. 화면이 태그 근거로 따로 보여준다.
+    assert "example.test" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_place_reason_payload_drops_evidence_repeated_across_tags() -> None:
+    """후기 한 문장이 여러 태그에 걸리면 한 번만 넘긴다.
+
+    이게 예외가 아니라 흔한 경우다 — 실측에서 선운각의 상위 3태그(문화·예술 /
+    전망 / 자연)가 같은 문장 하나를 각자의 근거로 들고 있어, 태그별로 모으면 그
+    문장이 3번 실려 입력의 2/3가 같은 글자였다(2026-09-09). 비용만 늘리는 것이
+    아니라 그 문장을 세 번 강조된 근거처럼 보이게 한다.
+    """
+
+    shared = PreferenceEvidenceQuote(
+        polarity="positive",
+        text="  북한산 숲속 한옥에서   차를 마실 수 있어요.  ",
+        source_type="naver_post",
+    )
+    insights = [
+        PlacePreferenceInsight(
+            code=code,
+            label=label,
+            mention_count=20,
+            positive_document_count=20,
+            negative_document_count=0,
+            evidence=[shared],
+        )
+        for code, label in (
+            ("culture", "문화·예술을 즐기기 좋은"),
+            ("view", "전망 감상하기 좋은"),
+            ("nature", "자연을 즐기기 좋은"),
+        )
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각", category_label="카페/전통찻집", insights=insights
+    )
+
+    # 태그는 셋 다 남는다 — 집계는 서로 다른 사실이다. 근거 문장만 하나다.
+    assert len(payload["preference_tags"]) == 3
+    assert payload["tag_evidence"] == ["북한산 숲속 한옥에서 차를 마실 수 있어요."]
 
 
 @pytest.mark.asyncio

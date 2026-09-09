@@ -81,7 +81,27 @@ export function createMessageId(prefix: string) {
 }
 
 /*
- * 추천 응답 하나를 화면 메시지 셋으로 편다 — 카드 → 버튼 → 취향 표 순서다.
+ * 추천 카드 앞에 뜨는 고정 캡션 한 줄을 만든다. 결과가 0건이면 만들지 않는다 —
+ * "관광명소 순위예요"가 "결과 없음" 문구 위에 뜨면 어색하다.
+ *
+ * 별도 메시지 타입(`recommendation_caption`)으로 뗀 이유는 위치다 — 카드
+ * (`recommendation_result`)와 한 메시지에 있으면 LLM 팁을 그 위에 끼워 넣을
+ * 자리가 없다. 팁(LLM) → 캡션 → 카드 순서를 만들려고 셋을 각자 다른 메시지로
+ * 둔다(2026-09-09, 사용자 피드백으로 캡션도 팁보다 아래로 확정).
+ */
+export function buildRecommendationCaptionMessage({
+  hasResults,
+}: {
+  hasResults: boolean;
+}): ChatMessage | null {
+  if (!hasResults) return null;
+  return { id: createMessageId("result-caption"), type: "recommendation_caption" };
+}
+
+/*
+ * 추천 응답 하나를 화면 메시지 셋으로 편다 — 카드 → 취향 표 → 버튼
+ * 순서다(2026-09-09, 사용자 피드백으로 표가 버튼보다 위로 왔다 — "다른 장소
+ * 보기"/"아래 입력창에 이어서 적어주세요" 버튼·안내는 표 아래에 온다).
  *
  * **세 경로가 이 함수를 같이 쓴다**(단발 응답·스트리밍 result·레거시
  * APPEND_RECOMMENDATIONS). 예전에 추천 메시지를 각자 조립하다가 한 곳만 고쳐져
@@ -113,12 +133,6 @@ export function buildRecommendationMessages({
       elapsed_ms: elapsedMsClient,
       server_elapsed_ms: serverElapsedMs,
     },
-    {
-      id: createMessageId("result-actions"),
-      type: "recommendation_actions",
-      travel_origin_toggle: travelOriginToggle,
-      has_no_results: recommendations.length === 0 && unverifiedRecommendations.length === 0,
-    },
   ];
 
   const taggedItems = [...recommendations, ...unverifiedRecommendations].filter(
@@ -136,6 +150,13 @@ export function buildRecommendationMessages({
       })),
     });
   }
+
+  messages.push({
+    id: createMessageId("result-actions"),
+    type: "recommendation_actions",
+    travel_origin_toggle: travelOriginToggle,
+    has_no_results: recommendations.length === 0 && unverifiedRecommendations.length === 0,
+  });
 
   return messages;
 }
@@ -186,26 +207,14 @@ export function buildAgentMessages(
   const isClarificationOnlyTurn = isClarificationTurn && !hasResultCards;
 
   /*
-   * **추천 카드가 답변보다 먼저다.** 화면에 실제로 나가는 순서가 그렇다 —
-   * 스트리밍 경로는 카드를 담은 result를 먼저 내보내고, 그 아래에 "추천 팁"
-   * 말풍선을 연다(agent_runtime의 "화면 순서가 안내 → 카드 → 팁"). 저장된
-   * 대화를 되돌릴 때 답변을 위에 놓으면 그때 본 화면과 위아래가 뒤집힌다.
+   * **답변(LLM 팁) → 캡션 → 카드**(2026-09-09, 사용자 피드백으로 캡션보다도
+   * 위로 확정). 답변은 라이브 SSE에서도 맨 위에서 실시간으로 채워진다
+   * (TripContext의 START_STREAM_MESSAGE가 캡션 앞자리에 끼워 넣는다) — 복원
+   * 화면도 같은 규칙을 따라야 그때 본 화면과 순서가 갈리지 않는다.
    *
-   * 일정·장소정보·비교는 반대다. 그쪽은 스트리밍 result가 없어 답변이 먼저
-   * 나가고 카드가 뒤따르므로 아래 순서를 그대로 둔다.
+   * 일정·장소정보·비교는 카드 앞에 캡션이 없어 답변만 먼저 나가고 카드가
+   * 뒤따른다 — 아래 순서를 그대로 둔다.
    */
-  if (response.recommendations) {
-    messages.push(
-      ...buildRecommendationMessages({
-        recommendations: response.recommendations.recommendations,
-        unverifiedRecommendations: response.recommendations.unverified_recommendations,
-        travelOriginToggle: response.recommendations.travel_origin_toggle,
-        elapsedMsClient,
-        serverElapsedMs: response.recommendations.elapsed_ms,
-      }),
-    );
-  }
-
   if (message && clarificationOptions && clarificationOptions.length > 0) {
     // 인텐트가 모호해 되묻기 버튼이 붙은 턴 — assistant_text 대신 clarification
     // 메시지로 push해서 같은 문구가 두 번 렌더링되지 않게 한다
@@ -225,6 +234,24 @@ export function buildAgentMessages(
       status: response.llm_output.status,
       footnote: response.message_footnote ?? undefined,
     });
+  }
+
+  if (response.recommendations) {
+    const hasResults =
+      response.recommendations.recommendations.length +
+        response.recommendations.unverified_recommendations.length >
+      0;
+    const caption = buildRecommendationCaptionMessage({ hasResults });
+    if (caption) messages.push(caption);
+    messages.push(
+      ...buildRecommendationMessages({
+        recommendations: response.recommendations.recommendations,
+        unverifiedRecommendations: response.recommendations.unverified_recommendations,
+        travelOriginToggle: response.recommendations.travel_origin_toggle,
+        elapsedMsClient,
+        serverElapsedMs: response.recommendations.elapsed_ms,
+      }),
+    );
   }
 
   if (response.schedule) {
