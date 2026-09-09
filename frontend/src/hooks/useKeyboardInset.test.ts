@@ -283,12 +283,25 @@ describe("값을 읽는 쪽(index.css)", () => {
     expect(rule("\\.tb-shell")).not.toContain("translate:");
     expect(rule("\\.tb-keyboard-lift")).toBe("");
 
-    expect(rule(":root\\[data-tb-kb\\] \\.tb-shell")).toContain(
+    expect(rule(":root\\[data-tb-kb\\] \\.tb-shell > \\.tb-page-enter")).toContain(
       "translate: 0 var(--tb-vv-top, 0px)",
     );
     expect(rule(":root\\[data-tb-kb\\] \\.tb-keyboard-lift")).toContain(
       "translate: 0 calc(-1 * var(--tb-kb, 0px))",
     );
+  });
+
+  it("보정은 셸 직계 자식 한 겹에만 건다 — 중첩된 전환 래퍼에 겹치면 두 배가 된다", () => {
+    /* .tb-page-enter 는 화면 안에서 또 쓰인다(일정 화면의 목록↔상세). 자손
+       선택자로 잡으면 중첩된 만큼 보정이 겹친다(2026-09-09에 실제로 그랬다). */
+    expect(cssSource).not.toMatch(/:root\[data-tb-kb\]\s+\.tb-page-enter\s*\{/);
+  });
+
+  it("셸 자체는 움직이지 않는다 — 움직이면 그 자리로 드로어가 드러난다", () => {
+    /* 셸을 통째로 내렸더니 위쪽에 빈 자리가 생겨 뒤의 사이드바가 비쳤다
+       (실기기 확인, 2026-09-09). 셸은 제자리에서 화면을 덮고, 그 안의 화면만
+       내려가야 한다. */
+    expect(cssSource).not.toMatch(/:root\[data-tb-kb\]\s+\.tb-shell\s*\{/);
   });
 
   it("셸 높이는 건드리지 않는다", () => {
