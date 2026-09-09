@@ -329,6 +329,25 @@ describe("값을 읽는 쪽(index.css)", () => {
     );
   });
 
+  it("터치 기기 입력칸은 16px 아래로 안 내려간다 — 포커스할 때 화면이 확대된다", () => {
+    /* iOS 사파리는 16px 미만인 입력칸에 포커스가 가면 화면을 확대하고 되돌려
+       주지 않는다(2026-09-09 실기기 — 일정 검색·즐겨찾기 이름 바꾸기). 개별
+       입력칸마다 클래스를 지키는 대신 여기서 한 번에 막는다. */
+    /* **레이어 밖에 있어야 한다.** 캐스케이드는 특이도보다 레이어 순서를 먼저
+       따져서, @layer base 안에 두면 utilities 의 `.text-sm` 에 무조건 진다 —
+       처음에 base 안에 넣었다가 그대로 확대됐다(2026-09-09). 레이어 밖 규칙은
+       들여쓰기가 없다는 것으로 가려낸다. */
+    const coarse = /\n@media \(pointer: coarse\) \{[\s\S]*?\n\}/.exec(cssSource)?.[0] ?? "";
+    expect(coarse).toContain("font-size: 16px");
+    expect(coarse).toContain("textarea");
+    /* maximum-scale 로 확대 자체를 막으면 손으로 키우는 길까지 막힌다 —
+       그쪽으로 되돌리지 않았는지 viewport meta 로 확인한다. */
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf-8");
+    const viewport = /<meta name="viewport"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(viewport).not.toContain("maximum-scale");
+    expect(viewport).not.toContain("user-scalable");
+  });
+
   it("따라 내려가는 전환은 내려갈 때만 걸리고, 길이가 훅 상수와 같다", () => {
     const closing = rule(':root\\[data-tb-kb="closing"\\] \\.tb-keyboard-lift');
     expect(closing).toContain(`translate ${KEYBOARD_RESTORE_MS}ms`);
