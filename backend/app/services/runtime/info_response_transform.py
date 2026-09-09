@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
+    DistrictPopulationInfoResult,
     EventInfoResult,
     InfoContextResponse,
     PlaceCard,
@@ -18,6 +19,7 @@ from app.agent_context.info_schemas import (
 from app.agent_context.info_schemas import (
     RealtimeInfoDetailItem as ContextRealtimeInfoDetailItem,
 )
+from app.agent_context.service import BUSY_CONGESTION_LEVELS
 from app.schemas import (
     ConcentrationForecastBar,
     InfoPlaceCard,
@@ -209,6 +211,8 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
         return _to_realtime_commercial_card(result)
     if isinstance(result, RealtimePopulationInfoResult):
         return _to_realtime_population_card(result)
+    if isinstance(result, DistrictPopulationInfoResult):
+        return _to_district_population_card(result)
     if isinstance(result, RealtimeCityInfoResult):
         return InfoPlaceCard(
             question_type=QuestionType(result.question_type),
@@ -448,6 +452,58 @@ def _to_realtime_population_card(
             forecasts=result.population_forecasts,
             current_level=result.current_congestion_level,
         ),
+    )
+
+
+def _to_district_population_card(
+    result: DistrictPopulationInfoResult,
+) -> InfoPlaceCard | None:
+    """구 하나를 통째로 물었을 때의 혼잡도 카드.
+
+    **12시간 예측 막대와 지도를 채우지 않는다.** 둘 다 지역 한 곳을 전제로 그린다 —
+    종로구 14곳의 예측을 한 그래프에 겹칠 수 없고, 지도도 어느 지역 것을 띄울지 정할
+    수 없다. 값을 비우면 화면이 그 자리를 아예 그리지 않는다(조건부 렌더링).
+
+    지역 목록은 `realtime_detail_items`에 담는다. 공중화장실·주차장 목록이 이미 쓰는
+    자리라 화면을 새로 만들지 않아도 된다.
+    """
+
+    if not result.areas:
+        return None
+
+    # 세는 규칙은 답변 문장과 같아야 한다 — 말풍선은 "2곳", 카드는 "13곳"이면
+    # 같은 화면이 서로 다른 말을 한다(response_composer._BUSY_LEVELS).
+    busy = [area for area in result.areas if area.congestion_level in BUSY_CONGESTION_LEVELS]
+    fields = {
+        "실시간 기준 지역": f"{result.district_name} {len(result.areas)}곳",
+        "지금 붐비는 곳": f"{len(busy)}곳" if busy else "없음",
+    }
+    if result.observed_at:
+        fields["기준 시각"] = format_citydata_timestamp(result.observed_at) or ""
+    if result.unavailable_area_count:
+        # 못 본 곳을 숨기지 않는다 — "14곳 중"이라고 해놓고 12곳만 보여주면
+        # 사용자는 두 곳이 어디로 갔는지 알 수 없다.
+        fields["조회 실패"] = f"{result.unavailable_area_count}곳"
+
+    return InfoPlaceCard(
+        question_type=QuestionType.CONCENTRATION,
+        answer_fields={key: value for key, value in fields.items() if value},
+        place_name=result.district_name,
+        realtime_area_name=result.district_name,
+        realtime_observed_at=format_citydata_timestamp(result.observed_at),
+        # **출처 링크를 붙이지 않는다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
+        # 신청 안내이지 사용자가 읽을 혼잡도 화면이 아니다. 구 단위 답은 지역 목록이
+        # 본문이라 그 목록 아래 링크가 하나 붙으면 "여기서 더 볼 수 있다"로 읽히는데,
+        # 눌러 보면 그렇지 않다. 한 곳짜리 카드는 지도 미리보기가 함께 있어 사정이
+        # 다르므로 그쪽은 그대로 둔다.
+        realtime_detail_items=[
+            RealtimeInfoDetailItem(
+                title=area.area_name,
+                subtitle=area.congestion_level,
+                details={"안내": area.message} if area.message else {},
+            )
+            for area in result.areas
+        ],
     )
 
 
