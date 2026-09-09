@@ -527,6 +527,17 @@ class ResolveLocationTool:
             # 좁혀진 전체로 폴백하지 않는다(실사용 피드백, 2026-08-13: "그냥
             # 지하철역으로만 가자").
             names_source = [item for item in in_area if _is_location_pickable(item)]
+            # 되묻기에 실을 후보를 여기서 먼저 정한다.
+            #
+            # names_source는 지하철역/명소로 좁힌 목록이라 비어 있을 수 있다 — 동명 후보가
+            # 전부 식당·상점인 경우(예: "쌈지길" 2건, has_exact_match만 True)나, "강서구"처럼
+            # 애초에 그 갈래가 아닌 지명이다. 그때는 전체 후보로 넓힌다.
+            #
+            # **아래 방어와 같은 목록을 본다.** 전에는 방어가 names_source만 보고 되묻기는
+            # 넓힌 목록으로 만들어서, 좁은 쪽이 0개인데 넓은 쪽은 1개인 지명이 방어를 그냥
+            # 지나쳤다 — "강서구"가 그랬다(2026-09-09). 같은 판단을 서로 다른 목록으로 하면
+            # 언제든 다시 어긋난다.
+            pickable_candidates = names_source or list(candidates)
             # **답이 질문과 같아지는 되묻기는 만들지 않는다.** 후보가 하나뿐이고 그 이름이
             # 방금 물어본 이름과 똑같다면, 사용자가 그 버튼을 눌러도 같은 문자열로 같은
             # 조회가 다시 돌아 같은 되묻기가 나온다 — 입력이 하나도 바뀌지 않으므로 영영
@@ -536,10 +547,16 @@ class ResolveLocationTool:
             # "종각역 1호선" 하나뿐이면, 그 버튼을 누른 답은 질의와 달라서 다음 턴에
             # 정확 일치로 풀린다. 그런 되묻기는 한 번 더 확인받는 값어치가 있고, 첫 후보를
             # 임의로 고르지 않는다는 이 파일의 원칙도 지켜진다.
-            if len(names_source) == 1 and _normalize_name(names_source[0].name) == normalized:
+            #
+            # 넓힌 목록에서 고른 후보라도 지원 구 밖이면 아래 공통 성공 경로의
+            # enforce_service_area 검사가 걸러낸다 — 여기서 다시 보지 않는 이유다.
+            if (
+                len(pickable_candidates) == 1
+                and _normalize_name(pickable_candidates[0].name) == normalized
+            ):
                 # 아래 공통 성공 경로로 흘려보낸다 — 지원 구 검사와 저장소 재조회를
                 # 여기서 다시 구현하지 않기 위해서다.
-                selected = names_source[0]
+                selected = pickable_candidates[0]
             elif not names_source and not has_exact_match:
                 # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 —
                 # "성수동"처럼 동 이름이 지역 검색에서 카페·식당 상호명으로만
@@ -555,11 +572,7 @@ class ResolveLocationTool:
                 # 실시간 행사 등 좌표만으로 답할 수 있는 폴백이 이걸로 계속 조회할 수
                 # 있게 한다(concentration의 이름 전용 폴백과 대칭).
                 #
-                # names_source는 지하철역/명소로 좁힌 목록이라 비어 있을 수 있다 —
-                # 동명 후보가 전부 식당·상점인 경우(예: "쌈지길" 2건, has_exact_match만
-                # True)다. 이때도 좌표 자체는 candidates에 있으므로 그쪽으로 넓혀서
-                # names_source[0]가 빈 리스트를 인덱싱하지 않게 한다.
-                fallback_candidates = names_source or list(candidates)
+                fallback_candidates = pickable_candidates
                 fallback = fallback_candidates[0]
                 return self._error_result(
                     status=ResolveLocationStatus.NO_DATA,
@@ -729,15 +742,35 @@ class ResolveLocationTool:
             )
             if outside is not None:
                 return outside
-        if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
+        # **사용자가 구분할 수 없는 후보로는 되묻지 않는다.** 되묻기의 목적은 고르게
+        # 하는 것인데, 이름표가 전부 같으면 어느 버튼을 눌러도 같은 문자열이 다시
+        # 들어가 같은 되묻기로 돌아온다 — 사용자가 빠져나갈 길이 없다.
+        #
+        # "강서구"가 그랬다(2026-09-09). 네이버 지오코딩이 부산 강서구까지 2건을 주는데
+        # 이름표는 둘 다 "강서구"라, 되묻기 선택지가 하나로 합쳐졌다. 그 하나를 눌러도
+        # 제자리였다. 첫 후보는 이미 서울 강서구였고 위의 지원 구 검사도 통과한
+        # 상태였으므로, 되묻기가 알아내는 것이 하나도 없었다.
+        #
+        # 이름표가 서로 다르면 지금처럼 되묻는다 — 그때는 고르는 행위에 뜻이 있다.
+        # 좌표로 가려낼 수는 없다. 응답에 후보별 좌표가 없어 어느 쪽이 서울인지
+        # 알 방법이 없다(2026-09-09 실측: candidate_labels만 온다).
+        #
+        # **이름표가 아예 없을 때는 지금까지처럼 되묻는다.** 선택지 없는 되묻기는 막다른
+        # 길이 아니다 — 사용자가 더 구체적인 이름을 직접 칠 수 있다. 가두는 것은 "고를
+        # 수 있는데 골라도 그대로인" 경우뿐이다.
+        distinct_labels = {label.strip() for label in result.candidate_labels if label.strip()}
+        indistinguishable = bool(distinct_labels) and len(distinct_labels) == 1
+        if (
+            method is not ResolutionMethod.ALIAS
+            and result.candidate_count > 1
+            and not indistinguishable
+        ):
             # 후보를 함께 싣는다(TP-182). 안 실으면 그 위층이 GPS로 짐작한 구의
             # 대표 스팟으로 버튼을 메워, "익선동"을 물은 사람에게 강서구 장소가
             # 나간다 — 진짜 답을 손에 들고도 짐작을 보여주는 셈이다.
             details = {"reason": "ambiguous_location"}
-            if result.candidate_labels:
-                details["candidate_names"] = _join_candidate_names(
-                    result.candidate_labels
-                )
+            if distinct_labels:
+                details["candidate_names"] = _join_candidate_names(sorted(distinct_labels))
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
