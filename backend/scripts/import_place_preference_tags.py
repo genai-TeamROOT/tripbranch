@@ -43,13 +43,19 @@ def load_payloads(path: Path) -> list[dict[str, object]]:
             seen.add(key)
             positive = int(detail.get("positive_documents") or 0)
             negative = int(detail.get("negative_documents") or 0)
+            mixed = int(detail.get("mixed_documents") or 0)
+            mention_count = int(
+                detail.get("mention_count")
+                if detail.get("mention_count") is not None
+                else positive + negative + mixed
+            )
             payloads.append(
                 {
                     "content_id": content_id,
                     "preference_code": code,
                     "preference_label": label,
                     "display_rank": rank,
-                    "mention_count": positive + negative,
+                    "mention_count": mention_count,
                     "positive_document_count": positive,
                     "negative_document_count": negative,
                     "source_count": int(detail.get("source_count") or 0),
@@ -60,6 +66,18 @@ def load_payloads(path: Path) -> list[dict[str, object]]:
                 }
             )
     return payloads
+
+
+def load_content_ids(path: Path) -> list[str]:
+    """카드가 0개인 장소까지 포함해 이번 실행이 소유하는 장소 ID를 읽는다."""
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        return sorted(
+            {
+                str(row.get("content_id") or "").strip()
+                for row in csv.DictReader(handle)
+                if str(row.get("content_id") or "").strip()
+            }
+        )
 
 
 async def validate_place_ids(
@@ -89,6 +107,7 @@ async def run(args: argparse.Namespace) -> None:
     if not settings.supabase_url or not settings.supabase_secret_key:
         raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
     payloads = load_payloads(args.csv)
+    content_ids = load_content_ids(args.csv)
     headers = {
         "apikey": settings.supabase_secret_key,
         "Authorization": f"Bearer {settings.supabase_secret_key}",
@@ -100,6 +119,19 @@ async def run(args: argparse.Namespace) -> None:
         print(f"태그 {len(payloads):,}건 / places 참조 검증 완료")
         if args.dry_run:
             return
+        if args.replace_content_ids:
+            for start in range(0, len(content_ids), 100):
+                group = content_ids[start : start + 100]
+                response = await client.delete(
+                    "/rest/v1/place_preference_tags",
+                    params={"content_id": "in.(" + ",".join(group) + ")"},
+                    headers={"Prefer": "return=minimal"},
+                )
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"기존 태그 삭제 실패 HTTP {response.status_code}: {response.text[:1000]}"
+                    )
+            print(f"대상 장소 {len(content_ids):,}곳의 기존 태그·근거 교체 준비 완료")
         for start in range(0, len(payloads), CHUNK_SIZE):
             chunk = payloads[start : start + CHUNK_SIZE]
             response = await client.post(
@@ -117,6 +149,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="장소별 취향 태그 Supabase 적재")
     parser.add_argument("--csv", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--replace-content-ids",
+        action="store_true",
+        help="CSV에 포함된 장소의 기존 태그를 삭제한 뒤 다시 적재",
+    )
     asyncio.run(run(parser.parse_args()))
     return 0
 
