@@ -135,6 +135,7 @@ from app.services.runtime.info_context_schemas import (
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_answer_info_place_card
 from app.services.runtime.llm_execution import (
+    condition_extraction_was_retried,
     consumed_tokens,
     get_llm_execution_metadata,
     reset_llm_execution_metadata,
@@ -273,6 +274,12 @@ _CONDITION_BEARING_INTENTS = (Intent.RECOMMEND, Intent.SCHEDULE)
 # 없을 때만 쓴다.
 CONDITION_PAYLOAD_MISSING = "condition_payload_missing"
 
+# 같은 자리의 짝 값(TP-266). 첫 호출이 빈손이라 다시 뽑았고 그 재시도가 조건을
+# 실어 온 턴이다. **성공이 아니라 "한 번 실패하고 복구된" 턴이라 error_type에
+# 남긴다** — 여기를 None으로 두면 재시도가 얼마나 자주 걸리는지 아무도 못 세고,
+# 그러면 폴백 모델을 유지할지 1순위를 올릴지 정할 근거가 사라진다(함정 44).
+CONDITION_PAYLOAD_RECOVERED = "condition_payload_missing_recovered"
+
 
 def _condition_intake_error(llm_output: LLMOutput) -> str | None:
     """이번 턴 해석이 조건을 실어 오지 못했으면 그 사유 코드를 돌려준다.
@@ -302,9 +309,11 @@ def _condition_intake_error(llm_output: LLMOutput) -> str | None:
 
     if llm_output.intent not in _CONDITION_BEARING_INTENTS:
         return None
-    if llm_output.recommend is not None:
-        return None
-    return CONDITION_PAYLOAD_MISSING
+    if llm_output.recommend is None:
+        return CONDITION_PAYLOAD_MISSING
+    if condition_extraction_was_retried():
+        return CONDITION_PAYLOAD_RECOVERED
+    return None
 
 
 def _record_trace_safely(

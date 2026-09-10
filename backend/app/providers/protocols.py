@@ -97,8 +97,14 @@ class LLMProvider(Protocol):
         user_input: str,
         *,
         history: Sequence[ConversationTurnView] | None = None,
+        retry_models: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
-        """RECOMMEND 발화에서 UserConditions를 추출한다."""
+        """RECOMMEND 발화에서 UserConditions를 추출한다.
+
+        retry_models를 주면 기본 fast 묶음 대신 그 목록으로 호출한다 — 조건
+        페이로드가 빈손으로 온 턴을 다시 뽑을 때만 쓴다(TP-266). 구현체가
+        모델 개념을 갖지 않으면(stub) 무시해도 된다.
+        """
         ...
 
     async def extract_modify_conditions(

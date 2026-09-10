@@ -514,6 +514,9 @@ class FakeLLMProvider:
         user_input: str,
         *,
         history: Sequence[ConversationTurnView] | None = None,
+        # TP-266: 스텁은 모델 개념이 없어 무시한다. 받아만 두는 이유는 재시도
+        # 경로가 fake provider에서도 그대로 지나가야 하기 때문이다.
+        retry_models: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)

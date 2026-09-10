@@ -94,6 +94,10 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     RealtimeCityInfoResult,
 )
+from app.services.runtime.llm_execution import (
+    CONDITION_EXTRACTION_RETRY_OPERATION,
+    record_llm_call,
+)
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
     FakeEnrichmentProvider,
@@ -219,6 +223,32 @@ class _LLMProviderDroppingConditionPayload(_LLMProviderWithGeneralAnswer):
     async def extract_recommend_conditions(self, user_input, **kwargs):
         result = await super().extract_recommend_conditions(user_input, **kwargs)
         result.data.recommend = None
+        return result
+
+
+class _LLMProviderRecoveringOnRetry(_LLMProviderWithGeneralAnswer):
+    """첫 조건 추출은 빈손, 재시도에서 채워 오는 provider (TP-266).
+
+    **재시도 사실을 호출 이력에 남기는 것까지 흉내 낸다.** RealGeminiProvider가
+    재시도 호출을 `extract_recommend_conditions_retry`라는 operation으로 남기고,
+    `condition_extraction_was_retried()`가 그 이름으로 센다 — 그 계약을 여기서
+    함께 잠근다. 이름만 바꾸고 세는 쪽을 안 고치면 이 테스트가 깨진다.
+    """
+
+    def __init__(self) -> None:
+        self.extract_calls = 0
+
+    async def extract_recommend_conditions(self, user_input, **kwargs):
+        self.extract_calls += 1
+        result = await super().extract_recommend_conditions(user_input, **kwargs)
+        if self.extract_calls == 1:
+            result.data.recommend = None
+            return result
+        record_llm_call(
+            operation=CONDITION_EXTRACTION_RETRY_OPERATION,
+            attempted_models=["gemini-3.5-flash"],
+            served_model="gemini-3.5-flash",
+        )
         return result
 
 
@@ -605,6 +635,46 @@ async def test_empty_condition_payload_is_recorded_as_interpret_failure() -> Non
     by_step = {trace.step: trace for trace in store.get_traces(response.state.session_id)}
     assert by_step["llm_interpret"].error_type == "condition_payload_missing"
     # 지표 쪽은 건드리지 않는다 — TP-242의 분리를 여기서도 지킨다.
+    assert by_step["llm_interpret"].metrics is None
+
+
+@pytest.mark.asyncio
+async def test_condition_payload_recovered_by_retry_is_recorded_separately() -> None:
+    """다시 뽑아서 살아난 턴은 성공이 아니라 "한 번 실패하고 복구된" 턴으로 남는다.
+
+    **None으로 두면 안 되는 이유가 있다.** 재시도가 얼마나 자주 걸리는지 세는 자리가
+    여기뿐이라, 조용히 넘기면 폴백 모델을 유지할지 1순위를 올릴지 정할 근거가
+    사라진다(함정 44 — 없는 것을 세는 자리를 만든다).
+
+    `condition_payload_missing`과 값을 나눠야 한다. 둘을 합치면 "재시도로 살아난
+    턴"과 "두 번 다 실패한 턴"이 한 숫자에 묻혀 재시도의 효과를 못 잰다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    llm = _LLMProviderRecoveringOnRetry()
+    providers["llm"] = llm
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert llm.extract_calls == 2
+    assert response.llm_output.recommend is not None
+    # 카드 완료조건 4 — 다시 뽑은 조건이 llm_output에만 실리고 끝나면 의미가 없다.
+    # state까지 병합돼야 추천·편성이 그 조건으로 돈다. 재시도 결과를 버리고 첫
+    # 결과를 돌려주면 여기가 빈 UserConditions와 condition_version 0으로 깨진다.
+    assert response.state.user_conditions.search_center == "경복궁"
+    assert response.state.condition_version == 1
+
+    by_step = {trace.step: trace for trace in store.get_traces(response.state.session_id)}
+    assert by_step["llm_interpret"].error_type == "condition_payload_missing_recovered"
+    # 지표 쪽은 여기서도 건드리지 않는다 — TP-242의 분리.
     assert by_step["llm_interpret"].metrics is None
 
 

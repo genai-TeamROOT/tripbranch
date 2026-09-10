@@ -13,6 +13,9 @@ TODO: B(Agent State) 연동(state_transform.py/session_orchestrator.py)을 이 �
 
 from __future__ import annotations
 
+import logging
+
+from app.config import settings
 from app.providers.protocols import LLMProvider
 from app.schemas import (
     ClarificationOption,
@@ -34,6 +37,8 @@ from app.schemas import (
     WeatherIntent,
 )
 from app.state.schema import now_kst
+
+logger = logging.getLogger(__name__)
 
 _SERVICE_IDENTITY_MARKERS = (
     "넌 누구",
@@ -319,6 +324,68 @@ async def _general_output(
     )
 
 
+async def _extract_recommend_conditions(
+    request: InterpretRequest,
+    llm: LLMProvider,
+    history_kwargs: dict[str, object],
+) -> LLMOutput:
+    """조건 추출. 페이로드가 통째로 비어 오면 한 번만 다시 뽑는다 (TP-266).
+
+    **왜 여기냐.** `llm_output.recommend`가 None이면 state_transform이 조건 병합을
+    통째로 건너뛴다. 오류도 로그도 없이 지나가므로 조건 0개로 추천·편성이 돌고,
+    사용자에게는 자기가 말한 조건이 무시된 결과가 나간다(D-126). 지금 그 사실을
+    감지하는 자리(`agent_runtime._condition_intake_error`)는 병합이 **끝난 뒤**라
+    기록만 남기고 손을 쓸 수 없다. 되뽑을 수 있는 마지막 지점이 여기다.
+
+    **정상 턴에서는 절대 안 걸린다.** `prompts/recommend/extract.md`가 "반드시
+    recommend.conditions에 UserConditions 전체를 채우고"라고 무조건으로 못 박는다 —
+    status가 needs_clarification이어도 마찬가지다. 그래서 페이로드가 통째로 없는
+    것은 언제나 계약 위반이고, 되묻기 턴이 이 재시도에 걸려 값을 두 번 내는 일은
+    없다. **조건이 전부 null인 것과는 다르다** — "일정 짜줘"처럼 조건을 하나도
+    말하지 않은 발화는 페이로드는 있고 안이 빈 것이라 여기 안 걸린다.
+
+    **D-052 폴백은 이 경우에 안 걸린다.** `recommend: null`은 HTTP 200이고 응답
+    스키마도 통과해서 provider에게는 성공이다. 실측에서 빈손 6건에 폴백 0/18이었다.
+
+    **재시도 모델을 새로 정하지 않는다.** `llm_fast_fallback_model_names`가 이미
+    "1순위가 실패하면 이걸로 간다"를 선언해 뒀다(기본값 gemini-3.5-flash). 빈손을
+    실패로 치기만 하면 쓸 모델은 이미 정해져 있다 — 그래서 fast 묶음의 2순위부터를
+    그대로 쓴다. 바꾸고 싶으면 `.env`에서 그 값을 바꾸면 되고 코드는 안 건드린다.
+
+    **한 번만 한다.** 두 번째도 빈손이면 첫 결과를 그대로 돌려주고 지금과 똑같이
+    조건 없이 진행한다 — 호출 수가 발화당 무한히 늘지 않게 한다.
+
+    근거: 2026-09-08 실측(일정 발화 18건 x 반복 3)에서 `gemini-3.5-flash-lite`가
+    흔들림 6/18 · 기대 불일치 9/18, `gemini-3.5-flash`가 0/18 · 0/18이었다
+    (backend/test_results/model_tier_2026-09-08/0단계_기준선.md).
+    """
+
+    result = (
+        await llm.extract_recommend_conditions(request.user_input, **history_kwargs)
+    ).data
+    if result.recommend is not None:
+        return result
+
+    retry_models = settings.resolved_llm_fast_models[1:]
+    if not retry_models:
+        # 폴백 묶음이 비어 있으면 같은 모델로 다시 부를 뿐이라 값을 두 번 낸다.
+        logger.warning("조건 페이로드가 비어 왔지만 폴백 모델이 없어 다시 뽑지 않는다")
+        return result
+
+    logger.warning(
+        "조건 페이로드가 비어 왔다 — %s로 한 번 다시 뽑는다", retry_models[0]
+    )
+    retried = (
+        await llm.extract_recommend_conditions(
+            request.user_input, retry_models=retry_models, **history_kwargs
+        )
+    ).data
+    if retried.recommend is None:
+        logger.warning("다시 뽑아도 조건 페이로드가 비어 있다 — 조건 없이 진행한다")
+        return result
+    return retried
+
+
 async def _extract_for_intent(
     classification: IntentClassificationResult,
     request: InterpretRequest,
@@ -367,19 +434,11 @@ async def _extract_for_intent(
     # 바꿔치기한다. status(complete/needs_clarification)와 clarification은 그대로
     # 유지된다 — RECOMMEND와 동일한 되묻기 흐름을 탄다.
     if classification.intent is Intent.SCHEDULE:
-        result = (
-            await llm.extract_recommend_conditions(
-                request.user_input, **history_kwargs
-            )
-        ).data
+        result = await _extract_recommend_conditions(request, llm, history_kwargs)
         return result.model_copy(update={"intent": Intent.SCHEDULE})
 
     if classification.intent is Intent.RECOMMEND:
-        return (
-            await llm.extract_recommend_conditions(
-                request.user_input, **history_kwargs
-            )
-        ).data
+        return await _extract_recommend_conditions(request, llm, history_kwargs)
 
     if classification.intent is Intent.MODIFY:
         if request.current_conditions is None:

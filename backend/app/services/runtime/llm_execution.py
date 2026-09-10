@@ -30,6 +30,12 @@ _calls: ContextVar[list[LLMCallMetadata] | None] = ContextVar(
 )
 
 
+# TP-266: 조건 페이로드가 빈손이라 조건 추출을 다시 부른 호출의 operation 이름.
+# gemini.py가 이 이름으로 남기고 agent_runtime이 이 이름으로 센다 — 문자열을
+# 양쪽에 따로 적으면 한쪽만 고쳐졌을 때 조용히 안 세어진다.
+CONDITION_EXTRACTION_RETRY_OPERATION = "extract_recommend_conditions_retry"
+
+
 def reset_llm_execution_metadata() -> None:
     """새 Agent 요청을 시작하며 이전 호출 이력을 비운다.
 
@@ -75,6 +81,22 @@ def record_llm_call(
         calls = []
         _calls.set(calls)
     calls.append(call)
+
+
+def condition_extraction_was_retried() -> bool:
+    """이번 요청에서 조건 추출을 빈손 때문에 다시 부른 적이 있는가(TP-266).
+
+    호출 이력에서 센다. `_calls`가 리스트 제자리 추가라 태스크 경계를 넘어도
+    보이는 것이 근거다(모듈 머리말, D-075) — ContextVar에 플래그를 `set()`으로
+    두면 `_await_with_heartbeat()`가 만든 태스크 안의 표시가 밖에서 사라진다.
+    """
+
+    calls = _calls.get()
+    if not calls:
+        return False
+    return any(
+        call.operation == CONDITION_EXTRACTION_RETRY_OPERATION for call in calls
+    )
 
 
 def get_llm_execution_metadata() -> LLMExecutionMetadata | None:
