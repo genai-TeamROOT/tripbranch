@@ -756,6 +756,34 @@ test("developer start opens dev chat with audit panel", async () => {
   expect(screen.getAllByText(/비를 피할 실내 장소가 필요해/).length).toBeGreaterThan(1);
 });
 
+/*
+ * TP-268 — 개발자용 진입 칩·라우트는 `import.meta.env.DEV`로만 가른다. 어드민
+ * 계정 같은 런타임 권한 대신 빌드 시점 값을 쓴 이유는 `vite build` 산출물(시연
+ * 영상·실제 배포)에서 로그인 상태와 무관하게 정적으로 사라지기 때문이다.
+ *
+ * vitest는 기본으로 DEV=true다(mode="test"가 "production"이 아니라서) — 그래서
+ * 위 "developer start opens dev chat with audit panel" 같은 기존 테스트들은
+ * 손대지 않아도 그대로 통과한다. 이 테스트만 명시적으로 false로 스텁한다.
+ */
+test("배포 빌드에서는 홈 화면에 개발자용 시작 칩이 없다", async () => {
+  vi.stubEnv("DEV", false);
+  await renderApp();
+
+  expect(screen.queryByRole("button", { name: "개발자용으로 시작" })).not.toBeInTheDocument();
+});
+
+test("배포 빌드에서는 /dev-chat 주소로 들어가도 홈으로 돌아간다", async () => {
+  /* 칩만 숨기면 URL을 직접 쳐서는 여전히 들어갈 수 있다 — 라우트 자체가
+     없어야 한다(App.tsx). 안쪽 AppRoutes의 catch-all이 "/"로 돌려보낸다. */
+  vi.stubEnv("DEV", false);
+  window.history.pushState({}, "", "/dev-chat");
+
+  render(<App />);
+
+  await screen.findByRole("button", { name: "추천 시작하기" });
+  expect(screen.queryByText("Agent Runtime Audit")).not.toBeInTheDocument();
+});
+
 test("developer audit turn cards remain selectable after multiple turns", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   await renderApp();

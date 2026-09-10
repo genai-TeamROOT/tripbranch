@@ -344,18 +344,24 @@ export function HomePage() {
           기본이 min-height:auto 라 내용보다 작아지지 않고, 그러면 짧은 화면에서
           오브가 칸을 뚫고 나가 홈 전체가 스크롤된다(2026-09-07 실측). */}
         <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
-          <div className="flex items-center justify-end">
-            {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
-              비어 있으면 비활성. */}
-            <button
-              type="button"
-              disabled={isLoading || !userInput.trim()}
-              onClick={() => void startChat(userInput, "/dev-chat")}
-              className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
-            >
-              {text.developer}
-            </button>
-          </div>
+          {/* 개발자용 진입 칩은 로컬 개발 서버에서만 그린다 — `vite build` 산출물
+              (시연 영상·실제 배포)에는 이 값이 정적으로 false라 아예 안 그려진다.
+              라우트 자체도 App.tsx에서 같은 조건으로 막혀 있다 — 칩만 숨기면 URL을
+              직접 쳐서는 여전히 들어갈 수 있어서, 둘을 같은 조건으로 짝지었다. */}
+          {import.meta.env.DEV && (
+            <div className="flex items-center justify-end">
+              {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
+                비어 있으면 비활성. */}
+              <button
+                type="button"
+                disabled={isLoading || !userInput.trim()}
+                onClick={() => void startChat(userInput, "/dev-chat")}
+                className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
+              >
+                {text.developer}
+              </button>
+            </div>
+          )}
 
           {/*
            * 오브가 맨 위에 오고 글이 그 아래에 가운데로 붙는다(2026-09-07).

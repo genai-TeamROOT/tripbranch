@@ -464,15 +464,19 @@ export function ChatPage() {
           {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
             6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다.
             화면 설명 문구도 뺐다 — 무엇을 하는 화면인지는 대화 자체로 드러난다. */}
-          <div className="flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={() => navigate("/dev-chat")}
-              className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
-            >
-              {text.developer}
-            </button>
-          </div>
+          {/* HomePage의 같은 자리 칩과 같은 이유로 로컬 개발 서버에서만 그린다
+              (App.tsx가 /dev-chat 라우트 자체도 같은 조건으로 막는다). */}
+          {import.meta.env.DEV && (
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => navigate("/dev-chat")}
+                className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
+              >
+                {text.developer}
+              </button>
+            </div>
+          )}
 
           <ChatMessageList
             messages={state.messages}
