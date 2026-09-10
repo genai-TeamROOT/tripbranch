@@ -464,19 +464,26 @@ export function ChatPage() {
           {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
             6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다.
             화면 설명 문구도 뺐다 — 무엇을 하는 화면인지는 대화 자체로 드러난다. */}
-          {/* HomePage의 같은 자리 칩과 같은 이유로 로컬 개발 서버에서만 그린다
-              (App.tsx가 /dev-chat 라우트 자체도 같은 조건으로 막는다). */}
-          {import.meta.env.DEV && (
-            <div className="flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => navigate("/dev-chat")}
-                className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
-              >
-                {text.developer}
-              </button>
-            </div>
-          )}
+          {/* HomePage의 같은 자리 칩과 같은 이유로 로컬 개발 서버에서만 실제로
+              그린다(App.tsx가 /dev-chat 라우트 자체도 같은 조건으로 막는다).
+              통째로 안 그리면 이 줄의 높이가 사라져 아래 메시지 목록이 그만큼
+              따라 올라온다(2026-09-10 실사용 확인) — 자리는 항상 지키고 칩만
+              숨긴다. onClick을 삼항으로 감싸는 이유는 HomePage와 같다: DEV가
+              배포 빌드에서 false로 굳으면 esbuild가 그 분기를 접어
+              "/dev-chat" 문자열도 함께 사라진다(빌드 산출물로 확인). */}
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              aria-hidden={!import.meta.env.DEV}
+              tabIndex={import.meta.env.DEV ? undefined : -1}
+              onClick={import.meta.env.DEV ? () => navigate("/dev-chat") : undefined}
+              className={`rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light ${
+                import.meta.env.DEV ? "" : "invisible"
+              }`}
+            >
+              {text.developer}
+            </button>
+          </div>
 
           <ChatMessageList
             messages={state.messages}
