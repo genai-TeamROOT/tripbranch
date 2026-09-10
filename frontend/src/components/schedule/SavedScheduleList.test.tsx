@@ -191,6 +191,36 @@ test("저장한 일정을 삭제하면 목록에서 빠진다", async () => {
   expect(screen.getByText("종로 반나절")).toBeInTheDocument();
 });
 
+/*
+ * 삭제 직후 화면에서 빠지는 것은 이 컴포넌트의 로컬 state(setSchedules) 덕분이고,
+ * `state/savedSchedules.ts`의 캐시(cached 프라미스)는 그것과 별개다. 삭제 성공 뒤
+ * refreshSavedSchedules()를 부르지 않으면 캐시는 삭제 전 목록을 계속 들고 있다가,
+ * 다른 화면에 다녀와 이 컴포넌트가 다시 마운트될 때(useSavedSchedules의
+ * loadSavedSchedules() 호출) 그 캐시를 그대로 돌려줘 지운 일정이 되살아난다
+ * (2026-09-10 실사용 보고).
+ *
+ * resetSavedSchedulesCache()를 부르지 않는 것이 이 테스트의 핵심이다 — 그 함수는
+ * "페이지를 새로고침한 경계"를 흉내 낼 때 쓰는 것이라, 부르면 이 버그가 가려진다.
+ * 여기서는 페이지 이동 뒤 돌아오는 것(같은 로드 안에서의 재마운트)을 흉내 낸다.
+ */
+test("삭제한 일정은 다른 화면에 다녀와도 되살아나지 않는다", async () => {
+  server.schedules = [...SEED];
+  const user = userEvent.setup();
+  const first = renderList();
+
+  await user.click(await screen.findByRole("button", { name: "성수 저녁 코스 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
+  await waitFor(() => expect(server.deleted).toEqual(["sched-2"]));
+
+  // 일정 화면을 벗어났다가 돌아온다 — 컴포넌트가 새로 마운트되지만 페이지는
+  // 새로고침되지 않는다.
+  first.unmount();
+  renderList();
+
+  await screen.findByText("종로 반나절");
+  expect(screen.queryByText("성수 저녁 코스")).not.toBeInTheDocument();
+});
+
 /* 대화 목록과 별도 저장소다. 세션이 30일 뒤 정리돼도 저장한 일정은 남는다 —
    사이드바에 있을 때는 "대화가 없어도 보인다"로 잠갔던 것을, 목록이 분리된 뒤에는
    대화와 무관하다는 사실 자체로 잠근다(대화 목록을 세우지 않고도 그려진다). */

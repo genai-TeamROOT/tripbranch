@@ -92,13 +92,25 @@ export function SavedScheduleList() {
       /* 화면을 먼저 바꾸고 서버에 보낸다 — 이름 바꾸기는 되돌릴 수 있는 동작이라
          응답을 기다리며 입력칸을 붙잡아 둘 이유가 없다. 실패하면 서버 값으로
          되돌린다 — 바뀐 척 남겨두면 다음에 열었을 때 예전 이름이 돌아와 있어 더
-         혼란스럽다. */
+         혼란스럽다.
+
+         **성공해도 캐시는 갱신해야 한다.** 위 setSchedules는 이 컴포넌트의 로컬
+         state일 뿐, state/savedSchedules.ts의 캐시(cached 프라미스)는 그대로 옛
+         이름을 들고 있다. 다른 화면에 다녀와 이 컴포넌트가 다시 마운트되면
+         useSavedSchedules()가 그 캐시를 그대로 돌려줘 이름이 되돌아간
+         것처럼 보인다 — 2026-09-10에 삭제에서 같은 증상이 보고됐다(실패해야만
+         부르던 자리에 성공 경로가 없었다). finally로 성공·실패 모두 갱신한다. */
       setSchedules((prev) =>
         prev.map((item) => (item.id === id ? { ...item, label: trimmed } : item)),
       );
-      void renameSavedSchedule(id, trimmed).catch(() => {
-        void refreshSavedSchedules();
-      });
+      // .catch()로 실패를 먼저 삼킨다 — .finally()는 원래 거부를 그대로
+      // 물려주므로, 삼키지 않으면 실패했을 때 처리되지 않은 프라미스 거부가
+      // 남는다. 성공·실패 어느 쪽이든 재조회 하나로 화면을 서버 상태에 맞춘다.
+      void renameSavedSchedule(id, trimmed)
+        .catch(() => {})
+        .finally(() => {
+          void refreshSavedSchedules();
+        });
     }
     /* 빈 제목은 취소로 친다. 서버도 빈 제목을 거부하므로 보내봐야 400이다. */
     setRenaming(null);
@@ -233,12 +245,25 @@ export function SavedScheduleList() {
                     role="menuitem"
                     onClick={() => {
                       /* 화면에서 먼저 빼고 서버에 보낸다. 실패하면 서버 목록으로
-                           되돌린다. */
+                         되돌린다.
+
+                         **성공해도 캐시는 갱신해야 한다** — commitRename과 같은
+                         이유다. 여기 setSchedules는 로컬 state일 뿐이라, 삭제가
+                         성공해도 state/savedSchedules.ts의 캐시는 지운 일정을
+                         계속 들고 있었다. 다른 화면에 다녀와 이 목록이 다시
+                         마운트되면 그 캐시가 그대로 돌아와 지운 일정이 되살아
+                         났다(2026-09-10 실사용 보고 — 화면에선 지워지는데 다른
+                         페이지를 다녀오면 남아 있었다). */
                       setSchedules((prev) => prev.filter((item) => item.id !== entry.id));
                       setOpenMenu(null);
-                      void deleteSavedSchedule(entry.id).catch(() => {
-                        void refreshSavedSchedules();
-                      });
+                      // .catch()로 실패를 먼저 삼킨다 — .finally()는 원래 거부를
+                      // 그대로 물려주므로, 삼키지 않으면 실패했을 때 처리되지
+                      // 않은 프라미스 거부가 남는다.
+                      void deleteSavedSchedule(entry.id)
+                        .catch(() => {})
+                        .finally(() => {
+                          void refreshSavedSchedules();
+                        });
                     }}
                     className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
                   >
