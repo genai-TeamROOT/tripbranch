@@ -111,14 +111,24 @@ function App() {
                     </PageTransition>
                   }
                 />
-                <Route
-                  path="/dev-chat"
-                  element={
-                    <RequireUser>
-                      <DeveloperChatPage />
-                    </RequireUser>
-                  }
-                />
+                {/* 로컬 개발 서버에서만 이 라우트를 등록한다. RequireUser는 로그인
+                    여부만 보지 신원 종류는 안 보므로, 로그인한 사용자라면 누구나
+                    URL을 직접 쳐서 들어올 수 있었다 — 홈 화면의 진입 칩만 숨기는
+                    것으로는 막히지 않는다. 백엔드도 이 화면이 쓰는 감사 API
+                    (api/dev.ts의 fetchExchanges 등)를 APP_ENV=local일 때만
+                    등록해 배포 환경에서 404를 돌려주고 있어 같은 원칙이다.
+                    Routes의 자식은 React가 순회하므로 조건부 렌더링이 그대로
+                    동작한다(react-router v6 공식 패턴). */}
+                {import.meta.env.DEV && (
+                  <Route
+                    path="/dev-chat"
+                    element={
+                      <RequireUser>
+                        <DeveloperChatPage />
+                      </RequireUser>
+                    }
+                  />
+                )}
                 {/* 운영 점검 화면은 사용자 신원과 무관한 내부 도구라 관문 밖에 둔다. */}
                 <Route path="/dev-ops" element={<DeveloperOpsPage />} />
                 <Route path="/confirm" element={<Navigate to="/chat" replace />} />

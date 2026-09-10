@@ -344,14 +344,31 @@ export function HomePage() {
           기본이 min-height:auto 라 내용보다 작아지지 않고, 그러면 짧은 화면에서
           오브가 칸을 뚫고 나가 홈 전체가 스크롤된다(2026-09-07 실측). */}
         <div className="relative z-10 mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col px-4 pb-4 pt-2">
+          {/* 칩은 로컬 개발 서버에서만 실제로 그린다 — 배포 빌드에서는 같은
+              노드를 안 보이게·못 누르게 바꿔치기만 한다. 통째로 안 그리면
+              (`{DEV && <div>...}`) 이 줄이 차지하던 높이가 사라져 아래 오브가
+              그만큼 따라 올라온다(2026-09-10 실사용 확인) — 자리는 항상 지키고
+              칩만 숨긴다.
+
+              onClick은 삼항으로 감싼다. `import.meta.env.DEV`가 배포 빌드에서
+              정적으로 false로 굳으면 esbuild가 `false ? A : B`를 B로 접어 A쪽의
+              "/dev-chat" 문자열도 함께 사라진다 — `{DEV && ...}`로 감쌌을 때와
+              같은 방식이고, 실제 빌드 산출물을 grep해 사라지는 것을 확인했다.
+              라우트 자체도 App.tsx에서 막혀 있어 어차피 눌려도 갈 곳이 없다. */}
           <div className="flex items-center justify-end">
             {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
               비어 있으면 비활성. */}
             <button
               type="button"
-              disabled={isLoading || !userInput.trim()}
-              onClick={() => void startChat(userInput, "/dev-chat")}
-              className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50"
+              disabled={!import.meta.env.DEV || isLoading || !userInput.trim()}
+              aria-hidden={!import.meta.env.DEV}
+              tabIndex={import.meta.env.DEV ? undefined : -1}
+              onClick={
+                import.meta.env.DEV ? () => void startChat(userInput, "/dev-chat") : undefined
+              }
+              className={`rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-sky-soft hover:text-ink disabled:opacity-50 ${
+                import.meta.env.DEV ? "" : "invisible"
+              }`}
             >
               {text.developer}
             </button>
