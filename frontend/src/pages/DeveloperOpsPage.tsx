@@ -667,13 +667,18 @@ export function DeveloperOpsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => navigate("/dev-chat")}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
-          >
-            개발자 채팅
-          </button>
+          {/* /dev-chat 라우트 자체가 배포 빌드엔 없다(App.tsx) — 이 페이지 상단이
+              이미 "(로컬 전용)"이라 밝히고 있는 것과 같은 이유로, 없는 라우트로
+              가는 깨진 링크를 만들지 않는다. */}
+          {import.meta.env.DEV && (
+            <button
+              type="button"
+              onClick={() => navigate("/dev-chat")}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+            >
+              개발자 채팅
+            </button>
+          )}
           <button
             type="button"
             onClick={() => navigate("/chat")}
