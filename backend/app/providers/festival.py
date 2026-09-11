@@ -28,11 +28,25 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.upstream_errors import upstream_error_detail
+from app.service_area import SUPPORTED_DISTRICT_CODES
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://apis.data.go.kr/B551011/KorService2"
 _SEARCH_FESTIVAL_PATH = "/searchFestival2"
+
+# 한 번에 요청할 행 수. TourAPI는 numOfRows에 100 상한을 걸지 않는다 — 넉넉히
+# 요청하면 전량을 한 번에 주고 응답의 numOfRows가 실제 건수로 잘려 온다
+# (2026-09-07 실측: 200·500·1000 요청 모두 189건을 한 번에 돌려줬다).
+#
+# 그래서 평시 호출 수는 1회 그대로다. D-025가 "지원 구마다 호출해 병합"을 호출
+# 수를 이유로 기각했는데, 그 결정을 지키면서 잘림만 없앤다.
+_ROWS_PER_REQUEST = 500
+
+# totalCount가 한 번에 못 받을 만큼 커졌을 때만 타는 안전장치. 서울 전체 행사는
+# 2026-08-24에 51건, 2026-09-07에 189건이었다 — 2주에 3.7배라 상한을 두되
+# 넘으면 조용하지 않게 한다.
+_MAX_PAGES = 4
 # 조회 시작일. 진행 중 판정은 응답의 기간으로 다시 하므로 넉넉히 잡는다 —
 # 장기 행사(예: 20260101~20261231)가 시작일 필터에서 빠지지 않게 해야 한다.
 _SEARCH_START_DATE_OFFSET_YEARS = 2
@@ -53,6 +67,7 @@ class FestivalEvent:
     address: str | None
     latitude: float | None
     longitude: float | None
+    image_url: str | None
 
     def is_ongoing(self, reference_date: date) -> bool:
         return self.start_date <= reference_date <= self.end_date
@@ -86,6 +101,18 @@ def _parse_coordinate(value: object) -> float | None:
         return None
 
 
+def _total_count(payload: Mapping[str, object]) -> int:
+    """응답이 말하는 전체 건수. 이 값을 안 읽어서 잘림이 드러나지 않았다."""
+    response = payload.get("response")
+    body = response.get("body") if isinstance(response, Mapping) else None
+    raw = body.get("totalCount") if isinstance(body, Mapping) else None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return 0
+
+
 def _items(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
     response = payload.get("response")
     body = response.get("body") if isinstance(response, Mapping) else None
@@ -102,15 +129,24 @@ def _items(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 def map_festival_items(
     items: list[Mapping[str, object]],
+    *,
+    allowed_district_codes: frozenset[str] | None = None,
 ) -> list[FestivalEvent]:
     """응답 항목을 FestivalEvent로 옮긴다. 기간이 없는 행은 버린다.
 
     기간이 없으면 "지금 진행 중인가"를 판정할 수 없어 event 질의에 쓸모가 없다.
     좌표는 없어도 남긴다 — 거리 정렬에서만 빠지고 목록에는 실릴 수 있다.
+
+    allowed_district_codes를 주면 응답의 `lDongSignguCd`가 그 안에 없는 행사를
+    버린다. 서울 전체를 한 번에 받아 여기서 좁히므로 구가 늘어도 호출은 1회다.
     """
 
     events: list[FestivalEvent] = []
     for item in items:
+        if allowed_district_codes is not None:
+            district_code = str(item.get("lDongSignguCd", "")).strip()
+            if district_code not in allowed_district_codes:
+                continue
         content_id = _text(item.get("contentid"))
         title = _text(item.get("title"))
         start_date = _parse_date(item.get("eventstartdate"))
@@ -128,6 +164,7 @@ def map_festival_items(
                 address=_text(item.get("addr1")),
                 latitude=_parse_coordinate(item.get("mapy")),
                 longitude=_parse_coordinate(item.get("mapx")),
+                image_url=_text(item.get("firstimage")) or _text(item.get("firstimage2")),
             )
         )
     return events
@@ -149,26 +186,54 @@ class RealFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
-        limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
+        """지역의 행사를 **전량** 받아 지원 구만 남긴다.
+
+        전에는 `numOfRows=100`으로 한 번만 불러 100건을 넘는 만큼이 조용히
+        사라졌다. 2026-09-07 실측에서 서울 전체가 189건이었고, 그중 진행 중인
+        19건 가운데 12건이 응답에 아예 들어오지 않았다 — 거리순 정렬인데 모집단이
+        3분의 1이라 실제로 가장 가까운 행사가 후보에서 빠졌다.
+        """
         start_date = reference_date.replace(
             year=reference_date.year - _SEARCH_START_DATE_OFFSET_YEARS
         )
-        payload = await self._request_json(
-            _SEARCH_FESTIVAL_PATH,
-            {
+        raw_items: list[Mapping[str, object]] = []
+        total_count = 0
+        for page in range(1, _MAX_PAGES + 1):
+            params: dict[str, object] = {
                 "MobileOS": "ETC",
                 "MobileApp": "TripBranch",
                 "_type": "json",
                 "eventStartDate": start_date.strftime("%Y%m%d"),
                 "lDongRegnCd": region_code,
-                "lDongSignguCd": district_code,
-                "numOfRows": max(1, min(limit, 100)),
-            },
-        )
-        events = map_festival_items(_items(payload))
+                "numOfRows": _ROWS_PER_REQUEST,
+                "pageNo": page,
+            }
+            # 구를 지정하면 그 구 행사만 온다. 지원 구가 여럿이면 구마다 호출해야
+            # 하므로 시도까지만 좁히고 지원 구 판정은 응답으로 한다(D-025).
+            if district_code:
+                params["lDongSignguCd"] = district_code
+            payload = await self._request_json(_SEARCH_FESTIVAL_PATH, params)
+            page_items = _items(payload)
+            total_count = _total_count(payload) or total_count
+            raw_items.extend(page_items)
+            # 평시에는 첫 장에서 끝난다. 아래 두 줄은 totalCount가 한 번에 못 받을
+            # 만큼 커졌을 때만 도는 자리다.
+            if not page_items or len(raw_items) >= total_count:
+                break
+        else:
+            # for가 break 없이 끝났다 = 상한에 걸렸다. 지금 문제가 정확히 "잘렸는데
+            # 아무도 모른다"였으므로 조용히 지나가지 않는다.
+            logger.warning(
+                "행사 조회가 상한에서 잘렸습니다 (받은 수=%d, totalCount=%d, 최대 %d장)",
+                len(raw_items),
+                total_count,
+                _MAX_PAGES,
+            )
+
+        events = map_festival_items(raw_items, allowed_district_codes=SUPPORTED_DISTRICT_CODES)
         return provider_result(
             events,
             source=ProviderSource.TOUR_API_FESTIVAL,
@@ -243,9 +308,8 @@ class FakeFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
-        limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
         from datetime import timedelta
 
@@ -259,6 +323,7 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 세종대로 175 (세종로)",
                 latitude=37.5718478585,
                 longitude=126.9761682759,
+                image_url="http://tong.visitkorea.or.kr/cms/resource/40/3419040_image2_1.jpg",
             ),
             # 진행 중 — 제목에 장소명이 들어가 직접 매칭이 되는 사례.
             FestivalEvent(
@@ -269,8 +334,9 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 사직로 161 (세종로)",
                 latitude=37.5796,
                 longitude=126.9770,
+                image_url="http://tong.visitkorea.or.kr/cms/resource/60/2648460_image2_1.jpg",
             ),
-            # 종료됨 — 걸러져야 한다.
+            # 종료됨 — 걸러져야 한다. 실측 20%가 image 없음도 함께 대표한다.
             FestivalEvent(
                 content_id="3312721",
                 title="북촌의 날",
@@ -279,6 +345,7 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 계동길 37",
                 latitude=37.5826,
                 longitude=126.9850,
+                image_url=None,
             ),
             # 예정 — 걸러져야 한다.
             FestivalEvent(
@@ -289,10 +356,11 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 동숭길 122",
                 latitude=37.5820,
                 longitude=127.0030,
+                image_url=None,
             ),
         ]
         return provider_result(
-            events[:limit],
+            events,
             source=ProviderSource.FAKE_FESTIVAL,
             status=ProviderStatus.SUCCESS,
         )

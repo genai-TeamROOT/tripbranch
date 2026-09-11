@@ -28,13 +28,13 @@ def _shown(*items: tuple[str, int]) -> list[RecommendedItem]:
 def test_all_targets_keep_last_recommendation_feature_snapshots() -> None:
     resolution = to_compare_context_request(
         "req-test",
-        ComparePayload(targets="all", criteria=CompareCriteria.DISTANCE),
+        ComparePayload(targets="all", criteria=CompareCriteria.TRAVEL_TIME),
         _shown(("place-2", 2), ("place-1", 1)),
     )
 
     assert resolution.message is None
     assert resolution.request is not None
-    assert resolution.request.criteria is CompareCriteria.DISTANCE
+    assert resolution.request.criteria is CompareCriteria.TRAVEL_TIME
     assert [(item.place_id, item.rank) for item in resolution.request.candidates] == [
         ("place-1", 1),
         ("place-2", 2),
@@ -76,7 +76,7 @@ def test_compare_response_requires_two_resolved_items() -> None:
     response = CompareContextResponse(
         request_id="req-test",
         status="partial",
-        criteria=CompareCriteria.DISTANCE,
+        criteria=CompareCriteria.TRAVEL_TIME,
         items=[
             ComparisonItem(place_id="place-1", place_name="첫 장소", rank=1),
             ComparisonItem(place_id="place-2", place_name="둘째 장소", rank=2),
@@ -86,7 +86,7 @@ def test_compare_response_requires_two_resolved_items() -> None:
     result = to_comparison_result(response)
 
     assert result is not None
-    assert result.criteria is CompareCriteria.DISTANCE
+    assert result.criteria is CompareCriteria.TRAVEL_TIME
     assert [item.place_name for item in result.items] == ["첫 장소", "둘째 장소"]
 
     no_data = response.model_copy(update={"status": "no_data", "items": []})

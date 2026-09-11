@@ -138,3 +138,91 @@ async def test_invalid_response_shape_is_rejected() -> None:
         repository = SupabasePlaceRepository(_URL, _SECRET, client)
         with pytest.raises(SupabaseRepositoryError):
             await repository.get_active_place_details(["a"])
+
+
+@pytest.mark.asyncio
+async def test_무장애_정보는_요청할_때만_함께_읽는다() -> None:
+    """이 메서드를 부르는 세 곳 중 둘은 무장애 값을 읽지 않는다.
+
+    추천 카드 조립과 추천 후보 상세가 그 둘이다. 임베드를 항상 붙이면 두 경로가
+    쓰지도 않는 데이터를 매 요청마다 받아온다.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[_row("a")])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(_URL, _SECRET, client)
+        await repository.get_active_place_details(["a"])
+        await repository.get_active_place_details(["a"], include_barrier_free=True)
+
+    assert "place_barrier_free" not in seen[0].url.params["select"]
+    select = seen[1].url.params["select"]
+    assert "place_barrier_free(" in select
+    for column in (
+        "approach_route_raw",
+        "entrance_access_raw",
+        "elevator_raw",
+        "accessible_restroom_raw",
+        "wheelchair_rental_raw",
+        "braille_promotion_raw",
+        "disability_etc_raw",
+    ):
+        assert column in select
+
+
+@pytest.mark.asyncio
+async def test_임베드로_온_무장애_값이_행에_담긴다() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        row = _row("a")
+        row["place_barrier_free"] = {
+            "approach_route_raw": "출입구까지 턱이 없어 휠체어 접근 가능함",
+            "entrance_access_raw": "주출입구는 경사로가 있어 휠체어 접근 가능함",
+            "accessible_restroom_raw": "장애인 화장실 있음",
+            "wheelchair_rental_raw": "대여가능",
+        }
+        return httpx.Response(200, json=[row])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(_URL, _SECRET, client)
+        rows = await repository.get_active_place_details(
+            ["a"], include_barrier_free=True
+        )
+
+    detail = rows["a"]
+    assert detail.approach_route_raw == "출입구까지 턱이 없어 휠체어 접근 가능함"
+    assert detail.entrance_access_raw == "주출입구는 경사로가 있어 휠체어 접근 가능함"
+    assert detail.accessible_restroom_raw == "장애인 화장실 있음"
+    assert detail.wheelchair_rental_raw == "대여가능"
+    # 응답에 없던 필드는 None이다. 빈 문자열이나 기본값을 지어내지 않는다.
+    assert detail.elevator_raw is None
+    assert detail.nursing_room_raw is None
+
+
+@pytest.mark.asyncio
+async def test_무장애_행이_없는_장소는_전부_None이다() -> None:
+    """무장애 목록에 없는 장소는 place_barrier_free에 행이 없다(D-077).
+
+    PostgREST는 그 자리를 null로 돌려준다. 이 경우가 대부분이라(4개 구 실측
+    커버리지 19%) 여기서 터지면 INFO 상세 조회 전체가 멈춘다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        row = _row("a")
+        row["place_barrier_free"] = None
+        return httpx.Response(200, json=[row])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(_URL, _SECRET, client)
+        rows = await repository.get_active_place_details(
+            ["a"], include_barrier_free=True
+        )
+
+    detail = rows["a"]
+    assert detail.approach_route_raw is None
+    assert detail.accessible_restroom_raw is None
+    assert detail.disability_etc_raw is None
+    # 무장애 값과 무관한 필드는 그대로 채워진다.
+    assert detail.title == "장소 a"

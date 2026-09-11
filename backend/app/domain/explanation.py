@@ -5,7 +5,8 @@
 (distance_km/remaining_minutes/weather_condition/environment_type/
 concentration_level)으로 실제 수치가 들어간 한국어 문장을 조립한다. LLM을
 호출하지 않는 Rule 기반·결정적 구조라 동일 입력에는 항상 동일한 문장이 나온다.
-concentration은 2차 Scoring(D-040, rerank_with_concentration())에서만 등장한다.
+concentration은 2차 Scoring(D-040, rerank_with_concentration())에서만, co_visited는
+2차 Scoring(D-092, rerank_with_co_visited())에서만 등장한다.
 입력: `RecommendationEvidence` (`backend/app/domain/evidence.py`).
 출력: `tuple[str, ...]` (0~3개, Feature 점수가 임계값 이상인 것만 포함).
 호출 시점: 추천 파이프라인이 응답을 조립할 때 Evidence 계산 직후 호출한다.
@@ -20,6 +21,7 @@ from collections.abc import Callable, Mapping
 from app.concentration_policy import ConcentrationLevel
 from app.domain.evidence import FeatureContribution, RecommendationEvidence
 from app.domain.models import WeatherCondition
+from app.domain.travel_route import TravelMode
 from app.domain.weather_judgment import WeatherReason
 
 # 이 점수 이상인 Feature만 "특별히 강조할 이유"로 문장화한다.
@@ -44,8 +46,47 @@ def _format_distance(distance_km: float) -> str:
     return f"직선거리 약 {km_text}km"
 
 
+def _format_travel_duration(duration_seconds: int) -> str:
+    minutes = max(1, round(duration_seconds / 60))
+    hours, remainder = divmod(minutes, 60)
+    if hours > 0 and remainder > 0:
+        return f"{hours}시간 {remainder}분"
+    if hours > 0:
+        return f"{hours}시간"
+    return f"{minutes}분"
+
+
+# 실측 이동시간을 말할 때 쓰는 이동수단 표현. 여기 없는 수단은 시간을 말하지
+# 않고 직선거리로 답한다.
+_TRAVEL_MODE_PHRASES: dict[TravelMode, str] = {
+    TravelMode.WALKING: "걸어서",
+    TravelMode.DRIVING: "차로",
+    TravelMode.TRANSIT: "대중교통으로",
+}
+
+
 def _distance_sentence(evidence: RecommendationEvidence) -> str:
-    return f"현재 위치에서 {_format_distance(evidence.distance_km)}예요."
+    """실측 이동시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
+
+    거리 Feature 점수도 같은 기준으로 계산되므로(`scoring.py::_proximity_score()`),
+    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다. 기준점 **이름**도
+    마찬가지다 — 예전에는 기준점이 무엇이든 "현재 위치"라고 말해서, "경복궁 근처
+    카페"를 물으면 경복궁 기준 거리를 사용자 위치 기준인 것처럼 말했다(TP-109).
+
+    이동수단 문구는 실측한 수단으로만 쓴다. `_TRAVEL_MODE_PHRASES`에 없는
+    수단은 직선거리 문구로 돌아가므로, 자동차 실측을 "걸어서"라고 말하거나
+    도보 실측을 "차로"라고 말하는 일은 없다.
+
+    대중교통 문구는 D-118에서 채웠다. 그 전까지는 표에 없어서, 대중교통으로 잰
+    후보가 카드에는 "대중교통 18분"이라고 적히고 문장은 직선거리로 돌아가
+    같은 후보를 두 숫자로 말할 수 있었다.
+    """
+    origin = evidence.origin_name or "현재 위치"
+    phrase = _TRAVEL_MODE_PHRASES.get(evidence.travel_mode)
+    if evidence.travel_duration_seconds is not None and phrase is not None:
+        duration_text = _format_travel_duration(evidence.travel_duration_seconds)
+        return f"{origin}에서 {phrase} 약 {duration_text} 거리예요."
+    return f"{origin}에서 {_format_distance(evidence.distance_km)}예요."
 
 
 def _format_remaining_time(remaining_minutes: float) -> str:
@@ -146,12 +187,48 @@ def _concentration_sentence(evidence: RecommendationEvidence) -> str:
     return _CONCENTRATION_SENTENCES[evidence.concentration_level]
 
 
+# 근거 문장에 인용할 원문 길이 상한. 블로그 문장이 길어 그대로 넣으면 카드가
+# 밀린다 — 앞부분만 보여주고 잘렸음을 말줄임으로 표시한다.
+_TASTE_QUOTE_MAX_CHARS = 60
+
+
+def _taste_sentence(evidence: RecommendationEvidence) -> str:
+    """왜 취향에 맞는지를 근거 원문으로 설명한다.
+
+    점수만으로는 "이게 왜 내 취향이냐"에 답할 수 없다. 블로그·리뷰에서 실제로
+    뽑힌 문장을 인용해, 사용자가 판단할 재료를 준다. 원문이 없으면(검색은
+    됐지만 조각이 비어 있는 경우) 축만 언급한다.
+    """
+    text = evidence.taste_evidence_text
+    if not text:
+        return "말씀하신 분위기와 잘 맞는 곳이에요."
+    quote = text.strip().replace("\n", " ")
+    if len(quote) > _TASTE_QUOTE_MAX_CHARS:
+        quote = quote[:_TASTE_QUOTE_MAX_CHARS].rstrip() + "…"
+    return f"방문 후기에 이런 얘기가 있어요 — \"{quote}\""
+
+
+# co_visited Feature(D-092, RECOMMEND 2차 Scoring 전용)의 사실 문장.
+# concentration과 달리 방향(seek/avoid) 개념이 없어 4단계 구간 매핑이 필요
+# 없다 — "함께 방문된 이력이 있다/없다"만 있으면 되고, "누구와"가 핵심 정보라
+# 이름을 그대로 인용한다(co_visited_score 수치 자체는 상대 정규화값이라 그대로
+# 말해도 사용자에게 의미가 없다 — taste_score와 같은 이유).
+def _co_visited_sentence(evidence: RecommendationEvidence) -> str:
+    names = evidence.co_visited_place_names
+    if not names:
+        return "다른 추천 장소와 함께 방문객들이 자주 찾는 곳이에요."
+    joined = ", ".join(names[:2])
+    return f"{joined}와(과) 함께 방문객들이 자주 찾는 곳이에요."
+
+
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
     "environment": _environment_sentence,
     "remaining_operating_time": _remaining_time_sentence,
     "distance": _distance_sentence,
     "concentration": _concentration_sentence,
+    "taste": _taste_sentence,
+    "co_visited": _co_visited_sentence,
 }
 
 

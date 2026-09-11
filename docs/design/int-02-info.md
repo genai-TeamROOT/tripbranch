@@ -58,7 +58,7 @@ interface InfoQuery {
   question_type: QuestionType;
   specific_question: string | null;
 
-  // concentration 질의 전용 (question_type === "concentration"일 때만 사용)
+  // 방문일 기반 혼잡도 예측 질의 전용 (question_type === "concentration"일 때만 사용)
   visit_time: string | null;
 }
 ```
@@ -100,7 +100,13 @@ type QuestionType =
   | "event"            // 현재 전시/행사
   | "location_info"    // 위치/찾아가는 법
   | "general_info"     // 기타 일반 정보
-  | "concentration";   // 방문객 혼잡도 예측
+  | "concentration"    // 방문객 혼잡도 예측
+  | "realtime_commercial" // 실시간 지역·업종 상권 활동
+  | "realtime_parking"    // 실시간 주변 주차장
+  | "realtime_public_parking" // 공영/시영주차장 실시간 잔여 현황
+  | "realtime_subway"     // 실시간 지하철 도착
+  | "realtime_bus"        // 실시간 주변 버스정류장
+  | "realtime_event";     // 실시간 지역 행사
 ```
 
 ### 상세 정의
@@ -109,12 +115,18 @@ type QuestionType =
 |---------------|------|-----------|----------|
 | `operating_hours` | 운영시간, 휴무일, 현재 영업 여부 | "오늘 열어?", "몇 시까지?", "월요일 쉬어?" | detailIntro2 (유형별 필드) |
 | `fee` | 입장료, 이용료, 무료 여부 | "입장료 얼마?", "무료야?", "어른 요금?" | detailIntro2 (유형별 필드) |
-| `parking` | 주차 가능 여부, 주차 요금 | "주차 되나요?", "주차비 얼마?" | detailIntro2 (유형별 필드) |
+| `parking` | 특정 장소의 주차 가능 여부, 주차 요금 | "주차 되나요?", "주차비 얼마?" | detailIntro2 (유형별 필드). 관광 DB에 해당 장소 또는 주차 필드가 없으면, 확정한 좌표 기준 가까운 공영주차장의 실시간 잔여 면수로 대체 안내 |
 | `facility` | 편의시설, 접근성 | "화장실 있어?", "유모차 가능?", "휠체어?" | detailIntro2 (유형별 필드) |
 | `event` | 현재 진행 중인 전시/행사/프로그램 | "지금 전시 뭐 해?", "행사 있어?" | searchFestival2 + detailCommon2 |
 | `location_info` | 위치, 주소, 찾아가는 방법 | "어디에 있어?", "주소가 뭐야?", "어떻게 가?" | detailCommon2 (addr1, mapx, mapy) |
 | `general_info` | 장소 개요, 특징, 일반 설명 | "어떤 곳이야?", "뭐 하는 곳이야?" | detailCommon2 (overview) |
 | `concentration` | 특정 장소/지역의 방문객 혼잡도 예측 | "사람 많아?", "붐빌까?", "혼잡해?" | get_concentration (집중률 API). 상세는 [concentration-conditions.md §3](./concentration-conditions.md#3-info-확장--question_type-concentration) 참고 |
+| `realtime_commercial` | 특정 업종 주변의 현재 상권 활동과 인근 인구 혼잡도 예측 | "용리단길 카페 사람 많아?", "광장시장 한식 붐벼?" | 서울시 실시간 도시데이터(`citydata`). 개별 매장 정보가 아니라 가까운 서울시 제공 상권의 요청 업종 카드 소비 활동을 안내하고, 같은 지역의 향후 12시간 인구 혼잡도 예측을 함께 제공 |
+| `realtime_parking` | 주변 주차장의 현재 주차 대수·총면수 | "지금 경복궁 주변 주차 자리 있어?" | 서울시 `PRK_STTS`. 실시간 갱신 값이 없으면 총면수·유료 여부만 안내 |
+| `realtime_public_parking` | 공영/시영주차장의 최신 주차 대수·잔여 면수 | "경복궁 근처 공영주차장 자리 있어?" | 서울시 `GetParkingInfo`. 해당 구의 공영주차장을 조회하며, 최근 20분 안에 갱신된 수치(`PRK_STTS_YN=1`)만 실시간 값으로 표시한다. 주소 좌표는 별도 카탈로그에서 보강해 근처 순으로 정렬한다 |
+| `realtime_subway` | 주변 지하철 도착 예정 | "지금 종로3가역 지하철 언제 와?" | 서울시 `SUB_STTS.SUB_DETAIL` |
+| `realtime_bus` | 주변 버스정류장 | "지금 경복궁 근처 버스정류장 어디야?" | 서울시 `BUS_STN_STTS`. 도착시간은 별도 API 연동 전까지 범위 밖 |
+| `realtime_event` | 현재 지역 행사 | "오늘 인사동 근처 행사 있어?" | 서울시 `EVENT_STTS` |
 
 ---
 
@@ -176,6 +188,7 @@ searchKeyword2 결과:
 | `event` | searchFestival2 | detailCommon2 |
 | `location_info` | detailCommon2 | — |
 | `general_info` | detailCommon2 | — |
+| `realtime_commercial` | Naver Local Search로 대상 매장 좌표 해석 | 서울시 실시간 상권현황(`citydata_cmrcl`) 1회 |
 
 ### detailIntro2 유형별 필드 매핑
 
@@ -394,7 +407,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | "경복궁이랑 창덕궁 중 어디가 좋아?" | COMPARE | 비교 요청 |
 | "경복궁 오늘 열어? 안 열면 다른 곳" | INFO (우선) | 복합 입력 → 첫 번째 의도 처리 후 결과에 따라 RECOMMEND 유도 |
 | "이번 주말 창덕궁 사람 많을까?" | INFO | 특정 장소의 방문객 혼잡도 예측 질문 (`question_type=concentration`) |
-| "인사동 카페 사람 많아?" | INFO | 혼잡도 질문이나, 카페 자체는 집중률 데이터가 없어 인근 관광지로 대체 조회 ([concentration-conditions.md §3.3](./concentration-conditions.md#33-목적지-인근-관광지-대체-조회-근접치-fallback)) |
+| "인사동 카페 사람 많아?" | INFO | 현재 카페 상권 질문이므로 `question_type=realtime_commercial`. 개별 카페가 아닌 가까운 서울시 제공 상권의 카페 업종 활동으로 안내 |
 
 ---
 
@@ -407,7 +420,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 - 휴게시간 (런치 브레이크 등)
 - 하루 여러 운영 구간
 - 자정을 넘기는 운영시간
-- 실시간 혼잡도 (예측치 기반 `question_type=concentration`은 지원 — [concentration-conditions.md](./concentration-conditions.md) 참고. 여기서 제외하는 건 "지금 실시간" 값만 해당)
+- 개별 매장 단위 실시간 혼잡도 (카페·커피 업종은 `question_type=realtime_commercial`로 가까운 서울시 제공 상권의 지역·업종 활동을 안내할 수 있으나, 매장 자체의 인원·대기열은 제공하지 않음)
 - 예약 가능 여부
 - 리뷰/평점 정보
 
@@ -428,5 +441,8 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | 버전 | 날짜 | 변경 내용 |
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 |
+| v1.4 | 2026-08-20 | `question_type=realtime_commercial` 추가. 카페·커피 현재 혼잡 질문은 서울시 실시간 상권현황의 가까운 제공 상권·업종 활동으로 대체 안내하며, 개별 매장 데이터와 구분 |
+| v1.5 | 2026-08-20 | 현재 혼잡 질문은 위치 해석 뒤 Naver 업종이 카페·커피·제과·패스트푸드면 `realtime_commercial`로 재분기. 서울시 `citydata` 한 번의 조회로 상권 활동 스냅샷과 향후 12시간 인구 혼잡도 예측을 함께 제공 |
+| v1.6 | 2026-08-20 | 서울시 `citydata`의 전 업종 상권 활동과 `PRK_STTS`·`SUB_STTS`·`BUS_STN_STTS`·`EVENT_STTS`를 INFO 실시간 question_type으로 확장. 버스 도착시간은 제공 객체에 없으므로 정류장 안내까지만 지원 |
 | v0.2 | 2026-07-23 | 지시어("첫 번째" 등) 해석이 get_session_context의 shown_place_ids 기준임을 명시(7절) |
 | v0.3 | 2026-07-29 | `question_type=concentration`과 `visit_time` 필드 추가(3·4·6절), LLM 추출 예시(13절)·경계 사례(14절) 반영, 15절 "실시간 혼잡도" 제외 문구를 예측치 지원 범위와 구분되게 명확화. 상세 설계는 concentration-conditions.md |

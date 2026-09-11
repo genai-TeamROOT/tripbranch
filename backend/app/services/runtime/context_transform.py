@@ -36,6 +36,7 @@ def to_agent_context_request(
     conditions: UserConditions,
     gps_location: str | None = None,
     excluded_place_ids: list[str] | None = None,
+    resolved_search_center: Coordinates | None = None,
 ) -> AgentContextRequest:
     """A의 UserConditions(app.schemas)를 C의 AgentContextRequest로 변환한다.
 
@@ -56,6 +57,11 @@ def to_agent_context_request(
     `excluded_place_ids`는 B가 계산한 소진분(노출분 ∪ 거절분)이다. D에 넘기는 것과
     같은 목록을 C에도 넘겨야 "다른 곳 보여줘"가 성립한다 — C가 모르면 같은 앞쪽
     후보를 다시 가져오고 D가 그걸 전부 걸러 0건이 된다.
+
+    `resolved_search_center`는 같은 턴 안의 보충 조회에서만 채운다. 첫 조회가 확정한
+    기준점을 그대로 넘기면 C가 위치 해석·날씨·공휴일을 건너뛰고 장소만 다시 준다.
+    보충 배치에서는 그 셋의 결과를 어차피 버리므로(_merge_recommendation_context_places)
+    계산하지 않는 것뿐이고, 동작은 달라지지 않는다.
     """
 
     known_fields = ContextUserConditions.model_fields.keys()
@@ -69,6 +75,7 @@ def to_agent_context_request(
         conditions=context_conditions,
         gps_location=_to_coordinates(gps_location),
         excluded_place_ids=list(excluded_place_ids or []),
+        resolved_search_center=resolved_search_center,
     )
 
 

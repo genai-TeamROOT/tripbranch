@@ -43,7 +43,7 @@ def _multi(name: str, *ops: str) -> FieldSpec:
 
 
 # P0-1 확정(07-24, agent-state-contract-v1.md 1216·1265행 참고):
-# conditions-schema.md v0.3 4절 기준. 15개 필드 모두 Remove를 허용한다.
+# conditions-schema.md v0.3 4절 기준. 모든 필드가 Remove를 허용한다.
 # v0.3에서 current_location의 필수 지위가 api_context.gps_location으로 이관되었다.
 FIELD_SPECS: dict[str, FieldSpec] = {
     # 위치
@@ -63,6 +63,7 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     # 이동
     "transport":            _single("transport", str, OP_UPDATE, OP_REMOVE),
     "max_travel_time":      _single("max_travel_time", int, OP_UPDATE, OP_REMOVE),
+    "travel_origin":        _single("travel_origin", str, OP_UPDATE, OP_REMOVE),
 
     # 시간
     "time_available":       _single("time_available", int, OP_UPDATE, OP_REMOVE),
@@ -72,9 +73,18 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     "companion":            _single("companion", str, OP_UPDATE, OP_REMOVE),
     "budget":               _single("budget", str, OP_UPDATE, OP_REMOVE),
 
+    # 취향 — 벡터 검색 질의로 쓰는 자유 문장. 리스트가 아닌 이유는 여러 개를
+    # 합치면 임베딩이 뭉개지기 때문이다(한 문장 = 한 질의). special_requirements와
+    # 분리한 이유는 그 필드가 "기타 전부"를 받아 일정·교통 조건이 섞이기 때문이다.
+    "taste_query":          _single("taste_query", str, OP_UPDATE, OP_REMOVE),
+
     # 태그
     "exclude_tags":         _multi("exclude_tags", OP_ADD, OP_REMOVE),
     "special_requirements": _multi("special_requirements", OP_ADD, OP_REMOVE),
+
+    # 무장애 요구(TP-207). exclude_tags와 동일 스펙 — 여럿이면 AND로 좁히는 목록이라
+    # Update가 아니라 Add/Remove로 부분 변경한다.
+    "accessibility_needs":  _multi("accessibility_needs", OP_ADD, OP_REMOVE),
 }
 
 # api_context 필드. operations 대상이 아니며 별도 경로로 갱신한다.
@@ -85,6 +95,8 @@ API_CONTEXT_FIELDS = frozenset({
     "api_weather",
     "gps_location_updated_at",
     "api_weather_updated_at",
+    # PR #188: 위치 재확인 UX 전용, gps_location_updated_at(기술적 TTL)과 별개.
+    "gps_location_confirmed_at",
 })
 
 

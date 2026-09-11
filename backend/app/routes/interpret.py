@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.schemas import (
     InterpretRequest,
     InterpretResponse,
@@ -21,19 +22,21 @@ from app.services.interpret import interpret_user_input
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import transform
 from app.state import service as state_service
-from app.state.schema import now_kst
 
 router = APIRouter(tags=["interpret"])
 
 
 @router.post("/interpret", response_model=InterpretResponse)
-async def interpret(request: InterpretRequest) -> InterpretResponse:
+async def interpret(
+    request: InterpretRequest, principal: OptionalPrincipal
+) -> InterpretResponse:
     # 1) 세션 컨텍스트 확보 + GPS 최신화
     #    GPS 형식이 잘못되면 이번 턴만 건너뛴다. 대화 자체는 계속되어야 하고,
     #    사용자가 위치를 직접 말하면 user_conditions.current_location으로 확보된다.
     context = await ensure_current_context(
         request.session_id,
         _valid_location(request.device_location),
+        principal=principal,
     )
 
     # 2) 세션이 있으면 B가 조건·이력의 단일 기준이다. (계약 6.2절)
@@ -57,22 +60,15 @@ async def interpret(request: InterpretRequest) -> InterpretResponse:
     apply_request = transform(llm_output, context, request.user_input)
 
     # 5) State 적용 및 run_id 발급
-    state_result = state_service.apply(apply_request)
+    state_result = state_service.apply(apply_request, principal=principal)
 
-    # 6) 최초 턴이면 방금 생성된 세션에 GPS를 심는다.
-    #    ensure_current_context 는 세션을 만들 수 없어 GPS를 못 심는다.
-    valid_gps = _valid_location(request.device_location)
-    if state_result.session_created and valid_gps:
-        state_service.update_api_context(
-            state_service.UpdateApiContextRequest(
-                session_id=state_result.session_id,
-                gps_location=valid_gps,
-                gps_location_updated_at=now_kst(),
-            )
-        )
+    # 6) 최초 턴에 GPS를 심던 자리였다. 서버가 사용자 위치를 저장하지 않게 되면서
+    #    (state/store.py::for_persistence) 심어도 남지 않아 없앴다.
 
     # 7) 응답 조립
-    final_context = state_service.get_session_context(state_result.session_id)
+    final_context = state_service.get_session_context(
+        state_result.session_id, principal=principal
+    )
 
     return InterpretResponse(
         output=llm_output,

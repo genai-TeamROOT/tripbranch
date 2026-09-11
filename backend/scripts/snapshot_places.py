@@ -1,12 +1,12 @@
-"""TourAPI 종로구 장소 목록을 스냅샷으로 저장하고 이전 스냅샷과 대조한다.
+"""TourAPI 장소 목록을 구 단위로 스냅샷에 저장하고 같은 구의 이전 스냅샷과 대조한다.
 
 역할: DB 동기화 전에 "이번에 무엇이 바뀌는가"를 파일로 남긴다. 목록 조회는 여기서
 한 번만 수행하고, 저장한 스냅샷을 sync_places.py --from-snapshot이 재사용해 같은
 날 목록 API를 두 번 호출하지 않는다.
 입력: --baseline(이전 스냅샷 CSV). 생략하면 저장된 최신 스냅샷을 자동으로 쓴다.
 출력:
-  - supabase/data/places_api_snapshot_<오늘>.csv        (이번 조회 원본)
-  - supabase/data/places_reconciliation_<오늘>.csv      (added/removed/updated)
+  - supabase/data/places_api_snapshot_<지역>-<구>_<오늘>.csv   (이번 조회 원본)
+  - supabase/data/places_reconciliation_<지역>-<구>_<오늘>.csv (added/removed/updated)
 호출 시점: `python -m scripts.snapshot_places`로 수동 실행.
 
 DB는 건드리지 않는다 — 반영은 sync_places.py가 담당한다. 대조·스냅샷 로직 자체는
@@ -28,13 +28,14 @@ from app.services.place_snapshot import (
     COMPARED_COLUMNS,
     DATA_DIR,
     KST,
-    RECONCILIATION_PREFIX,
-    SNAPSHOT_PREFIX,
     build_reconciliation_rows,
     comparable_columns,
     fetch_place_rows,
     find_baseline,
     load_snapshot,
+    reconciliation_file_name,
+    snapshot_file_name,
+    snapshot_regions,
     write_reconciliation,
     write_snapshot,
 )
@@ -79,8 +80,13 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
 
     now = datetime.now(KST)
     current = await fetch_places(settings, area_code, district_code, now)
-    snapshot_path = args.output_dir / f"{SNAPSHOT_PREFIX}{now:%Y%m%d}.csv"
-    baseline_path = args.baseline or find_baseline(args.output_dir, exclude=snapshot_path)
+    snapshot_path = args.output_dir / snapshot_file_name(area_code, district_code, now)
+    baseline_path = args.baseline or find_baseline(
+        args.output_dir,
+        area_code=area_code,
+        district_code=district_code,
+        exclude=snapshot_path,
+    )
     write_snapshot(current, snapshot_path)
     print(f"스냅샷 {len(current)}건 저장: {snapshot_path}")
 
@@ -89,6 +95,16 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
         return 0
 
     baseline = load_snapshot(baseline_path)
+    # 기준 스냅샷이 정말 이 구의 것인지 내용으로 확인한다. 다른 구를 기준으로
+    # 잡으면 "전량 삭제 + 전량 신규"가 나오는데, 그 모양은 실제 대량 변경과
+    # 구분되지 않는다(2026-08-20 중구 사례).
+    regions = snapshot_regions(baseline)
+    if regions and regions != {(area_code, district_code)}:
+        found = ", ".join(sorted(f"{area}-{district}" for area, district in regions))
+        raise ValueError(
+            f"기준 스냅샷 {baseline_path.name}은 {found} 자료라 "
+            f"{area_code}-{district_code} 대조에 쓸 수 없습니다."
+        )
     baseline_columns = next(iter(baseline.values()), {}).keys()
     compared = comparable_columns(list(baseline_columns))
     skipped = [column for column in COMPARED_COLUMNS if column not in compared]
@@ -99,7 +115,9 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
             f"기준 스냅샷에 없는 열은 비교하지 않습니다: {', '.join(skipped)}"
         )
     rows = build_reconciliation_rows(baseline, current, compared)
-    reconciliation_path = args.output_dir / f"{RECONCILIATION_PREFIX}{now:%Y%m%d}.csv"
+    reconciliation_path = args.output_dir / reconciliation_file_name(
+        area_code, district_code, now
+    )
     write_reconciliation(
         rows,
         reconciliation_path,

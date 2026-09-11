@@ -12,10 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.errors import AppError
-from app.place_search_policy import (
-    PLACE_SEARCH_LDONG_DISTRICT_CODE,
-    PLACE_SEARCH_LDONG_REGION_CODE,
-)
+from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
 from app.providers.contracts import ProviderMetadata, ProviderStatus
 from app.providers.festival import FestivalEvent
 from app.providers.protocols import FestivalProvider
@@ -28,7 +25,9 @@ logger = logging.getLogger(__name__)
 class FestivalQuery:
     reference_date: date
     region_code: str = PLACE_SEARCH_LDONG_REGION_CODE
-    district_code: str = PLACE_SEARCH_LDONG_DISTRICT_CODE
+    # 구는 요청에 싣지 않고 응답으로 거른다(D-025). 서울 전체를 한 번에 받아
+    # 지원 구만 남기므로, 구가 늘어도 호출 수는 1회 그대로다.
+    district_code: str | None = None
 
 
 @dataclass(frozen=True)

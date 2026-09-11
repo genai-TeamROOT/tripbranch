@@ -10,6 +10,16 @@ const GEOLOCATION_OPTIONS: PositionOptions = {
   maximumAge: 60000,
 };
 
+interface BrowserLocationOptions {
+  /**
+   * 사용자가 "현재 위치 다시 가져오기"를 선택했을 때만 사용한다. 브라우저가
+   * 직전 캐시를 돌려주지 않도록 maximumAge를 0으로 낮춘다.
+   */
+  forceFresh?: boolean;
+  /** 오류 메시지를 어느 언어로 돌려줄지. 기본값은 한국어다. */
+  language?: "ko" | "en";
+}
+
 /**
  * 로컬 Vite 개발 서버에서만 쓸 수 있는 고정 좌표다. Codex 같은 자동화 브라우저는
  * macOS 위치 권한 팝업을 승인할 수 없는 경우가 있어, 명시적으로 설정했을 때만
@@ -36,25 +46,32 @@ function testDeviceLocation(): string | null {
   return `${latitude},${longitude}`;
 }
 
-function locationErrorMessage(error: GeolocationPositionError) {
+function locationErrorMessage(error: GeolocationPositionError, isEn: boolean) {
   if (error.code === error.TIMEOUT) {
-    return (
-      "위치 조회 시간이 초과됐어요. macOS 설정 > 개인정보 보호 및 보안 > 위치 서비스에서 " +
-      "브라우저 권한이 켜져 있는지 확인해주세요."
-    );
+    /* 전에는 macOS 설정 경로를 그대로 적었는데, 안드로이드·윈도우·iOS 사용자에게는
+       존재하지 않는 경로다(TP-250). 어디서 켜는지는 기기마다 다르므로 무엇을
+       확인해야 하는지만 말한다. */
+    return isEn
+      ? "We couldn't get your location. Please check the location permission in your browser."
+      : "위치를 확인하지 못했어요. 브라우저의 위치 권한을 확인해주세요.";
   }
   if (error.code === error.PERMISSION_DENIED) {
-    return "위치 권한이 필요해요. 브라우저 주소창의 위치 권한을 허용한 뒤 다시 시도해주세요.";
+    return isEn
+      ? "Location permission is required. Please allow location access in your browser's address bar and try again."
+      : "위치 권한이 필요해요. 브라우저 주소창의 위치 권한을 허용한 뒤 다시 시도해주세요.";
   }
-  return `위치를 가져오지 못했어요: ${error.message}`;
+  return isEn ? `Couldn't get your location: ${error.message}` : `위치를 가져오지 못했어요: ${error.message}`;
 }
 
-export function getBrowserDeviceLocation(): Promise<string> {
+export function getBrowserDeviceLocation(options: BrowserLocationOptions = {}): Promise<string> {
+  const isEn = options.language === "en";
   const testLocation = testDeviceLocation();
   if (testLocation) return Promise.resolve(testLocation);
 
   if (!("geolocation" in navigator)) {
-    return Promise.reject(new Error("이 브라우저는 위치 조회를 지원하지 않아요."));
+    return Promise.reject(
+      new Error(isEn ? "This browser doesn't support location lookup." : "이 브라우저는 위치 조회를 지원하지 않아요."),
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -63,8 +80,8 @@ export function getBrowserDeviceLocation(): Promise<string> {
         const { latitude, longitude } = position.coords;
         resolve(`${latitude},${longitude}`);
       },
-      (error) => reject(new Error(locationErrorMessage(error))),
-      GEOLOCATION_OPTIONS,
+      (error) => reject(new Error(locationErrorMessage(error, isEn))),
+      options.forceFresh ? { ...GEOLOCATION_OPTIONS, maximumAge: 0 } : GEOLOCATION_OPTIONS,
     );
   });
 }

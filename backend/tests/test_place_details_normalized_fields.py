@@ -204,12 +204,16 @@ class TestSupabaseProvider:
 
     @pytest.mark.asyncio
     async def test_썸네일이_실린다(self) -> None:
-        """카드에 쓸 이미지가 캐시 경로에서 PlaceDetails까지 오는지 본다."""
+        """카드에 쓸 이미지가 캐시 경로에서 PlaceDetails까지 오는지 본다.
+
+        firstimage2(작은 썸네일)보다 firstimage(원본 크기)를 우선한다
+        (2026-08-13, hybrid_place_details.py와 동일한 이유).
+        """
         provider = SupabasePlaceDetailsProvider(_Repository(_row()))
 
         details = (await provider.get_details("126508", "14")).data
 
-        assert details.thumbnail_url == "https://example.test/thumb.jpg"
+        assert details.thumbnail_url == "https://example.test/first.jpg"
 
     @pytest.mark.asyncio
     async def test_썸네일이_없으면_목록_이미지로_대체한다(self) -> None:

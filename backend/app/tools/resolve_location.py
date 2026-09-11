@@ -1,4 +1,4 @@
-"""사용자 위치 표현을 종로구 범위의 좌표로 해석하는 내부 Tool."""
+"""사용자 위치 표현을 지원 지역 안의 좌표로 해석하는 내부 Tool."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
 )
-from app.providers.geocoding import get_jongno_landmark_alias
+from app.providers.geocoding import get_landmark_alias
 from app.providers.protocols import GeocodingProvider, LocalSearchProvider
 from app.repositories.protocols import PlaceLocationRepository
-from app.service_area import is_within_service_area
+from app.service_area import is_within_service_area, supported_district_label
 from app.tools.contracts import ToolError, ToolStatus
 
 ResolveLocationStatus = ToolStatus
@@ -60,6 +60,41 @@ _SAME_PLACE_RADIUS_KM = 0.5
 # 섞여도 묶이고, 그러면 "첫 후보를 임의로 고르지 않는다"는 원칙이 깨진다(쌈지길 검색에서
 # 정답이 3번째였다). 실측한 표기는 4종이었다 — 지하철·전철·기차역·정차역.
 _TRANSIT_CATEGORY_MARKERS = ("지하철", "전철", "기차", "철도", "정차역")
+
+# 정확/첫토큰 일치가 다 실패했을 때만 쓰는 마지막 보정 단계. 오탈자·조사 한 글자
+# 차이만 흡수한다("성수 카페거리" vs 실제 "성수동카페거리", 동 삽입, 실측
+# 2026-08-26). 2는 안 된다 — "경복궁"↔"덕수궁"처럼 둘 다 3글자에 편집거리 2인
+# 서로 다른 실존 랜드마크가 있다.
+_EDIT_DISTANCE_LIMIT = 1
+# 2글자 질의는 이 단계를 아예 안 탄다 — "신촌"↔"신천"처럼 편집거리 1이 완전히
+# 다른 동네를 가리킬 수 있다.
+_MIN_QUERY_LEN_FOR_FUZZY_MATCH = 3
+
+# 역 이름 줄임말("교대", "홍대") 재검색용 접미사. "교대"를 그대로 지역 검색하면
+# 동명 대학·상호("서울교육대학교", "교대갈비집")에 밀려 역이 상위 5건에 아예
+# 안 잡힌다(실측, 2026-09-09) — "교대역"으로 검색해야 잡힌다. 이미 "역"으로
+# 끝나는 질의("안국역")에는 다시 붙이지 않는다("안국역역" 방지).
+_STATION_SUFFIX = "역"
+
+
+def _bounded_edit_distance(a: str, b: str, *, limit: int) -> int:
+    """길이 차가 limit을 넘으면 즉시 limit+1(무조건 탈락)을 반환해 DP를 아낀다.
+
+    이름이 최대 20자 안팎이라 전체 Levenshtein DP 자체도 비용이 미미하다 — 밴드
+    매트릭스 같은 정교화는 이 규모에서 실익이 없다.
+    """
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous_row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current_row = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            current_row[j] = min(
+                previous_row[j] + 1, current_row[j - 1] + 1, previous_row[j - 1] + cost
+            )
+        previous_row = current_row
+    return previous_row[-1]
 
 
 def strip_location_modifiers(value: str) -> str:
@@ -107,10 +142,26 @@ def _select_local_search_candidate(
     """
     normalized_query = _normalize_name(requested_query)
 
-    # 1) 정확 일치. 동명 후보가 2건 이상이면 첫 토큰으로도 못 좁히므로 바로 재질문한다.
+    # 1) 정확 일치. 동명 후보가 여러 건이면 그중 위치 후보로 쓸 수 있는 것만 남겨 본다.
+    #
+    # **이름이 같다고 다 같은 성격의 후보는 아니다.** "운현궁"을 지역 검색에 넣으면 이름이
+    # 완전히 같은 후보가 3건 나오는데(2026-08-27 실측) 중식당·한식당·궁궐이고, 그중 위치
+    # 후보로 쓸 수 있는 것은 궁궐 하나뿐이다. 식당·상점은 위치 후보로 부적절하다는 규칙은
+    # 이미 있었지만(`_is_location_pickable`) 되묻기 목록을 만들 때만 쓰였고, 여기 고르는
+    # 단계에서는 안 쓰여서 "못 좁혔다"로 끝났다.
+    #
+    # 그 결과가 **끝나지 않는 되묻기**였다. 되묻기 버튼에는 걸러낸 "운현궁" 하나만 실리고,
+    # 사용자가 그걸 고르면 같은 이름으로 같은 조회를 다시 돌아 같은 3건이 나온다 — 답이
+    # 질문과 같은 문자열이라 입력이 하나도 바뀌지 않는다. 이름이 같은 것들끼리의 모호함은
+    # 이름을 되물어 풀 수 없다.
+    #
+    # 걸러낸 뒤에도 2건 이상이면 그때는 진짜로 못 고르는 것이라 그대로 재질문한다.
     exact = tuple(item for item in candidates if _normalize_name(item.name) == normalized_query)
     if exact:
-        return exact[0] if len(exact) == 1 else None
+        if len(exact) == 1:
+            return exact[0]
+        pickable_exact = tuple(item for item in exact if _is_location_pickable(item))
+        return pickable_exact[0] if len(pickable_exact) == 1 else None
 
     # 2) 첫 토큰 일치. "안국역 3호선"은 잡고 "안국역사거리"는 배제하기 위해
     #    startswith가 아니라 토큰 단위로 비교한다.
@@ -122,6 +173,23 @@ def _select_local_search_candidate(
     #    묶으므로, 상호가 하나라도 섞이면 여기서 걸러져 재질문으로 남는다.
     if len(head_matched) > 1 and _is_same_transit_place(head_matched):
         return head_matched[0]
+
+    # 4) 편집 거리 근사 일치. 역/명소류로만 적용해 상호를 엉뚱하게 정답으로
+    #    추정하지 않는다 — 식당·상점까지 넓히면 이 파일의 "부분 일치로 넓히지
+    #    않는다" 원칙과 충돌한다("안국역"≠"안국역사거리"는 그 후보가 기본
+    #    카테고리(음식점)라 여기서도 그대로 안전하다).
+    if len(normalized_query) >= _MIN_QUERY_LEN_FOR_FUZZY_MATCH:
+        near = tuple(
+            item
+            for item in candidates
+            if _is_location_pickable(item)
+            and _bounded_edit_distance(
+                _normalize_name(item.name), normalized_query, limit=_EDIT_DISTANCE_LIMIT
+            )
+            <= _EDIT_DISTANCE_LIMIT
+        )
+        if len(near) == 1:
+            return near[0]
 
     return None
 
@@ -165,9 +233,7 @@ def _is_same_transit_place(places: tuple[LocalSearchPlace, ...]) -> bool:
     if not all(_is_transit_place(place) for place in places):
         return False
     located = [
-        place
-        for place in places
-        if place.latitude is not None and place.longitude is not None
+        place for place in places if place.latitude is not None and place.longitude is not None
     ]
     if len(located) != len(places):
         # 좌표가 없으면 거리를 확인할 수 없다. 묶지 않고 재질문한다.
@@ -193,6 +259,18 @@ class ResolutionConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+class LocationSource(StrEnum):
+    """이 좌표가 어디서 왔는지. 판정이 아니라 사실이다(D-051).
+
+    기준점을 사용자에게 뭐라고 부를지는 D가 이 값으로 정한다 — QUERY면 사용자가
+    말한 이름을 쓰고, DEVICE_GPS면 "현재 위치"라고 한다. C는 출처만 싣고 문구를
+    고르지 않는다.
+    """
+
+    QUERY = "query"
+    DEVICE_GPS = "device_gps"
+
+
 class LocationPurpose(StrEnum):
     """이 해석이 무엇에 쓰이는지. 사다리 순서를 가른다.
 
@@ -205,13 +283,30 @@ class LocationPurpose(StrEnum):
       한옥마을 좌표의 최근접은 가회민화박물관(27m)이고 정작 북촌한옥마을은
       293m로 밀린다(D-043 실측).
 
-    같은 사다리를 쓰면 SEARCH_CENTER가 필요하지도 않은 저장소 조회를 먼저
-    치른다. 종로구 코퍼스에 없는 이름(역명·상호·지명)은 그 조회가 반드시
-    실패하므로 왕복만 버린다("안국역" 기준 `places` 4회).
+    세 목적 모두 저장소를 먼저 본다. 한때 SEARCH_CENTER만 건너뛰었는데(cc3da0ed),
+    코퍼스에 없는 이름은 조회가 반드시 실패하는 데다 필터 사다리를 한 칸씩 던지느라
+    `places`를 4회 버렸기 때문이다. 필터를 or= 하나로 합쳐 그 비용이 제목 1회 +
+    별칭 1회로 줄면서 전제가 사라졌다. REALTIME_CITYDATA만 예외다(아래).
+
+    저장소 우선순위와 "지원 25개 구(D-107, 서울 전역) 밖이면 막는다"는 지역 제한은
+    원래 서로 다른 이유로 묶인 게 아니다 — REALTIME_CITYDATA가 둘 다 건너뛴 건
+    "권역명은 코퍼스 밖이라 저장소 조회가 헛돈다"는 비용 논리 하나였다. 그런데
+    명동성당처럼 **코퍼스 안에 있는 장소**가 이 purpose로 잘못 보내지면(TP-171,
+    오늘 날짜 혼잡 질문) 저장소를 못 봐 위치 해석이 통째로 실패한다. 그래서
+    `ResolveLocationQuery`에 `enforce_service_area` 명시 오버라이드를 따로 뒀다 —
+    저장소는 보되(PLACE_IDENTITY) 지역 제한만 끄고 싶은 경우(서울대공원처럼 지원
+    구 밖의 실시간 인구 허브)를 표현하기 위해서다. 아래 REALTIME_CITYDATA는 여전히
+    "저장소도 건너뛴다"는 기존 동작 그대로다 — 이번 변경은 그 경로를 손대지 않는다.
     """
 
     SEARCH_CENTER = "search_center"
     PLACE_IDENTITY = "place_identity"
+    # 서울시 실시간 상권은 TourAPI 코퍼스 밖의 서울 주요 지역도 제공한다. 이 목적은
+    # 상호 좌표만 찾고, 이후 C가 서울시 제공 지역 반경을 따로 판정한다. 추천의 지원
+    # 지역 제한을 여기서 재사용하면 용리단길 같은 정상 상권 질문이 위치 단계에서
+    # 막힌다. 저장소 조회도 건너뛴다 — 권역명("광화문·덕수궁")이나 코퍼스 밖 지명이
+    # 대상이라 실패가 정상이다.
+    REALTIME_CITYDATA = "realtime_citydata"
 
 
 @dataclass(frozen=True)
@@ -219,6 +314,14 @@ class ResolveLocationQuery:
     location_query: str
     # 기존 호출부와 CLI가 그대로 동작하도록 정체성 확정을 기본으로 둔다.
     purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY
+    # None이면 purpose가 정하는 기본값을 그대로 쓴다(REALTIME_CITYDATA만 지역 제한을
+    # 건너뜀). 명시하면 그 값이 purpose와 무관하게 우선한다 — TP-171: 오늘 날짜
+    # 혼잡 질문은 저장소는 보되(PLACE_IDENTITY) 지역 제한만 끄고 싶어서 추가했다.
+    enforce_service_area: bool | None = None
+    # "서울특별시 종로구"처럼 행정구역 자체를 좌표로 풀 때는 지역 검색이 주변
+    # 명소·역 후보를 여럿 돌려 불필요한 되묻기를 만들 수 있다. 이 호출만
+    # Geocoding으로 바로 보내며, 기본값은 기존 위치 해석 사다리를 유지한다.
+    skip_local_search: bool = False
 
     def __post_init__(self) -> None:
         normalized = self.location_query.strip()
@@ -237,8 +340,18 @@ class ResolvedLocation:
     longitude: float
     resolution_method: ResolutionMethod
     confidence: ResolutionConfidence
+    # 이 Tool은 언제나 사용자가 말한 문자열을 푼다. 기기 GPS로 만든 결과는 Tool을
+    # 거치지 않고 service.py::_gps_location_result()가 직접 만들며 거기서만 뒤집는다.
+    source: LocationSource = LocationSource.QUERY
     place_id: str | None = None
     address: str | None = None
+    # Naver Local Search의 업종. INFO 현재 혼잡 질문에서 관광지 예측과 상권 활동을
+    # 구분할 때만 사용하며, 없으면 기존 위치 해석 동작을 유지한다.
+    place_category: str | None = None
+    # 저장소에서 푼 장소의 구(lDongSignguCd, 종로구 "110"). 집중률 조회가 구를
+    # 지정해야 해서 함께 나른다. 저장소를 거치지 않은 해석(지오코딩·GPS)에는
+    # 값이 없는데, 그 경로는 concentration_name도 없어 집중률을 묻지 않는다.
+    district_code: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
     # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도한다. 비어 있으면
@@ -273,22 +386,39 @@ class ResolveLocationTool:
         # 수식어를 먼저 떼고 조회한다. 주소 판별도 정리된 값으로 해야 "인사동길 44
         # 근처"가 주소로 잡힌다.
         requested_query = strip_location_modifiers(query.location_query.strip())
+        enforce_service_area = (
+            query.enforce_service_area
+            if query.enforce_service_area is not None
+            else query.purpose is not LocationPurpose.REALTIME_CITYDATA
+        )
         if is_address_query(requested_query):
-            return await self._resolve_address(requested_query)
+            return await self._resolve_address(
+                requested_query, enforce_service_area=enforce_service_area
+            )
 
-        # 검색 중심점은 좌표만 필요하다. 저장소 조회는 정체성 확정용이라 건너뛴다.
-        if query.purpose is LocationPurpose.PLACE_IDENTITY:
+        # 검색 중심점도 저장소를 먼저 본다. 예전에는 "코퍼스에 없는 이름은
+        # 그 조회가 반드시 실패하므로 왕복만 버린다"는 이유로 건너뛰었는데, 지원
+        # 지역이 네 구로 늘면서 그 전제가 깨졌다 — "명동성당 근처"처럼 저장소에
+        # 있는 장소를 검색 중심으로 쓰는 요청이 실제로 들어온다. 지역 검색은 그런
+        # 이름을 못 좁혀 되묻기로 끝난다("르빵 명동성당점" 같은 주변 상호가 섞인다).
+        #
+        # 실시간 도시데이터는 그대로 건너뛴다. 그쪽은 코퍼스 밖의 서울 주요
+        # 지역을 대상으로 해서 저장소 조회가 실패하는 게 정상이다.
+        if query.purpose is not LocationPurpose.REALTIME_CITYDATA:
             stored_result = await self._lookup_stored_place(requested_query)
             if stored_result is not None:
                 return stored_result
 
-        local_search_result = await self._lookup_local_search(
-            requested_query, purpose=query.purpose
-        )
-        if local_search_result is not None:
-            return local_search_result
+        if not query.skip_local_search:
+            local_search_result = await self._lookup_local_search(
+                requested_query,
+                purpose=query.purpose,
+                enforce_service_area=enforce_service_area,
+            )
+            if local_search_result is not None:
+                return local_search_result
 
-        alias = get_jongno_landmark_alias(requested_query)
+        alias = get_landmark_alias(requested_query)
 
         if alias:
             first = await self._lookup(alias)
@@ -306,6 +436,7 @@ class ResolveLocationTool:
                     method=ResolutionMethod.FALLBACK,
                     warnings=("fallback_used",),
                     provider_metadata=(fallback_metadata,),
+                    enforce_service_area=enforce_service_area,
                 )
             first_data, first_metadata = first
             return self._success_or_policy_result(
@@ -314,6 +445,7 @@ class ResolveLocationTool:
                 provider_query=alias,
                 method=ResolutionMethod.ALIAS,
                 provider_metadata=(first_metadata,),
+                enforce_service_area=enforce_service_area,
             )
 
         direct = await self._lookup(requested_query, use_alias=False)
@@ -326,9 +458,12 @@ class ResolveLocationTool:
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
             provider_metadata=(direct_metadata,),
+            enforce_service_area=enforce_service_area,
         )
 
-    async def _resolve_address(self, requested_query: str) -> ResolveLocationResult:
+    async def _resolve_address(
+        self, requested_query: str, *, enforce_service_area: bool = True
+    ) -> ResolveLocationResult:
         """주소는 DB·지역 검색을 건너뛰고 Geocoding으로 바로 해석한다."""
         direct = await self._lookup(requested_query, use_alias=False)
         if isinstance(direct, ResolveLocationResult):
@@ -340,6 +475,7 @@ class ResolveLocationTool:
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
             provider_metadata=(direct_metadata,),
+            enforce_service_area=enforce_service_area,
         )
 
     async def _lookup_local_search(
@@ -347,6 +483,7 @@ class ResolveLocationTool:
         requested_query: str,
         *,
         purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY,
+        enforce_service_area: bool = True,
     ) -> ResolveLocationResult | None:
         """DB에 없는 상호명은 지역 검색으로 좌표를 보완한다."""
         if self._local_search_provider is None:
@@ -360,12 +497,21 @@ class ResolveLocationTool:
             item for item in result.data if item.latitude is not None and item.longitude is not None
         )
         if not candidates:
-            return None
+            return await self._lookup_local_search_as_station(
+                requested_query, purpose=purpose, enforce_service_area=enforce_service_area
+            )
         selected = _select_local_search_candidate(candidates, requested_query)
         if selected is None:
+            # 정확히 같은 이름의 후보가 있으면(동명이인, 예: "쌈지길" 2건) 이건
+            # 실제로 그 이름의 장소를 찾은 것이다 — Geocoding은 상호명을 인식하지
+            # 못하므로(docs/api-samples.md) 폴백해봐야 소용없고, 어느 쪽인지
+            # 되묻는 게 맞다. 아래 "역/명소 후보 없음→ Geocoding 폴백"은 이런
+            # 정확 일치가 전혀 없을 때만 적용한다.
+            normalized = _normalize_name(requested_query)
+            has_exact_match = any(_normalize_name(item.name) == normalized for item in candidates)
             # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
-            # "부산 해운대"에 "종로구 안에서 어느 장소인지" 되묻는 일을 막는다.
-            if not any(
+            # "부산 해운대"에 "지원 구 안에서 어느 장소인지" 되묻는 일을 막는다.
+            if enforce_service_area and not any(
                 is_within_service_area(item.latitude, item.longitude)
                 for item in candidates
                 if item.latitude is not None and item.longitude is not None
@@ -386,32 +532,160 @@ class ResolveLocationTool:
                 and is_within_service_area(item.latitude, item.longitude)
             ]
             # 지하철역/명소류로만 좁힌다. 식당·상점은 위치 후보로 부적절하니 안
-            # 좁혀진 전체로 폴백하지 않는다 — 여기서 비어 있으면(전부 식당·상점뿐)
-            # agent_runtime.py가 A2 종로구 대표 스팟 고정 버튼으로 대신한다
-            # (실사용 피드백, 2026-08-13: "그냥 지하철역으로만 가자").
+            # 좁혀진 전체로 폴백하지 않는다(실사용 피드백, 2026-08-13: "그냥
+            # 지하철역으로만 가자").
             names_source = [item for item in in_area if _is_location_pickable(item)]
-            return self._error_result(
-                status=ResolveLocationStatus.NO_DATA,
-                code="no_data",
-                cause="ambiguous_location",
-                retryable=False,
-                details={
-                    "reason": "ambiguous_location",
-                    "candidate_names": _join_candidate_names(
-                        item.name for item in names_source
-                    ),
-                },
-                provider_metadata=(result.metadata,),
-            )
+            # 되묻기에 실을 후보를 여기서 먼저 정한다.
+            #
+            # names_source는 지하철역/명소로 좁힌 목록이라 비어 있을 수 있다 — 동명 후보가
+            # 전부 식당·상점인 경우(예: "쌈지길" 2건, has_exact_match만 True)나, "강서구"처럼
+            # 애초에 그 갈래가 아닌 지명이다. 그때는 전체 후보로 넓힌다.
+            #
+            # **아래 방어와 같은 목록을 본다.** 전에는 방어가 names_source만 보고 되묻기는
+            # 넓힌 목록으로 만들어서, 좁은 쪽이 0개인데 넓은 쪽은 1개인 지명이 방어를 그냥
+            # 지나쳤다 — "강서구"가 그랬다(2026-09-09). 같은 판단을 서로 다른 목록으로 하면
+            # 언제든 다시 어긋난다.
+            pickable_candidates = names_source or list(candidates)
+            # **답이 질문과 같아지는 되묻기는 만들지 않는다.** 후보가 하나뿐이고 그 이름이
+            # 방금 물어본 이름과 똑같다면, 사용자가 그 버튼을 눌러도 같은 문자열로 같은
+            # 조회가 다시 돌아 같은 되묻기가 나온다 — 입력이 하나도 바뀌지 않으므로 영영
+            # 끝나지 않는다(2026-08-27 "운현궁 → 공영주차장" 흐름에서 실제로 그랬다).
+            #
+            # **후보 이름이 질의와 다르면 그대로 되묻는다.** 예를 들어 "종각역"에 후보가
+            # "종각역 1호선" 하나뿐이면, 그 버튼을 누른 답은 질의와 달라서 다음 턴에
+            # 정확 일치로 풀린다. 그런 되묻기는 한 번 더 확인받는 값어치가 있고, 첫 후보를
+            # 임의로 고르지 않는다는 이 파일의 원칙도 지켜진다.
+            #
+            # 넓힌 목록에서 고른 후보라도 지원 구 밖이면 아래 공통 성공 경로의
+            # enforce_service_area 검사가 걸러낸다 — 여기서 다시 보지 않는 이유다.
+            if (
+                len(pickable_candidates) == 1
+                and _normalize_name(pickable_candidates[0].name) == normalized
+            ):
+                # 아래 공통 성공 경로로 흘려보낸다 — 지원 구 검사와 저장소 재조회를
+                # 여기서 다시 구현하지 않기 위해서다.
+                selected = pickable_candidates[0]
+            elif not names_source and not has_exact_match:
+                # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 — 두 가지
+                # 원인이 있다. (a) "성수동"처럼 동 이름이 지역 검색에서 카페·식당
+                # 상호명으로만 잡힌 경우(실측, 2026-08-26), (b) "교대"처럼 역
+                # 줄임말이 동명 대학·상호에 밀려 이 지역 검색 자체에 역이 후보로
+                # 아예 안 잡힌 경우(실측, 2026-09-09). 먼저 (b)를 "역"을 붙인
+                # 재검색으로 풀어보고, 그래도 안 풀리면 None을 돌려줘 execute()의
+                # 별칭/Geocoding 사다리로 넘긴다 — Naver Geocoding은 행정동/법정동
+                # 이름을 직접 인식하므로(docs/api-samples.md) "성수동"류는 거기서
+                # 풀린다.
+                station_result = await self._lookup_local_search_as_station(
+                    requested_query, purpose=purpose, enforce_service_area=enforce_service_area
+                )
+                if station_result is not None:
+                    return station_result
+                return None
+            else:
+                # 후보를 하나로 못 좁혀도 대표 좌표(1순위 후보)는 실어 보낸다 —
+                # 실시간 행사 등 좌표만으로 답할 수 있는 폴백이 이걸로 계속 조회할 수
+                # 있게 한다(concentration의 이름 전용 폴백과 대칭).
+                #
+                fallback_candidates = pickable_candidates
+                fallback = fallback_candidates[0]
+                return self._error_result(
+                    status=ResolveLocationStatus.NO_DATA,
+                    code="no_data",
+                    cause="ambiguous_location",
+                    retryable=False,
+                    details={
+                        "reason": "ambiguous_location",
+                        "candidate_names": _join_candidate_names(
+                            item.name for item in fallback_candidates
+                        ),
+                        "fallback_latitude": str(fallback.latitude),
+                        "fallback_longitude": str(fallback.longitude),
+                    },
+                    provider_metadata=(result.metadata,),
+                )
         # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
         # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
         # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
-        if selected.latitude is not None and selected.longitude is not None:
-            outside = self._outside_service_area_result(
-                selected.latitude, selected.longitude, (result.metadata,)
+        return await self._finalize_local_search_selection(
+            requested_query,
+            selected,
+            result.metadata,
+            purpose=purpose,
+            enforce_service_area=enforce_service_area,
+        )
+
+    async def _lookup_local_search_as_station(
+        self,
+        requested_query: str,
+        *,
+        purpose: LocationPurpose,
+        enforce_service_area: bool,
+    ) -> ResolveLocationResult | None:
+        """역/명소 후보를 하나도 못 찾았을 때 "역"을 붙여 한 번 더 지역 검색한다.
+
+        "교대", "홍대"처럼 역 이름의 줄임말은 그 글자 그대로 지역 검색하면 동명
+        대학·상호에 밀려 역이 상위 결과에 아예 안 잡힌다(실측, 2026-09-09:
+        "교대" 검색 상위 5건은 서울교육대학교·식당뿐이고 "교대역"은 없다.
+        "교대역"으로 검색하면 바로 잡힌다). 이미 "역"으로 끝나는 질의는 다시
+        붙이지 않는다("안국역" → "안국역역" 방지).
+
+        이름이 원 질의와 비슷한지는 보지 않는다 — "홍대"+"역"="홍대역"의 실제
+        역명은 "홍대입구역"이라 기존 정확/첫토큰/편집거리 매칭이 전부 실패하지만
+        (실측), "역"을 붙여 찾은 교통 카테고리 후보가 하나뿐이면(환승역이라
+        노선별로 여럿이어도 전부 같은 자리면 `_is_same_transit_place`로 이미
+        묶는다) 그게 정답이라고 본다. 서로 다른 역인데 못 좁히면(교통 후보가
+        여럿인데 같은 자리가 아니면) 조용히 실패해 상위 호출부가 별칭/Geocoding
+        사다리로 넘기게 둔다 — 엉뚱한 역을 임의로 고르지 않는다.
+        """
+        if self._local_search_provider is None or requested_query.endswith(_STATION_SUFFIX):
+            return None
+        try:
+            result = await self._local_search_provider.search_places_by_name(
+                f"{requested_query}{_STATION_SUFFIX}"
             )
-            if outside is not None:
-                return outside
+        except AppError:
+            return None
+        transit_candidates = tuple(
+            item
+            for item in result.data
+            if item.latitude is not None
+            and item.longitude is not None
+            and _is_transit_place(item)
+        )
+        if not transit_candidates:
+            return None
+        if len(transit_candidates) > 1 and not _is_same_transit_place(transit_candidates):
+            return None
+        selected = transit_candidates[0]
+        return await self._finalize_local_search_selection(
+            requested_query,
+            selected,
+            result.metadata,
+            purpose=purpose,
+            enforce_service_area=enforce_service_area,
+        )
+
+    async def _finalize_local_search_selection(
+        self,
+        requested_query: str,
+        selected: LocalSearchPlace,
+        metadata: ProviderMetadata,
+        *,
+        purpose: LocationPurpose,
+        enforce_service_area: bool,
+    ) -> ResolveLocationResult:
+        """선택된 지역 검색 후보 하나를 공통 성공 경로로 마무리한다.
+
+        원 후보 경로와 "역" 재검색 경로가 지원 구 검사·저장소 재조회·성공
+        결과 조립을 여기 하나로 공유한다.
+        """
+        if selected.latitude is not None and selected.longitude is not None:
+            if enforce_service_area:
+                outside = self._outside_service_area_result(
+                    selected.latitude, selected.longitude, (metadata,)
+                )
+                if outside is not None:
+                    return outside
         # 재조회는 집중률 매핑을 붙이기 위한 것이다. 검색 중심점에는 그 필드가
         # 쓰이지 않으므로(consumer는 service.py의 INFO 혼잡도 한 곳뿐) 건너뛴다.
         if (
@@ -421,7 +695,7 @@ class ResolveLocationTool:
             stored = await self._lookup_stored_place(requested_query, lookup_name=selected.name)
             if stored is not None and stored.status is ResolveLocationStatus.SUCCESS:
                 return stored
-        return self._local_search_success(requested_query, selected, result.metadata)
+        return self._local_search_success(requested_query, selected, metadata)
 
     @staticmethod
     def _local_search_success(
@@ -442,6 +716,7 @@ class ResolveLocationTool:
                 resolution_method=ResolutionMethod.LOCAL_SEARCH,
                 confidence=ResolutionConfidence.APPROXIMATE,
                 address=place.road_address or place.address,
+                place_category=place.category,
             ),
             error=None,
             warnings=("local_search_used",),
@@ -504,6 +779,7 @@ class ResolveLocationTool:
                 confidence=ResolutionConfidence.EXACT,
                 place_id=place.content_id,
                 address=place.address,
+                district_code=place.district_code,
                 concentration_name=place.concentration_name,
                 concentration_search_keys=place.concentration_search_keys,
             ),
@@ -544,20 +820,50 @@ class ResolveLocationTool:
         method: ResolutionMethod,
         warnings: tuple[str, ...] = (),
         provider_metadata: tuple[ProviderMetadata, ...] = (),
+        enforce_service_area: bool = True,
     ) -> ResolveLocationResult:
         # 지역 판정을 먼저 한다 - 지원 범위 밖이면 "어느 장소인지" 되물어도 소용없다.
-        outside = self._outside_service_area_result(
-            result.latitude, result.longitude, provider_metadata
-        )
-        if outside is not None:
-            return outside
-        if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
+        if enforce_service_area:
+            outside = self._outside_service_area_result(
+                result.latitude, result.longitude, provider_metadata
+            )
+            if outside is not None:
+                return outside
+        # **사용자가 구분할 수 없는 후보로는 되묻지 않는다.** 되묻기의 목적은 고르게
+        # 하는 것인데, 이름표가 전부 같으면 어느 버튼을 눌러도 같은 문자열이 다시
+        # 들어가 같은 되묻기로 돌아온다 — 사용자가 빠져나갈 길이 없다.
+        #
+        # "강서구"가 그랬다(2026-09-09). 네이버 지오코딩이 부산 강서구까지 2건을 주는데
+        # 이름표는 둘 다 "강서구"라, 되묻기 선택지가 하나로 합쳐졌다. 그 하나를 눌러도
+        # 제자리였다. 첫 후보는 이미 서울 강서구였고 위의 지원 구 검사도 통과한
+        # 상태였으므로, 되묻기가 알아내는 것이 하나도 없었다.
+        #
+        # 이름표가 서로 다르면 지금처럼 되묻는다 — 그때는 고르는 행위에 뜻이 있다.
+        # 좌표로 가려낼 수는 없다. 응답에 후보별 좌표가 없어 어느 쪽이 서울인지
+        # 알 방법이 없다(2026-09-09 실측: candidate_labels만 온다).
+        #
+        # **이름표가 아예 없을 때는 지금까지처럼 되묻는다.** 선택지 없는 되묻기는 막다른
+        # 길이 아니다 — 사용자가 더 구체적인 이름을 직접 칠 수 있다. 가두는 것은 "고를
+        # 수 있는데 골라도 그대로인" 경우뿐이다.
+        distinct_labels = {label.strip() for label in result.candidate_labels if label.strip()}
+        indistinguishable = bool(distinct_labels) and len(distinct_labels) == 1
+        if (
+            method is not ResolutionMethod.ALIAS
+            and result.candidate_count > 1
+            and not indistinguishable
+        ):
+            # 후보를 함께 싣는다(TP-182). 안 실으면 그 위층이 GPS로 짐작한 구의
+            # 대표 스팟으로 버튼을 메워, "익선동"을 물은 사람에게 강서구 장소가
+            # 나간다 — 진짜 답을 손에 들고도 짐작을 보여주는 셈이다.
+            details = {"reason": "ambiguous_location"}
+            if distinct_labels:
+                details["candidate_names"] = _join_candidate_names(sorted(distinct_labels))
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
                 cause="ambiguous_location",
                 retryable=False,
-                details={"reason": "ambiguous_location"},
+                details=details,
                 provider_metadata=provider_metadata,
             )
         return ResolveLocationResult(
@@ -574,6 +880,9 @@ class ResolveLocationTool:
                     if method in (ResolutionMethod.ALIAS, ResolutionMethod.DATABASE)
                     else ResolutionConfidence.APPROXIMATE
                 ),
+                # Geocoding 결과의 resolved_name은 도로명/지번 주소다. INFO의 공영
+                # 주차장 구 단위 조회처럼 주소가 필요한 소비자가 있어 함께 보존한다.
+                address=result.resolved_name,
             ),
             error=None,
             warnings=warnings,
@@ -589,7 +898,7 @@ class ResolveLocationTool:
     ) -> ResolveLocationResult | None:
         """지원 지역 밖이면 unsupported, 안이면 None.
 
-        저장소에서 해석된 장소에는 쓰지 않는다 — 이미 종로구 장소로 등록된 것이라
+        저장소에서 해석된 장소에는 쓰지 않는다 — 이미 지원 구 장소로 등록된 것이라
         경계선에 붙어 있어도 지원 대상이 맞다(D-044).
         """
         if is_within_service_area(latitude, longitude):
@@ -636,10 +945,18 @@ def _map_unavailable_cause(provider_code: str) -> str:
 
 
 def _error_message(code: str, cause: str) -> str:
+    # 지원 범위를 문구에 직접 쓰지 않는다 - 구가 늘 때 SUPPORTED_DISTRICTS만
+    # 고치면 여기도 따라오게 한다.
     if cause == "ambiguous_location":
-        return "종로구 안에서 어느 장소인지 조금 더 구체적으로 알려주세요."
+        return (
+            f"{supported_district_label()} 안에서 어느 장소인지 "
+            "조금 더 구체적으로 알려주세요."
+        )
     if cause == "outside_supported_region":
-        return "현재는 서울특별시 종로구 내 장소만 지원합니다."
+        return (
+            f"현재는 {supported_district_label(with_city=True)} 안에서만 "
+            "찾아드릴 수 있어요."
+        )
     if code == "no_data":
         return "입력한 위치를 찾을 수 없습니다. 주소나 장소명을 확인해주세요."
     return "위치 검색 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요."

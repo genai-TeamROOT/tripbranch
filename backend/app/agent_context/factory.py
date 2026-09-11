@@ -9,23 +9,35 @@ from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.providers.factory import (
+    get_barrier_free_place_search_provider,
     get_concentration_provider,
+    get_district_place_search_provider,
     get_festival_provider,
     get_geocoding_provider,
     get_holiday_provider,
     get_info_place_detail_provider,
     get_local_search_provider,
+    get_municipal_parking_catalog_repository,
+    get_municipal_parking_provider,
     get_place_details_provider,
     get_place_location_repository,
+    get_place_photo_repository,
     get_place_search_provider,
+    get_public_toilet_repository,
+    get_realtime_citydata_provider,
+    get_realtime_commercial_provider,
     get_recommendation_card_tool,
     get_weather_provider,
 )
 from app.tools.concentration import GetConcentrationTool
 from app.tools.festival import GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool
+from app.tools.municipal_parking import GetMunicipalParkingTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.place_detail import GetPlaceDetailTool
+from app.tools.public_toilet import GetPublicToiletTool
+from app.tools.realtime_citydata import GetRealtimeCityDataTool
+from app.tools.realtime_commercial import GetRealtimeCommercialTool
 from app.tools.resolve_location import ResolveLocationTool
 from app.tools.weather_forecast import GetWeatherForecastTool
 
@@ -43,6 +55,10 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             places=NearbyPlaceDetailsTool(
                 search_provider=get_place_search_provider(client),
                 details_provider=get_place_details_provider(client),
+                district_search_provider=get_district_place_search_provider(client),
+                # 무장애 조건이 붙은 요청만 이쪽으로 간다. 조건이 없으면 위의
+                # search_provider(TourAPI)가 그대로 후보를 모은다.
+                barrier_free_search_provider=get_barrier_free_place_search_provider(client),
             ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
@@ -51,8 +67,15 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             # 따른다 — 이유는 place_detail.py 모듈 docstring 참고.
             place_detail=GetPlaceDetailTool(get_info_place_detail_provider(client)),
             festivals=GetFestivalsTool(get_festival_provider(client)),
+            realtime_commercial=GetRealtimeCommercialTool(get_realtime_commercial_provider(client)),
+            realtime_citydata=GetRealtimeCityDataTool(get_realtime_citydata_provider(client)),
+            municipal_parking=GetMunicipalParkingTool(get_municipal_parking_provider(client)),
+            municipal_parking_catalog=get_municipal_parking_catalog_repository(client),
+            public_toilets=GetPublicToiletTool(get_public_toilet_repository(client)),
             # COMPARE의 place_id → 장소명 해석. 추천 카드와 같은 Tool을 공유한다.
             cards=get_recommendation_card_tool(client),
+            # 상세 카드의 사진 목록. 상세 조회와 다른 테이블이라 저장소를 따로 준다.
+            place_photos=get_place_photo_repository(client),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
         concentration_mapping_cache=_concentration_mapping_cache(client),

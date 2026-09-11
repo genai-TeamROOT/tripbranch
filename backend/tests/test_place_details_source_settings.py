@@ -15,10 +15,15 @@ from app.providers.stub import FakePlaceProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 
 
-def test_defaults_to_tour_api() -> None:
+def test_defaults_to_supabase() -> None:
+    """기본값은 supabase다 — 추천이 후보 전량의 상세를 받기 때문이다.
+
+    tour_api로 두면 후보 1곳당 detailCommon2 + detailIntro2 2회가 나가 일일 한도를
+    금방 태운다(config.py::place_details_source 주석).
+    """
     settings = Settings(_env_file=None, provider_mode="real")
 
-    assert settings.resolved_place_details_source == "tour_api"
+    assert settings.resolved_place_details_source == "supabase"
 
 
 def test_supabase_source_is_resolved_when_place_provider_is_real() -> None:
@@ -48,7 +53,7 @@ def test_supabase_source_requires_credentials() -> None:
         _env_file=None,
         provider_mode="fake",
         place_provider="real",
-        **{"TOUR_API_SERVICE_KEY": "key"},
+        tour_api_service_key="key",
         place_details_source="supabase",
     )
 
@@ -65,7 +70,7 @@ def test_supabase_source_passes_validation_with_credentials() -> None:
         _env_file=None,
         provider_mode="fake",
         place_provider="real",
-        **{"TOUR_API_SERVICE_KEY": "key"},
+        tour_api_service_key="key",
         place_details_source="supabase",
         supabase_url="https://example.supabase.co",
         supabase_secret_key="secret",
@@ -83,7 +88,7 @@ async def test_factory_builds_supabase_details_provider(monkeypatch) -> None:
             _env_file=None,
             provider_mode="real",
             place_details_source="supabase",
-            **{"TOUR_API_SERVICE_KEY": "key"},
+            tour_api_service_key="key",
             supabase_url="https://example.supabase.co",
             supabase_secret_key="secret",
         ),
@@ -106,7 +111,7 @@ async def test_factory_keeps_tour_api_details_provider(monkeypatch) -> None:
             _env_file=None,
             provider_mode="real",
             place_details_source="tour_api",
-            **{"TOUR_API_SERVICE_KEY": "key"},
+            tour_api_service_key="key",
         ),
     )
 

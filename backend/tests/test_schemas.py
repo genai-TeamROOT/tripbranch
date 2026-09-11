@@ -13,7 +13,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import ModifyPayload, ModifyType, UserConditions
+from app.schemas import (
+    MAX_RECENT_FOLLOW_UPS,
+    AgentRequest,
+    ModifyPayload,
+    ModifyType,
+    ScheduleItem,
+    UserConditions,
+)
 
 
 def test_fields_outside_changed_fields_are_cleared_even_when_populated() -> None:
@@ -106,3 +113,59 @@ def test_negative_time_fields_still_rejected(field: str) -> None:
     """0은 조용히 정규화되지만 음수는 여전히 ValidationError로 막힌다."""
     with pytest.raises(ValidationError):
         UserConditions(**{field: -5})
+
+
+def test_cluster_id가_없는_옛_스냅샷도_그대로_읽힌다() -> None:
+    """TP-243 — `saved_schedules.payload`와 `session_messages`에 이 필드가 없는
+    스냅샷이 이미 쌓여 있다.
+
+    **항목 배열을 그룹 구조로 바꾸지 않고 번호만 얹은 이유가 이것이다.** 저장된
+    일정을 다시 여는 경로가 두 모양을 다 읽어야 하는데, 기본값 None이면 옛
+    스냅샷은 "묶음 없음"으로 그대로 읽힌다.
+    """
+
+    old_snapshot = {
+        "order": 1,
+        "place_id": "p1",
+        "place_name": "장소 p1",
+        "estimated_arrival": "15:00",
+        "estimated_duration_min": 60,
+        "travel_to_next_min": 12,
+        "reason": "테스트 이유",
+    }
+
+    item = ScheduleItem.model_validate(old_snapshot)
+
+    assert item.cluster_id is None
+    assert item.estimated_duration_min == 60
+
+
+def test_recent_follow_ups_keeps_only_the_newest_entries() -> None:
+    """제외 목록은 프롬프트에 실리므로 최근 것만 남긴다."""
+    request = AgentRequest(
+        user_input="카페 추천해줘",
+        recent_follow_ups=[f"문구 {i}" for i in range(MAX_RECENT_FOLLOW_UPS + 5)],
+    )
+
+    assert len(request.recent_follow_ups) == MAX_RECENT_FOLLOW_UPS
+    assert request.recent_follow_ups[-1] == f"문구 {MAX_RECENT_FOLLOW_UPS + 4}"
+
+
+def test_recent_follow_ups_drops_malformed_entries_without_failing_the_turn() -> None:
+    """화면이 보내는 값이라 무엇이든 올 수 있다.
+
+    **422로 막지 않는다.** 버튼 중복을 막자고 대화를 끊을 이유가 없다 — 못 쓸 항목만
+    버리고 나머지로 진행한다.
+    """
+    request = AgentRequest(
+        user_input="카페 추천해줘",
+        recent_follow_ups=["  다른 곳도 보여줘  ", "", "   ", "가" * 41, 123, None],
+    )
+
+    assert request.recent_follow_ups == ["다른 곳도 보여줘"]
+
+
+def test_recent_follow_ups_ignores_a_value_that_is_not_a_list() -> None:
+    request = AgentRequest(user_input="카페 추천해줘", recent_follow_ups="다른 곳도 보여줘")
+
+    assert request.recent_follow_ups == []

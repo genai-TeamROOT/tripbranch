@@ -25,12 +25,15 @@ const CONDITION_LABELS: [keyof UserConditions, string][] = [
   ["concentration_intent", "혼잡도 의도"],
   ["transport", "이동 수단"],
   ["max_travel_time", "최대 이동 시간(분)"],
+  ["travel_origin", "이동시간 출발점"],
   ["time_available", "가용 시간(분)"],
   ["environment", "실내외"],
   ["companion", "동행"],
   ["budget", "예산"],
   ["exclude_tags", "제외 태그"],
   ["special_requirements", "특별 요구사항"],
+  ["accessibility_needs", "무장애 요구"],
+  ["taste_query", "취향 발화"],
 ];
 
 function formatValue(value: unknown): string {

@@ -1,16 +1,17 @@
-"""집중률 API의 장소명을 종로구 `places`와 매칭해 매핑 CSV를 만든다.
+"""집중률 API의 장소명을 한 개 구의 `places`와 매칭해 매핑 CSV를 만든다.
 
-역할: import_concentration_mappings.py가 적재할 CSV를 생성한다. 집중률 API가 쓰는
-장소명과 TourAPI 장소명이 달라(예: `서울 운현궁` vs `운현궁`) 매핑 테이블에 이름이
-있어도 조회가 실패하는 문제를 줄이는 것이 목적이다.
-입력: --places-snapshot(없으면 Supabase places에서 활성 장소를 읽는다).
-출력: supabase/data/concentration_place_mapping_<오늘>.csv
+역할: import_concentration_mappings.py가 적재할 CSV를 생성한다.
+입력: --district-code(필수), --places-snapshot(없으면 Supabase places에서 활성 장소를
+      읽는다).
+출력: supabase/data/concentration_place_mapping_<구코드>_<오늘>.csv
       + 미매칭 장소 목록을 표준 출력에 나열한다.
-호출 시점: `python -m scripts.build_concentration_mappings`로 수동 실행한다.
+호출 시점: `python -m scripts.build_concentration_mappings --district-code 11140`처럼
+      구를 지정해 수동 실행한다. 구마다 한 번씩 돌린다.
 
-매칭은 보수적으로 한다 — 정확 일치와 규칙 기반 정규화 일치만 자동으로 붙이고,
-편집거리 같은 유사도 매칭은 쓰지 않는다. 이름이 크게 다른 장소를 잘못 붙이면 엉뚱한
-곳의 혼잡도를 답하게 되므로, 애매한 항목은 사람이 판단하도록 남긴다.
+매칭 로직 자체는 `app/services/concentration_mapping.py`에 있다. 개발자 Ops 패널도
+같은 함수를 쓰는데, `app`이 `scripts`를 임포트하면 의존 방향이 뒤집혀서(지금은
+scripts → app) 로직을 그쪽에 뒀다. 여기서는 그 모듈을 재수출해 기존 호출부와
+테스트가 이 이름으로 계속 임포트할 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -18,49 +19,66 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
-import json
-import re
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from app.config import Settings
-from app.providers.concentration import _CONCENTRATION_URL
+from app.services.concentration_mapping import (
+    DATA_DIR as _DATA_DIR,
+)
+from app.services.concentration_mapping import (
+    DEFAULT_OVERRIDES as _DEFAULT_OVERRIDES,
+)
+from app.services.concentration_mapping import (
+    ManualOverride,
+    MappingRow,
+    PlaceRow,
+    apply_search_keys,
+    derive_search_key,
+    derive_search_keys,
+    fetch_concentration_place_names,
+    load_manual_overrides,
+    load_names_file,
+    load_places_from_supabase,
+    match_places,
+    places_district_code,
+    write_mapping_csv,
+    write_names_file,
+)
+
+# 재수출. 기존 테스트와 호출부가 이 이름으로 임포트한다.
+__all__ = [
+    "ManualOverride",
+    "MappingRow",
+    "PlaceRow",
+    "apply_search_keys",
+    "derive_search_key",
+    "derive_search_keys",
+    "fetch_concentration_place_names",
+    "load_manual_overrides",
+    "load_names_file",
+    "load_places_from_snapshot",
+    "load_places_from_supabase",
+    "match_places",
+    "places_district_code",
+    "write_mapping_csv",
+    "write_names_file",
+]
 
 _KST = ZoneInfo("Asia/Seoul")
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "supabase" / "data"
-_PAGE_SIZE = 100
-# 응답 한 페이지에 장소별 날짜 예보가 여러 행 들어와, 100행에 장소는 4곳 정도만 담긴다.
-# 전체 장소명을 모으려면 totalCount까지 끝까지 넘겨야 한다.
-_MAX_PAGES = 200
-
-_PLACE_NAME_KEYS = ("tAtsNm", "tatsNm", "touristAttractionName")
-
-# 규칙으로 못 붙이는 짝을 사람이 확인해 적어두는 파일. 표기가 크게 달라(예:
-# "낙산묘각사" ↔ "묘각사(서울)") 자동 유사도 매칭으로는 위험한 항목을 담는다.
-_DEFAULT_OVERRIDES = _DATA_DIR / "concentration_manual_overrides.csv"
-
-# 표기 차이 정규화 규칙. 실측(2026-08-03)에서 실패한 30건의 패턴을 반영한다.
-_BRACKET_PATTERN = re.compile(r"\s*\[[^\]]*\]")
-_PAREN_PATTERN = re.compile(r"\s*\([^)]*\)")
-_SEOUL_PREFIX = "서울 "
-_WHITESPACE_PATTERN = re.compile(r"\s")
-
-
-@dataclass(frozen=True)
-class PlaceRow:
-    content_id: str
-    title: str
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="집중률 장소 매핑 CSV 생성")
     parser.add_argument("--area-code", default="11", help="집중률 API 광역 코드")
-    parser.add_argument("--district-code", default="11110", help="집중률 API 시군구 코드")
+    # 기본값을 두지 않는다. 종로구(11110)가 기본이던 때는 구를 지정하지 않고 돌리면
+    # 조용히 종로구가 다시 만들어져, 다른 구를 뽑으려던 실행이 종로구 CSV를 남겼다.
+    parser.add_argument(
+        "--district-code",
+        required=True,
+        help="집중률 API 시군구 코드(예: 종로구 11110, 중구 11140)",
+    )
     parser.add_argument(
         "--places-snapshot",
         type=Path,
@@ -86,260 +104,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-@dataclass(frozen=True)
-class ManualOverride:
-    """규칙으로 못 붙이는 짝을 사람이 지정한 값.
-
-    primary가 비어 있으면 매칭은 규칙에 맡기고 별칭만 덧붙인다 — 집중률 API에
-    "청와대 앞길"과 "청와대"가 모두 있는 것처럼, 정확 일치를 살리면서 다른 표기도
-    함께 인정해야 하는 경우가 있다.
-    """
-
-    primary: str | None
-    aliases: tuple[str, ...]
-
-
-def load_manual_overrides(path: Path) -> dict[str, ManualOverride]:
-    """places 장소명 → 수동 지정값."""
-    if not path.exists():
-        return {}
-    overrides: dict[str, ManualOverride] = {}
-    with path.open(encoding="utf-8-sig") as fp:
-        for row in csv.DictReader(fp):
-            place_title = (row.get("place_title") or "").strip()
-            if not place_title:
-                continue
-            primary = (row.get("concentration_title") or "").strip() or None
-            aliases = tuple(
-                alias.strip()
-                for alias in (row.get("concentration_aliases") or "").split("|")
-                if alias.strip()
-            )
-            if primary is None and not aliases:
-                continue
-            overrides[place_title] = ManualOverride(primary=primary, aliases=aliases)
-    return overrides
-
-
-def load_names_file(path: Path) -> list[str]:
-    with path.open(encoding="utf-8-sig") as fp:
-        return [
-            row["concentration_title"].strip()
-            for row in csv.DictReader(fp)
-            if row.get("concentration_title")
-        ]
-
-
-def write_names_file(names: Sequence[str], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8-sig") as fp:
-        writer = csv.writer(fp)
-        writer.writerow(["concentration_title"])
-        for name in names:
-            writer.writerow([name])
-
-
-def _normalize_key(name: str) -> str:
-    """비교용 키. 공백을 지우고 소문자로 맞춘다."""
-    return name.replace(" ", "").casefold()
-
-
-def _variants(name: str) -> list[str]:
-    """이름에서 파생되는 비교 후보. 원본을 먼저 두고 정규화본을 뒤에 붙인다."""
-    candidates = [name]
-    stripped = _PAREN_PATTERN.sub("", _BRACKET_PATTERN.sub("", name)).strip()
-    if stripped and stripped != name:
-        candidates.append(stripped)
-    for base in list(candidates):
-        if base.startswith(_SEOUL_PREFIX):
-            candidates.append(base[len(_SEOUL_PREFIX) :].strip())
-    seen: set[str] = set()
-    unique: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique.append(candidate)
-    return unique
-
-
-def derive_search_key(canonical: str, names: Sequence[str]) -> tuple[str, str]:
-    """집중률 조회에 실제로 쓸 검색어와 그 사유를 고른다.
-
-    tAtsNm은 부분 일치 검색인데, 공백이 든 값을 넘기면 무엇을 넣든 0건이 돌아온다
-    (2026-08-04 실측: `운현궁`→30건, `서울 운현궁`→0건). 그래서 공백이 있는 이름은
-    공백 없는 토큰으로 바꿔야 조회가 된다.
-
-    토큰은 "가장 긴 것"을 고른다. 유일하기만 하면 `한옥` 같은 짧은 토큰도 지금은
-    통과하지만, 집중률 API에 장소가 추가되면 다른 곳까지 끌어올 수 있어서다. 검색어가
-    여러 장소를 끌어오면 enrichment_service가 이름이 안 맞을 때 첫 예보로 폴백하므로
-    엉뚱한 장소의 혼잡도를 조용히 답하게 된다.
-
-    유일성은 집중률 API 목록 안에서만 따진다 — tAtsNm이 그 데이터셋만 검색하기
-    때문이다. `places`에 같은 낱말을 쓰는 장소가 많아도(예: "한옥" 25건) 무관하다.
-    다만 이 계산은 수집한 목록이 완전하다는 전제에 기대므로, 매핑을 만들 때마다
-    목록을 다시 받아 새로 계산해야 한다.
-    """
-    if not _WHITESPACE_PATTERN.search(canonical):
-        return canonical, "as_is"
-
-    # 괄호·대괄호 안은 부기라 떼면 공백이 사라지는 경우가 많다("종묘 [유네스코
-    # 세계유산]" → "종묘"). 남겨두면 "세계유산]" 같은 부기 토큰이 뽑혀 다른 장소까지
-    # 끌어온다.
-    base = _PAREN_PATTERN.sub("", _BRACKET_PATTERN.sub("", canonical)).strip() or canonical
-    if _WHITESPACE_PATTERN.search(base):
-        tokens = base.split()
-        # 긴 토큰 우선, 길이가 같으면 뒤쪽을 쓴다. 한국어 장소명은 뒤가 핵심어라
-        # ("아름다운 차박물관" → "차박물관") 그쪽이 검색어로 자연스럽다. set을 쓰면
-        # 실행마다 순서가 흔들리므로 색인으로 순서를 고정한다.
-        candidates = [
-            tokens[index]
-            for index in sorted(
-                range(len(tokens)), key=lambda i: (-len(tokens[i]), -i)
-            )
-        ]
-    else:
-        candidates = [base]
-
-    for candidate in candidates:
-        if [name for name in names if candidate in name] == [canonical]:
-            return candidate, "token"
-    # 유일한 후보가 없다 — "종묘"가 "종묘광장공원"에도 걸리는 식이다. 그래도 여러
-    # 장소가 섞여 올 뿐 0건은 아니므로, 조회가 아예 안 되는 원본보다 낫다. 걸리는
-    # 장소가 가장 적은 후보를 골라 섞임을 줄이고, 정식 명칭을 별칭에 남겨 응답에서
-    # 올바른 장소를 골라낼 수 있게 한다.
-    hits = [(sum(c in name for name in names), c) for c in candidates]
-    reachable = [(count, c) for count, c in hits if count]
-    if reachable:
-        return min(reachable, key=lambda item: item[0])[1], "token_ambiguous"
-    return canonical, "no_unique_token"
-
-
-def _candidate_tokens(canonical: str) -> list[str]:
-    """검색어 후보를 순서대로 만든다. derive_search_key와 같은 기준을 쓴다.
-
-    긴 토큰 우선, 길이가 같으면 뒤쪽을 먼저 둔다. 부기를 뗀 형태와 원본 양쪽에서
-    토큰을 모으되 중복은 앞선 것을 남긴다.
-    """
-    base = _PAREN_PATTERN.sub("", _BRACKET_PATTERN.sub("", canonical)).strip() or canonical
-    tokens: list[str] = []
-    for source in (base, canonical):
-        parts = source.split()
-        tokens.extend(
-            parts[index]
-            for index in sorted(range(len(parts)), key=lambda i: (-len(parts[i]), -i))
-        )
-    ordered: list[str] = []
-    for token in tokens:
-        if not token or _WHITESPACE_PATTERN.search(token) or token in ordered:
-            continue
-        # 원본에서 자른 토큰에는 부기 조각이 섞인다("종묘 [유네스코 세계유산]" →
-        # "[유네스코", "세계유산]"). 괄호가 한쪽만 붙은 값은 장소명이 아니라 잘린
-        # 부기이므로 검색어로 쓰지 않는다.
-        if any(char in token for char in "[]()"):
-            continue
-        ordered.append(token)
-    return ordered
-
-
-def derive_search_keys(
-    canonical: str, names: Sequence[str], primary: str | None
-) -> list[str]:
-    """조회에 순서대로 시도할 검색어 목록을 만든다(D-057).
-
-    1순위는 기존 검색어다. 지금 값들이 전부 정상 조회되는 것이 확인됐으므로
-    휴리스틱으로 재계산해 회귀를 만들지 않는다 — 토큰 추가는 능력 추가로만 둔다.
-
-    나머지는 `_candidate_tokens()` 순서를 따르되, 집중률 목록의 어떤 이름에도
-    걸리지 않는 토큰은 뺀다. 호출해도 0건이라 시도할 값어치가 없다.
-
-    목적은 정식 명칭과 어긋나는 발화를 받아내는 것이다 — "닭한마리 골목 혼잡해?"는
-    '서울 동대문 닭한마리 골목'과 문자열이 다르지만 '닭한마리'로는 찾아진다.
-    """
-    keys: list[str] = []
-    first = (primary or canonical).strip()
-    if first and not _WHITESPACE_PATTERN.search(first):
-        keys.append(first)
-    for token in _candidate_tokens(canonical):
-        if token in keys:
-            continue
-        if any(token in name for name in names):
-            keys.append(token)
-    return keys
-
-
-def apply_search_keys(
-    rows: Sequence[MappingRow], names: Sequence[str]
-) -> tuple[list[MappingRow], list[MappingRow]]:
-    """조회에 쓸 검색어를 채운다. 정식 명칭은 그대로 둔다.
-
-    두 값의 역할이 다르다 - 검색어는 tAtsNm에 넣어 조회하는 값이고, 정식 명칭은
-    응답에서 올바른 장소를 골라낼 때 대조하는 값이다. 정식 명칭 그대로 조회되면
-    검색어를 비워 둬 호출자가 정식 명칭을 쓰게 한다.
-
-    돌려주는 두 번째 목록은 검색어가 다른 집중률 장소까지 끌어오는 건이다. 조회는
-    되지만 응답 대조가 반드시 필요하다.
-    """
-    applied: list[MappingRow] = []
-    unresolved: list[MappingRow] = []
-    for row in rows:
-        key, reason = derive_search_key(row.concentration_title, names)
-        search_key = None if key == row.concentration_title else key
-        resolved = MappingRow(
-            row.content_id,
-            row.place_title,
-            row.concentration_title,
-            row.match_method,
-            row.aliases,
-            search_key=search_key,
-            search_keys=tuple(
-                derive_search_keys(row.concentration_title, names, search_key)
-            ),
-        )
-        applied.append(resolved)
-        if reason in ("no_unique_token", "token_ambiguous"):
-            unresolved.append(resolved)
-    return applied, unresolved
-
-
-async def fetch_concentration_place_names(
-    settings: Settings, area_code: str, district_code: str
-) -> list[str]:
-    """집중률 API가 다루는 장소명을 페이지 끝까지 모은다."""
-    names: dict[str, None] = {}
-    async with httpx.AsyncClient() as client:
-        for page_no in range(1, _MAX_PAGES + 1):
-            response = await client.get(
-                _CONCENTRATION_URL,
-                params={
-                    "serviceKey": settings.tour_api_service_key,
-                    "pageNo": str(page_no),
-                    "numOfRows": str(_PAGE_SIZE),
-                    "MobileOS": "ETC",
-                    "MobileApp": "TripBranch",
-                    "areaCd": area_code,
-                    "signguCd": district_code,
-                    "_type": "json",
-                },
-                timeout=settings.external_api_timeout_seconds,
-            )
-            response.raise_for_status()
-            body = response.json().get("response", {}).get("body", {})
-            items = body.get("items") or {}
-            rows = items.get("item", []) if isinstance(items, dict) else []
-            if isinstance(rows, dict):
-                rows = [rows]
-            for row in rows:
-                for key in _PLACE_NAME_KEYS:
-                    value = row.get(key)
-                    if value:
-                        names[str(value).strip()] = None
-                        break
-            total_count = int(body.get("totalCount") or 0)
-            if not rows or page_no * _PAGE_SIZE >= total_count:
-                break
-    return list(names)
-
-
 def load_places_from_snapshot(path: Path) -> list[PlaceRow]:
     with path.open(encoding="utf-8-sig") as fp:
         return [
@@ -347,153 +111,6 @@ def load_places_from_snapshot(path: Path) -> list[PlaceRow]:
             for row in csv.DictReader(fp)
             if row.get("content_id") and row.get("title")
         ]
-
-
-async def load_places_from_supabase(settings: Settings) -> list[PlaceRow]:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            settings.supabase_url.rstrip("/") + "/rest/v1/places",
-            params={"select": "content_id,title", "is_active": "eq.true", "limit": "2000"},
-            headers={"apikey": settings.supabase_secret_key},
-            timeout=settings.external_api_timeout_seconds,
-        )
-        response.raise_for_status()
-        return [
-            PlaceRow(content_id=str(row["content_id"]), title=str(row["title"]))
-            for row in response.json()
-        ]
-
-
-@dataclass(frozen=True)
-class MappingRow:
-    content_id: str
-    place_title: str
-    concentration_title: str
-    match_method: str
-    aliases: tuple[str, ...] = ()
-    # tAtsNm에 넣을 검색어. 정식 명칭 그대로 조회되면 비워 둔다.
-    search_key: str | None = None
-    # 순서대로 시도할 검색어 목록. 1순위는 search_key(없으면 정식 명칭)다(D-057).
-    search_keys: tuple[str, ...] = ()
-
-
-def match_places(
-    places: Iterable[PlaceRow],
-    concentration_names: Sequence[str],
-    overrides: dict[str, ManualOverride] | None = None,
-) -> tuple[list[MappingRow], list[PlaceRow], list[str]]:
-    """수동 지정 → 정확 일치 → 정규화 일치 순으로 붙인다. 못 붙인 쪽은 그대로 돌려준다."""
-    overrides = overrides or {}
-    available = set(concentration_names)
-    by_exact = {_normalize_key(name): name for name in concentration_names}
-    by_variant: dict[str, str] = {}
-    for name in concentration_names:
-        for variant in _variants(name):
-            by_variant.setdefault(_normalize_key(variant), name)
-
-    matched: list[MappingRow] = []
-    unmatched: list[PlaceRow] = []
-    used: set[str] = set()
-    # TourAPI에 같은 이름이 중복 등록된 장소가 있다(익선동 한옥거리 등). 같은 집중률
-    # 장소에 여러 매핑을 만들지 않도록 제목당 한 건만 남긴다.
-    seen_titles: set[str] = set()
-    deduped: list[PlaceRow] = []
-    duplicates: list[PlaceRow] = []
-    for place in sorted(places, key=lambda item: item.content_id):
-        if place.title in seen_titles:
-            duplicates.append(place)
-            continue
-        seen_titles.add(place.title)
-        deduped.append(place)
-
-    for place in deduped:
-        override = overrides.get(place.title)
-        aliases = _override_aliases(override)
-
-        if override is not None and override.primary is not None:
-            if override.primary not in available:
-                # 집중률 API에서 사라진 이름을 계속 붙이면 조회가 실패한다.
-                unmatched.append(place)
-                continue
-            matched.append(
-                MappingRow(place.content_id, place.title, override.primary, "manual", aliases)
-            )
-            used.add(override.primary)
-            continue
-
-        exact = by_exact.get(_normalize_key(place.title))
-        if exact is not None:
-            method = "exact_with_alias" if aliases else "exact"
-            matched.append(MappingRow(place.content_id, place.title, exact, method, aliases))
-            used.add(exact)
-            used.update(aliases)
-            continue
-
-        found: str | None = None
-        for variant in _variants(place.title):
-            found = by_variant.get(_normalize_key(variant))
-            if found is not None:
-                break
-        if found is not None:
-            matched.append(
-                MappingRow(place.content_id, place.title, found, "normalized", aliases)
-            )
-            used.add(found)
-            used.update(aliases)
-        else:
-            unmatched.append(place)
-
-    leftover = [name for name in concentration_names if name not in used]
-    return matched, unmatched + duplicates, leftover
-
-
-def _override_aliases(override: ManualOverride | None) -> tuple[str, ...]:
-    """사람이 지정한 별칭을 그대로 싣는다.
-
-    "이 장소를 가리키는 다른 이름"이라는 뜻이라 집중률 API에 있을 필요가 없다.
-    사용자는 "창덕궁"이라고 하지만 저장소 제목은 "창덕궁과 후원 [유네스코 세계유산]"
-    이고 집중률 목록에도 그 이름뿐이다. 조회는 concentration_search_keys가 맡으므로
-    별칭을 집중률 목록으로 거를 이유가 없다.
-    """
-    if override is None:
-        return ()
-    return override.aliases
-
-
-def write_mapping_csv(rows: Sequence[MappingRow], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8-sig") as fp:
-        writer = csv.writer(fp)
-        writer.writerow(
-            [
-                "content_id",
-                "place_title",
-                "concentration_title",
-                "concentration_search_key",
-                "concentration_search_keys",
-                "concentration_aliases",
-                "match_status",
-                "match_method",
-                "confidence_score",
-                "verified_at",
-            ]
-        )
-        for row in rows:
-            writer.writerow(
-                [
-                    row.content_id,
-                    row.place_title,
-                    row.concentration_title,
-                    row.search_key or "",
-                    json.dumps(list(row.search_keys), ensure_ascii=False),
-                    json.dumps(list(row.aliases), ensure_ascii=False),
-                    "matched",
-                    row.match_method,
-                    "1.0000",
-                    "",
-                ]
-            )
-
 
 async def run(args: argparse.Namespace, settings: Settings) -> int:
     if not settings.tour_api_service_key:
@@ -514,8 +131,9 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
     else:
         if not settings.supabase_url or not settings.supabase_secret_key:
             raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
-        places = await load_places_from_supabase(settings)
-        print(f"Supabase 활성 장소 {len(places)}건")
+        district = places_district_code(args.area_code, args.district_code)
+        places = await load_places_from_supabase(settings, district_code=district)
+        print(f"Supabase 활성 장소 {len(places)}건(district_code={district})")
 
     overrides = load_manual_overrides(args.manual_overrides)
     if overrides:
@@ -523,11 +141,17 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
     matched, unmatched, leftover = match_places(places, concentration_names, overrides)
     matched, unresolved = apply_search_keys(matched, concentration_names)
     now = datetime.now(_KST)
-    # 다음 실행에서 API를 다시 부르지 않도록 수집 결과를 남긴다.
+    # 파일명에 구 코드를 넣는다. 날짜만 쓰면 같은 날 여러 구를 돌릴 때 앞의 구 결과를
+    # 덮어써서 사라진다(TP-136에서 세 구를 하루에 뽑다가 확인).
     write_names_file(
-        concentration_names, args.output_dir / f"concentration_place_names_{now:%Y%m%d}.csv"
+        concentration_names,
+        args.output_dir
+        / f"concentration_place_names_{args.district_code}_{now:%Y%m%d}.csv",
     )
-    output = args.output_dir / f"concentration_place_mapping_{now:%Y%m%d}.csv"
+    output = (
+        args.output_dir
+        / f"concentration_place_mapping_{args.district_code}_{now:%Y%m%d}.csv"
+    )
     write_mapping_csv(matched, output)
 
     method_counts: dict[str, int] = {}

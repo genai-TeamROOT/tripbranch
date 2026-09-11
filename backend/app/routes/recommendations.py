@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.schemas import (
     InterpretedConditions,
     RecommendationRequest,
@@ -23,7 +24,9 @@ router = APIRouter(tags=["recommendations"])
 
 
 @router.post("/recommendations", response_model=RecommendationResponse)
-async def recommendations(request: RecommendationRequest) -> RecommendationResponse:
+async def recommendations(
+    request: RecommendationRequest, principal: OptionalPrincipal
+) -> RecommendationResponse:
     conditions = InterpretedConditions(
         location_query=request.location_query,
         preferred_categories=request.preferred_categories,
@@ -35,7 +38,7 @@ async def recommendations(request: RecommendationRequest) -> RecommendationRespo
     #    누적 제외(excluded)를 쓴다. 이번 실행에서 다시 보여주지 않을 전체 목록이다.
     exclude_ids = request.shown_place_ids
     if request.session_id:
-        context = state_service.get_session_context(request.session_id)
+        context = state_service.get_session_context(request.session_id, principal=principal)
         if context.session_exists:
             exclude_ids = context.excluded_place_ids
 

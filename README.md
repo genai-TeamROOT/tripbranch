@@ -113,7 +113,7 @@
 ## 기술 스택
 
 - Backend: Python 3.11+, FastAPI, Pydantic 2, httpx, sse-starlette, pytest, Ruff
-- Frontend: Node.js 20+, React 19, TypeScript, Vite, React Router, Tailwind CSS
+- Frontend: Node.js 24+, React 19, TypeScript, Vite, React Router, Tailwind CSS
 - 개발 실행: npm, Node.js 스크립트, Uvicorn
 - 저장소: Supabase(PostgreSQL), 프로세스 내 State Store
 - LLM Provider: Fake, Google Gemini (`google-genai`)
@@ -289,6 +289,10 @@ npm run dev
 `backend/`를 작업 디렉터리로 실행해야 `backend/.env`를 읽습니다. 저장소 루트에서
 띄우면 오류 없이 전 Provider가 fake로 뜹니다.
 
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받으면 백엔드 패키지를 다시 설치해야
+합니다. 절차와 증상은 [개발 가이드](docs/development-guide.md)의 "의존성이 바뀐 뒤"에
+있습니다.
+
 ## Naming 규칙
 
 Backend가 소유하는 Python 필드와 JSON 필드에는 모두 `snake_case`를 사용합니다.
@@ -346,6 +350,7 @@ JSON 변경이 자동 반영되지 않으며, MVP에서는 서버 재시작 시 
 - [API 및 내부 계약](docs/api-contracts.md)
 - [개발 가이드](docs/development-guide.md)
 - [의사결정 로그](docs/decision-log.md)
+- [Scoring 버전 이력](docs/scoring-version.md)
 - [Intent 정의](docs/design/intent-definition.md)
 - [패키지별 업무 분담](docs/design/package_work_breakdown.md)
 - [Provider Contract v1](backend/docs/provider-contract-v1.md)

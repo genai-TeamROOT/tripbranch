@@ -18,7 +18,9 @@ from app.agent_context.schemas import (
     Clarification,
     ContextError,
     ContextWarning,
+    DistrictScope,
     RecommendationContext,
+    parse_candidate_names,
 )
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import HolidayToolResult
@@ -33,11 +35,16 @@ class ContextAssemblyInput:
 
     request: AgentContextRequest
     location_result: ResolveLocationResult | None
+    # 사용자가 있는 곳. 기준점(location_result)과 같은 타입이지만 다른 질의 결과일 수
+    # 있다 — 발화 위치와 검색 기준점이 다르면 따로 해석한다(service.py).
+    user_location_result: ResolveLocationResult | None = None
     weather_result: WeatherForecastToolResult | None = None
     places_result: NearbyPlaceDetailsResult | None = None
     holidays_result: HolidayToolResult | None = None
     weather_requested: bool = True
     holidays_requested: bool = True
+    # 구 단위로 후보를 모은 요청이면 그 사실. 반경 검색이면 None이다(D-119).
+    district_scope: DistrictScope | None = None
 
 
 def assemble_agent_context_response(
@@ -58,7 +65,16 @@ def assemble_agent_context_response(
 
     location_result = assembly_input.location_result
     location = map_location_context(location_result)
-    location_only = RecommendationContext(location=location)
+    # 기준점이 무엇으로 정해졌든 사용자 위치는 그대로 보존한다 — 검색 기준점이
+    # 따로 잡히면 GPS가 버려지던 게 근거 문장이 "현재 위치"라고 거짓말한 원인이다.
+    # 좌표만 싣던 것을 기준점과 같은 타입으로 올렸다(TP-112): 발화로 말한 위치도
+    # 여기 들어오므로 부를 이름(requested_query)과 출처(source)가 필요하다.
+    user_location = (
+        map_location_context(assembly_input.user_location_result)
+        if assembly_input.user_location_result is not None
+        else None
+    )
+    location_only = RecommendationContext(location=location, user_location=user_location)
 
     if location_result.status is ToolStatus.NO_DATA:
         cause = location_result.error.cause if location_result.error else None
@@ -71,10 +87,7 @@ def assemble_agent_context_response(
             request,
             code=("location_ambiguous" if cause == "ambiguous_location" else "location_required"),
             missing_fields=[] if cause == "ambiguous_location" else ["current_location"],
-            # "|" 구분 문자열로 온다 — ToolError.details가 dict[str, str]라 리스트를
-            # 직접 못 담는다(resolve_location.py). 지오코딩 경로(후보 개수만 아는
-            # GeocodeResult)는 이름이 없어 빈 문자열이 온다 — 그때는 빈 리스트가 된다.
-            candidates=[name for name in candidate_names.split("|") if name],
+            candidates=parse_candidate_names(candidate_names),
             metadata_context=location_only,
             rule_versions=rule_versions,
         )
@@ -126,9 +139,11 @@ def assemble_agent_context_response(
     )
     context = RecommendationContext(
         location=location,
+        user_location=user_location,
         weather=weather,
         places=places,
         holidays=holidays,
+        district_scope=assembly_input.district_scope,
     )
 
     if assembly_input.places_result is None:

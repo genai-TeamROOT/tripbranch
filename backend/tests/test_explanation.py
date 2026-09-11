@@ -9,6 +9,7 @@ D-06 구체화 요청(`package_D/[D-06]explainability_detail.txt`) 이후에는 
 
 from datetime import time
 
+import pytest
 from fixtures.scoring_fixture_v1 import (
     _CAFE_CLOSING_SOON,
     _GALLERY_UNKNOWN_HOURS,
@@ -18,15 +19,25 @@ from fixtures.scoring_fixture_v1 import (
 )
 
 from app.concentration_policy import ConcentrationLevel
-from app.domain.evidence import CONCENTRATION_FEATURE_ORDER, build_evidence
+from app.domain import explanation
+from app.domain.evidence import (
+    CONCENTRATION_FEATURE_ORDER,
+    FeatureContribution,
+    RecommendationEvidence,
+    build_evidence,
+)
 from app.domain.explanation import build_explanations
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     RankedCandidate,
+    build_weights,
+    prepare_candidates,
     redistribute_weights,
     score_candidates,
+    score_prepared_candidates,
 )
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
@@ -352,6 +363,76 @@ def test_concentration_missing_is_omitted() -> None:
     assert build_explanations(evidence) == ()
 
 
+# --- co_visited Feature(D-092, RECOMMEND 2차 Scoring 전용) 근거 문장 ---------
+
+
+def _co_visited_ranked_candidate(
+    co_visited_score_value: float,
+    co_visited_place_names: tuple[str, ...],
+) -> RankedCandidate:
+    co_visited_weights = build_weights(("co_visited",))
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": 0.0,
+        "co_visited": co_visited_score_value,
+    }
+    missing = [f for f in co_visited_weights if feature_scores.get(f) is None]
+    weights_used = redistribute_weights(co_visited_weights, missing)
+    return RankedCandidate(
+        place_id="cov",
+        name="동선테스트",
+        category="test",
+        rank=1,
+        score=0.0,
+        feature_scores=feature_scores,
+        weights_used=weights_used,
+        is_unverified=False,
+        warnings=(),
+        distance_km=0.0,
+        remaining_minutes=None,
+        weather_condition=None,
+        environment_type="unknown",
+        co_visited_place_names=co_visited_place_names,
+    )
+
+
+def test_co_visited_sentence_names_the_other_place() -> None:
+    candidate = _co_visited_ranked_candidate(1.0, ("경복궁",))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == ("경복궁와(과) 함께 방문객들이 자주 찾는 곳이에요.",)
+
+
+def test_co_visited_sentence_lists_up_to_two_names() -> None:
+    candidate = _co_visited_ranked_candidate(1.0, ("경복궁", "북촌한옥마을", "인사동"))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == (
+        "경복궁, 북촌한옥마을와(과) 함께 방문객들이 자주 찾는 곳이에요.",
+    )
+
+
+def test_co_visited_sentence_falls_back_without_names() -> None:
+    """이름이 없는데도 notable(비정상 입력 방어) — 그래도 크래시 없이 일반 문구를 낸다."""
+    candidate = _co_visited_ranked_candidate(1.0, ())
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == (
+        "다른 추천 장소와 함께 방문객들이 자주 찾는 곳이에요.",
+    )
+
+
+def test_co_visited_below_threshold_is_omitted() -> None:
+    candidate = _co_visited_ranked_candidate(0.3, ("경복궁",))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == ()
+
+
+def test_co_visited_zero_is_omitted() -> None:
+    """쌍이 없는 후보(co_visited=0.0)는 결측이 아니라 낮은 점수다 — 문장 생략."""
+    candidate = _co_visited_ranked_candidate(0.0, ())
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == ()
+
+
 # --- 요청 환경(conditions.environment)으로 채점된 실행의 근거 문장 ------------
 
 
@@ -393,3 +474,110 @@ def test_mismatched_environment_is_below_threshold() -> None:
     explanations = build_explanations(build_evidence(result.ranked[0]))
 
     assert not any("요청하신" in sentence for sentence in explanations)
+
+
+# --- 실측 도보 시간 문구 (feat/walking-distance-scoring) --------------------
+
+
+def _walking_explanations(
+    duration_seconds: int, *, distance_km: float = 0.437, max_distance_km: float = 2.0
+):
+    candidate = _single_distance_candidate(distance_km)
+    prepared = prepare_candidates([candidate], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=max_distance_km,
+        travel_routes=[
+            TravelRoute(
+                place_id=candidate.place_id,
+                mode=TravelMode.WALKING,
+                status=RouteStatus.SUCCESS,
+                source=RouteSource.KAKAO_WALKING,
+                distance_m=int(distance_km * 1000),
+                duration_seconds=duration_seconds,
+            )
+        ],
+    )
+    return build_explanations(build_evidence(result.ranked[0]))
+
+
+def test_distance_sentence_uses_measured_walking_time() -> None:
+    """실측이 있으면 "직선거리"가 아니라 도보 시간으로 말한다.
+
+    점수도 같은 값으로 계산되므로 근거와 점수가 어긋나지 않는다.
+    """
+    assert _walking_explanations(420) == ("현재 위치에서 걸어서 약 7분 거리예요.",)
+
+
+def test_distance_sentence_formats_walking_time_over_an_hour() -> None:
+    """반경 20km면 도보 예산이 약 286분이라 75분도 임계값 이상으로 남는다."""
+    explanations = _walking_explanations(4500, max_distance_km=20.0)
+
+    assert explanations == ("현재 위치에서 걸어서 약 1시간 15분 거리예요.",)
+
+
+def test_distance_sentence_keeps_straight_line_wording_without_measurement() -> None:
+    """실측이 없으면 기존 직선거리 문구를 그대로 쓴다."""
+    explanations = _explanations_by_place_id(
+        (_single_distance_candidate(0.437),),
+        weather_condition=None,
+        max_distance_km=2.0,
+    )
+
+    assert explanations["dist"] == ("현재 위치에서 직선거리 약 440m예요.",)
+
+
+def _travel_evidence(mode: TravelMode) -> RecommendationEvidence:
+    return RecommendationEvidence(
+        place_id="p1",
+        name="장소A",
+        category="cafe",
+        rank=1,
+        score=0.5,
+        contributions=(
+            FeatureContribution(feature="distance", score=0.9, weight=0.2, contribution=0.18),
+        ),
+        is_unverified=False,
+        warnings=(),
+        distance_km=1.4,
+        remaining_minutes=None,
+        weather_condition=None,
+        environment_type="indoor",
+        travel_distance_m=1800,
+        travel_duration_seconds=600,
+        travel_mode=mode,
+    )
+
+
+def test_distance_sentence_says_by_car_for_a_driving_measurement() -> None:
+    """자동차 실측은 "차로"라고 말한다 — "걸어서"로 새어 나가지 않는다."""
+    sentences = build_explanations(_travel_evidence(TravelMode.DRIVING))
+
+    assert sentences == ("현재 위치에서 차로 약 10분 거리예요.",)
+
+
+def test_distance_sentence_speaks_transit() -> None:
+    """대중교통 실측도 그 수단으로 말한다 (D-118).
+
+    문구가 없던 시절에는 카드에 "대중교통 10분"이 적히고 문장은 직선거리로
+    돌아가, 같은 후보를 두 숫자로 말했다.
+    """
+    sentences = build_explanations(_travel_evidence(TravelMode.TRANSIT))
+
+    assert sentences == ("현재 위치에서 대중교통으로 약 10분 거리예요.",)
+
+
+def test_distance_sentence_falls_back_when_the_mode_has_no_phrase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """문구가 없는 이동수단은 실측 시간을 말하지 않고 직선거리로 답한다.
+
+    지금은 세 수단 모두 문구가 있으므로 하나를 지워서 확인한다 — 새 수단이
+    늘어도 "문구가 없으면 지어내지 않는다"는 성질은 남아야 한다.
+    """
+    monkeypatch.delitem(explanation._TRAVEL_MODE_PHRASES, TravelMode.TRANSIT)
+
+    sentences = build_explanations(_travel_evidence(TravelMode.TRANSIT))
+
+    assert sentences == ("현재 위치에서 직선거리 약 1.4km예요.",)

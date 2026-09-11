@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
 from collections import Counter
@@ -13,6 +14,7 @@ from time import monotonic
 from uuid import UUID
 
 from app.domain.models import (
+    PlaceBarrierFreeDetails,
     PlaceOperatingDetails,
     StoredPlaceState,
     TourPlacePage,
@@ -26,9 +28,14 @@ from app.domain.operating_hours import (
     normalize_operating_schedule,
 )
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
-from app.providers.protocols import TourAreaPlaceProvider
+from app.providers.protocols import BarrierFreeProvider, TourAreaPlaceProvider
 from app.providers.upstream_errors import is_daily_quota_exceeded
 from app.repositories.protocols import PlaceRepository
+from app.tools.closure_extract import (
+    ClosureExtractor,
+    merge_extracted_closures,
+    needs_extraction,
+)
 
 _ERROR_TIMEOUT = "TOUR_DETAIL_TIMEOUT"
 _ERROR_RATE_LIMITED = "TOUR_DETAIL_RATE_LIMITED"
@@ -37,6 +44,18 @@ _ERROR_QUOTA_EXCEEDED = "TOUR_DETAIL_QUOTA_EXCEEDED"
 _ERROR_UNAVAILABLE = "TOUR_DETAIL_UNAVAILABLE"
 _ERROR_INVALID_RESPONSE = "TOUR_DETAIL_INVALID_RESPONSE"
 _ERROR_UNKNOWN = "TOUR_DETAIL_UNKNOWN"
+
+# 무장애 조회(KorWithService2)는 detailIntro2와 다른 서비스라 실패도 따로 센다.
+# 같은 코드로 묶으면 화면에서 "상세조회가 실패했다"로 읽혀 원인을 찾을 수 없다.
+_ERROR_BARRIER_FREE_LIST = "BARRIER_FREE_LIST_FAILED"
+_ERROR_BARRIER_FREE_DETAIL = "BARRIER_FREE_DETAIL_FAILED"
+_ERROR_BARRIER_FREE_QUOTA = "BARRIER_FREE_QUOTA_EXCEEDED"
+_ERROR_BARRIER_FREE_STORE = "BARRIER_FREE_STORE_FAILED"
+
+# 무장애 정보를 받아오지 않는 유형. 숙박(32)은 관광 대상에서 제외하기로 했다
+# (2026-08-25). 무장애 응답에서 숙박에만 있는 필드(`room`, 장애인 객실)를 담지 않는
+# 것과 같은 결정이다.
+BARRIER_FREE_EXCLUDED_CONTENT_TYPES = frozenset({"32"})
 
 
 class IncompletePlaceListError(RuntimeError):
@@ -88,6 +107,14 @@ class PlaceSyncResult:
     detail_target_count: int
     detail_attempted_count: int
     reparse_count: int
+    # 무장애 정보(KorWithService2). provider를 주지 않으면 셋 다 0이다.
+    #   target    detailWithTour2를 부를 대상 수 — 무장애 목록에 있고 아직
+    #             확인하지 않았거나 TTL이 지난 장소다
+    #   attempted 실제로 부른 수 — 일일 한도로 중단하면 target보다 적다
+    #   stored    값이 하나라도 있어 저장된 장소 수
+    barrier_free_target_count: int
+    barrier_free_attempted_count: int
+    barrier_free_stored_count: int
     error_summary: Mapping[str, int]
 
 
@@ -98,6 +125,77 @@ class _DetailOutcome:
     operating_schedule: Mapping[str, object] | None
     parse_status: str | None
     error_code: str | None
+
+
+def barrier_free_candidate_ids(content_types: Mapping[str, str]) -> list[str]:
+    """무장애 확인 대상이 될 수 있는 장소. 숙박(32)은 뺀다.
+
+    화면의 예상 호출수(`routes/dev.py`)와 실제 동기화가 같은 규칙을 쓰도록 함수로
+    둔다. 두 곳에 같은 조건을 적어두면 한쪽만 고쳤을 때 화면이 실제와 다른 수를
+    보여주게 된다.
+    """
+    return [
+        content_id
+        for content_id, content_type_id in content_types.items()
+        if content_type_id not in BARRIER_FREE_EXCLUDED_CONTENT_TYPES
+    ]
+
+
+def barrier_free_stale_ids(
+    candidate_ids: Sequence[str],
+    already_checked: Mapping[str, datetime],
+    *,
+    now: datetime,
+    ttl: timedelta,
+) -> list[str]:
+    """다시 확인해야 하는 장소. 확인한 적 없거나 TTL이 지난 것이다.
+
+    값이 비어 있어도 확인한 것으로 친다 — 목록에 있는데 15개 필드가 전부 빈 장소가
+    있어서, 값으로 판단하면 그 장소들을 매번 다시 부른다.
+    """
+    deadline = now - ttl
+    return [
+        content_id
+        for content_id in candidate_ids
+        if (checked := already_checked.get(content_id)) is None or checked < deadline
+    ]
+
+
+@dataclass(frozen=True)
+class _BarrierFreeOutcome:
+    """무장애 적재 한 번의 결과. 실패는 동기화 전체의 error_summary로 합쳐진다."""
+
+    target_count: int
+    attempted_count: int
+    stored_count: int
+    failures: Counter[str]
+
+
+async def _enrich_closures(
+    schedule: OperatingSchedule, extractor: ClosureExtractor | None
+) -> OperatingSchedule:
+    """정규식이 못 읽은 휴무를 LLM으로 채운다. 실패하면 정규식 결과를 그대로 쓴다.
+
+    **적재를 실패시키지 않는다.** 휴무 하나를 못 읽었다고 그 장소가 통째로 빠지는
+    것보다, 지금까지와 같은 결과로 저장하는 편이 낫다. 되돌아간 사실은 로그에
+    남긴다 — 안 남기면 LLM이 한 번도 안 도는 채로 정상처럼 보인다.
+    """
+
+    if extractor is None or not needs_extraction(schedule):
+        return schedule
+    rest = schedule.cleaned_rest_date or ""
+    try:
+        result = await extractor.extract_closure_rules(rest)
+    except Exception:
+        logger.warning("place_sync.closure_extract_failed", exc_info=True)
+        return schedule
+    extracted = getattr(result, "data", None)
+    if not isinstance(extracted, Mapping):
+        return schedule
+    return merge_extracted_closures(schedule, extracted)
+
+
+logger = logging.getLogger(__name__)
 
 
 def serialize_operating_schedule(
@@ -137,10 +235,20 @@ def _serialize_rule(rule: OperatingRule) -> dict[str, object]:
 
 
 def _serialize_closure_rule(rule: ClosureRule) -> dict[str, object]:
-    return {
+    """휴무 규칙 한 줄을 DB JSON으로 옮긴다.
+
+    `week_ordinals`가 없으면 키를 넣지 않는다. 넣으면 "매주"인 기존 행과 모양이
+    달라지고, 읽는 쪽은 어차피 없는 키를 매주로 읽는다(`_is_regular_closure()`).
+    """
+    payload: dict[str, object] = {
         "weekdays": sorted(rule.weekdays),
         "source_text": rule.source_text,
     }
+    if rule.week_ordinals is not None:
+        payload["week_ordinals"] = sorted(rule.week_ordinals)
+    if rule.uncertain:
+        payload["uncertain"] = True
+    return payload
 
 
 class PlaceSyncService:
@@ -149,6 +257,7 @@ class PlaceSyncService:
         provider: TourAreaPlaceProvider,
         repository: PlaceRepository,
         *,
+        barrier_free_provider: BarrierFreeProvider | None = None,
         page_size: int = 100,
         detail_concurrency: int = 5,
         detail_ttl_days: int = 30,
@@ -156,7 +265,22 @@ class PlaceSyncService:
         retry_count: int = 2,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         now: Callable[[], datetime] | None = None,
+        # 휴무 원문을 LLM으로 읽어 정규식이 놓친 주기 휴무를 채운다(TP-231).
+        # 안 넘기면 지금까지처럼 정규식 결과만 저장한다 — 적재는 그대로 돌고
+        # 휴무만 덜 채워진다.
+        closure_extractor: ClosureExtractor | None = None,
     ) -> None:
+        # 넘겼는데 메서드가 없으면 **여기서 멈춘다.** 실행 중에는 실패를 삼키고
+        # 정규식 결과로 되돌아가므로(_enrich_closures), 모양이 틀린 것을 그대로
+        # 받으면 8,000곳을 다 돌고 나서야 "하나도 안 채워졌다"를 알게 된다.
+        if closure_extractor is not None and not hasattr(
+            closure_extractor, "extract_closure_rules"
+        ):
+            raise TypeError(
+                "closure_extractor에 extract_closure_rules가 없습니다:"
+                f" {type(closure_extractor).__name__}"
+            )
+        self._closure_extractor = closure_extractor
         if not 1 <= page_size <= 100:
             raise ValueError("page_size는 1 이상 100 이하여야 합니다.")
         if detail_concurrency < 1:
@@ -169,6 +293,9 @@ class PlaceSyncService:
             raise ValueError("retry_count는 0 이상이어야 합니다.")
         self._provider = provider
         self._repository = repository
+        # None이면 무장애 적재를 건너뛴다. 실패로 대체하지 않고 아예 하지 않는 것이라,
+        # 결과의 barrier_free_* 세 값이 모두 0인 것으로 화면에서 구분된다.
+        self._barrier_free_provider = barrier_free_provider
         self._page_size = page_size
         self._detail_concurrency = detail_concurrency
         self._detail_ttl = timedelta(days=detail_ttl_days)
@@ -228,6 +355,7 @@ class PlaceSyncService:
                 new_count=0,
                 updated_count=0,
                 deactivated_count=0,
+                detail_attempted_count=0,
                 error_summary={"SYNC_LOCK_UNAVAILABLE": 1},
                 completed_at=completed_at,
             )
@@ -245,6 +373,9 @@ class PlaceSyncService:
                 detail_target_count=0,
                 detail_attempted_count=0,
                 reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
                 error_summary={"SYNC_LOCK_UNAVAILABLE": 1},
             )
 
@@ -270,6 +401,7 @@ class PlaceSyncService:
                 new_count=0,
                 updated_count=0,
                 deactivated_count=0,
+                detail_attempted_count=0,
                 error_summary={"SYNC_ABORTED": 1},
                 completed_at=self._now(),
             )
@@ -313,6 +445,7 @@ class PlaceSyncService:
                     new_count=0,
                     updated_count=0,
                     deactivated_count=0,
+                    detail_attempted_count=0,
                     error_summary={"INCOMPLETE_PLACE_LIST": 1},
                     completed_at=self._now(),
                 )
@@ -330,6 +463,9 @@ class PlaceSyncService:
                 detail_target_count=0,
                 detail_attempted_count=0,
                 reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
                 error_summary={"INCOMPLETE_PLACE_LIST": 1},
             )
 
@@ -367,10 +503,13 @@ class PlaceSyncService:
         report("reparse", 0, len(reparse_targets))
         for reparsed, state in enumerate(reparse_targets, start=1):
             try:
-                schedule = normalize_operating_schedule(
-                    content_type_id=content_types[state.content_id],
-                    operating_hours=state.operating_hours_raw,
-                    rest_date=state.rest_date_raw,
+                schedule = await _enrich_closures(
+                    normalize_operating_schedule(
+                        content_type_id=content_types[state.content_id],
+                        operating_hours=state.operating_hours_raw,
+                        rest_date=state.rest_date_raw,
+                    ),
+                    self._closure_extractor,
                 )
                 if sync_run_id is not None:
                     await self._repository.update_parsed_schedule(
@@ -392,7 +531,17 @@ class PlaceSyncService:
         if sync_run_id is not None:
             await self._store_detail_outcomes(outcomes, started_at)
 
-        error_summary = reparse_failures + detail_failures
+        barrier_free = await self._sync_barrier_free(
+            area_code,
+            district_code,
+            places,
+            sync_run_id=sync_run_id,
+            limit=details_limit,
+            fetched_at=started_at,
+            report=report,
+        )
+
+        error_summary = reparse_failures + detail_failures + barrier_free.failures
         failed_ids = {
             outcome.content_id for outcome in outcomes if outcome.error_code is not None
         }
@@ -426,6 +575,8 @@ class PlaceSyncService:
                 new_count=new_count,
                 updated_count=updated_count,
                 deactivated_count=deactivated_count,
+                # 계획한 수가 아니라 실제로 부른 수다 — 한도로 중단하면 적다.
+                detail_attempted_count=len(outcomes),
                 error_summary=dict(error_summary) or None,
                 completed_at=self._now(),
             )
@@ -444,6 +595,9 @@ class PlaceSyncService:
             # 계획한 수가 아니라 실제로 부른 수다 — 일일 한도로 중단하면 적다.
             detail_attempted_count=len(outcomes),
             reparse_count=len(reparse_targets),
+            barrier_free_target_count=barrier_free.target_count,
+            barrier_free_attempted_count=barrier_free.attempted_count,
+            barrier_free_stored_count=barrier_free.stored_count,
             error_summary=dict(error_summary),
         )
 
@@ -606,10 +760,13 @@ class PlaceSyncService:
                 details = await self._provider.get_operating_details(
                     place.content_id, place.content_type_id
                 )
-                schedule = normalize_operating_schedule(
-                    content_type_id=details.content_type_id,
-                    operating_hours=details.operating_hours_raw,
-                    rest_date=details.rest_date_raw,
+                schedule = await _enrich_closures(
+                    normalize_operating_schedule(
+                        content_type_id=details.content_type_id,
+                        operating_hours=details.operating_hours_raw,
+                        rest_date=details.rest_date_raw,
+                    ),
+                    self._closure_extractor,
                 )
                 return _DetailOutcome(
                     place.content_id,
@@ -683,3 +840,157 @@ class PlaceSyncService:
                 credit_card_raw=details.credit_card_raw,
                 restroom_raw=details.restroom_raw,
             )
+
+    async def _sync_barrier_free(
+        self,
+        area_code: str,
+        district_code: str,
+        places: Sequence[TourPlaceRecord],
+        *,
+        sync_run_id: UUID | None,
+        limit: int | None,
+        fetched_at: datetime,
+        report: Callable[[str, int, int], None] | None = None,
+    ) -> _BarrierFreeOutcome:
+        """무장애 정보를 목록으로 좁혀 받아 place_barrier_free에 반영한다(D-077).
+
+        상세조회 대상(`detail_targets`)을 따라가지 않고 대상을 따로 고른다. 무장애
+        정보는 detailIntro2와 갱신 주기가 다르고, 상세조회 대상은 "이번에 바뀐
+        장소"라서 그걸 따라가면 안 바뀐 장소는 무장애 정보를 영영 못 받는다 —
+        기능을 넣은 날 이미 DB에 있던 2,600여 건이 통째로 그렇게 된다.
+
+        순서가 중요하다. **목록을 먼저 부르고 거기 있는 장소만 대상으로 삼는다.**
+        반대로 하면(확인 안 한 장소 전체를 대상으로 잡고 목록으로 걸러내면) 목록에
+        없는 장소까지 "확인했다"고 기록해야 하는데, 종로구에서 그런 행이 590개다.
+        무장애 정보가 없다는 사실은 목록이 매번 알려주므로 저장할 이유가 없다.
+
+        재조회는 TTL로 막는다. 한 번 확인한 장소는 `detail_ttl` 안에는 다시 부르지
+        않으므로, 구별로 처음 한 번만 목록 크기만큼(종로구 164건) 호출하고 그
+        뒤로는 목록 1회로 끝난다.
+        """
+        provider = self._barrier_free_provider
+        if provider is None:
+            return _BarrierFreeOutcome(0, 0, 0, Counter())
+
+        candidates = barrier_free_candidate_ids(
+            {place.content_id: place.content_type_id for place in places}
+        )
+        if not candidates:
+            return _BarrierFreeOutcome(0, 0, 0, Counter())
+
+        report_progress = report or (lambda *_: None)
+        try:
+            listed = await provider.list_barrier_free_content_ids(
+                area_code, district_code
+            )
+        except Exception:
+            # 목록을 못 받으면 어느 장소를 불러야 하는지 알 수 없다. 목록 없이
+            # 전량을 부르면 등록되지 않은 장소 대부분에 헛호출을 쓰게 되므로
+            # 이번 실행에서는 무장애 적재를 건너뛴다.
+            return _BarrierFreeOutcome(0, 0, 0, Counter({_ERROR_BARRIER_FREE_LIST: 1}))
+
+        registered = [content_id for content_id in candidates if content_id in listed]
+        already = await self._repository.list_barrier_free_fetched_at(registered)
+        to_fetch = barrier_free_stale_ids(
+            registered, already, now=fetched_at, ttl=self._detail_ttl
+        )
+        if limit is not None:
+            # 화면의 상세조회 상한을 무장애 호출에도 그대로 건다. 상한을 걸고
+            # 실행했는데 다른 서비스로 수백 회가 더 나가면 상한이 상한이 아니다.
+            to_fetch = to_fetch[:limit]
+
+        report_progress("barrier_free", 0, len(to_fetch))
+        details, failures, attempted = await self._fetch_barrier_free_details(
+            provider, to_fetch, report_progress, len(to_fetch)
+        )
+        stored = sum(1 for detail in details if detail.has_any_value())
+        if sync_run_id is not None and details:
+            try:
+                await self._repository.upsert_barrier_free_details(details, fetched_at)
+            except Exception:
+                # 무장애는 장소 동기화의 곁가지다. 여기서 예외를 올리면 이미 끝난
+                # 목록 반영·상세조회까지 실패로 뒤집히고 비활성화 판정도 건너뛴다.
+                # 실패는 error_summary에 남고 status가 partial_failure가 된다.
+                failures[_ERROR_BARRIER_FREE_STORE] += 1
+                stored = 0
+        report_progress("barrier_free", len(to_fetch), len(to_fetch))
+        return _BarrierFreeOutcome(
+            # 부를 대상 수다(`detail_target_count`와 같은 뜻).
+            target_count=len(to_fetch),
+            attempted_count=attempted,
+            # 목록에 있어도 15개 필드가 전부 빈 장소가 있다. "확인했다"와 "쓸 값이
+            # 있다"를 같은 수로 보고하면 커버리지를 실제보다 높게 읽게 된다.
+            stored_count=stored,
+            failures=failures,
+        )
+
+    async def _fetch_barrier_free_details(
+        self,
+        provider: BarrierFreeProvider,
+        targets: Sequence[str],
+        report: Callable[[str, int, int], None],
+        total: int,
+    ) -> tuple[list[PlaceBarrierFreeDetails], Counter[str], int]:
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+        failures: Counter[str] = Counter()
+        quota_exhausted = False
+        completed = 0
+        # 실제로 호출한 수다. 한도 소진으로 건너뛴 장소는 세지 않는다 — 화면이
+        # 오늘 쓴 호출을 실제보다 많게 읽으면 남은 한도를 잘못 판단하게 된다.
+        attempted = 0
+
+        async def fetch(content_id: str) -> PlaceBarrierFreeDetails | None:
+            nonlocal completed, quota_exhausted, attempted
+            async with semaphore:
+                if quota_exhausted:
+                    return None
+                attempted += 1
+                detail = await self._fetch_barrier_free_with_retry(
+                    provider, content_id, failures
+                )
+                if failures.get(_ERROR_BARRIER_FREE_QUOTA):
+                    quota_exhausted = True
+            completed += 1
+            report("barrier_free", completed, total)
+            return detail
+
+        results = await asyncio.gather(*(fetch(content_id) for content_id in targets))
+        return (
+            [detail for detail in results if detail is not None],
+            failures,
+            attempted,
+        )
+
+    async def _fetch_barrier_free_with_retry(
+        self,
+        provider: BarrierFreeProvider,
+        content_id: str,
+        failures: Counter[str],
+    ) -> PlaceBarrierFreeDetails | None:
+        """무장애 상세 1건. 실패는 failures에 쌓고 None을 돌려준다.
+
+        실패한 장소를 빈 행으로 저장하지 않는다 — 목록에는 있는데 값이 없다고
+        기록하면 "등록돼 있지 않다"와 구분되지 않고, TTL 동안 다시 부르지도 않게
+        되어 실패가 사실로 굳는다.
+        """
+        for attempt in range(self._retry_count + 1):
+            try:
+                return await provider.get_barrier_free_details(content_id)
+            except ProviderTimeoutError:
+                error_code = _ERROR_BARRIER_FREE_DETAIL
+            except ProviderUnavailableError as exc:
+                if is_daily_quota_exceeded(str(exc.details or "")):
+                    # 그날 안에는 무엇을 해도 실패한다. 남은 장소까지 같은 실패를
+                    # 반복하면 한도만 더 태운다.
+                    failures[_ERROR_BARRIER_FREE_QUOTA] += 1
+                    return None
+                error_code = _ERROR_BARRIER_FREE_DETAIL
+            except Exception:
+                failures[_ERROR_BARRIER_FREE_DETAIL] += 1
+                return None
+
+            if attempt < self._retry_count:
+                delay = (2**attempt) * 0.25 + random.uniform(0, 0.1)
+                await self._sleep(delay)
+        failures[error_code] += 1
+        return None

@@ -1,6 +1,54 @@
-**문서 버전:** v2.0
-**작성일:** 2026-08-06
+**문서 버전:** v2.3
+**작성일:** 2026-08-06 (v2.1 갱신: 2026-08-14, v2.2 갱신: 2026-08-18, v2.3 갱신: 2026-08-26)
 **관련 인텐트:** INT-01 RECOMMEND (파생), 신규 INT-07 SCHEDULE
+
+**v2.3 변경 이력 (place_associations 연동, D-091, v2.2 대비)**
+- `SchedulePlanningRequest`에 `co_visited_hints` 필드 신설(6.1절) — D-088로
+  만든 `place_associations`에서 후보 집합 안의 "함께 방문된" 쌍을
+  `app.schedule.associations.fetch_co_visited_hints()`로 조회한다
+- `plan_schedule()`/`plan_partial_schedule()`에 `co_visited_fetcher` opt-in
+  키워드 인자 추가 — 기본값 `None`이면 기존 동작과 완전히 동일.
+  `agent_runtime.py`가 두 호출부 모두에 `co_visited_fetcher=fetch_co_visited_hints`를
+  넘기도록 배선을 마쳐 실제로 켜져 있다(D-091/D-092)
+- 프롬프트에 `[함께 방문된 이력]` 섹션과 활용 규칙 추가(`schedule.plan`/
+  `schedule.plan_context` 1.0.0 → 1.1.0)
+- D/A 스키마·코드 변경 없음 — D의 `RecommendationItem.place_id`만 재사용
+
+**v2.2 변경 이력 (폐점 스탑 구조적 검증 추가, v2.1 대비)**
+- 6.2.1절이 남겨뒀던 한계("스탑별 재계산은 계속 범위 밖") 중 일부를 완화 —
+  전체 재계산까지는 여전히 하지 않지만, LLM이 계산한 estimated_arrival과
+  후보의 운영시간(operating_hours_display)을 대조해 모순되면 그 스탑에
+  경고를 붙이는 구조적 후처리를 추가함(`app.schedule.planner._finalize_items`)
+- 프롬프트(`build_schedule_planning_instruction`/`build_schedule_fill_instruction`)에도
+  후보별 운영시간을 함께 전달해 LLM이 애초에 마감된 곳을 뒷순서에 배치하지
+  않도록 유도 — 다만 이것만으로는 부족하다고 판단해(6.2.1절 근거) 구조적
+  후처리를 반드시 함께 둠("구조적 보장 우선" 원칙)
+- `ScheduleItem`에 `warnings: list[str]` 필드 신설(LLM이 생성하지 않고
+  시스템이 결정적으로 채움, basis_note와 동일한 설계)
+- `PROMPT_VERSION`을 `agent-interpret-prompts-1.0.13`으로 올림(SCHEDULE 두
+  system instruction의 규칙 변경)
+- 자세한 배경: 기본프로젝트 최종 발표에서 받은 질문("마지막 장소가 운영시간
+  넘겨서 추천되면?")을 계기로 발견, 프롬프트만으로 해결할지 논의 후 두
+  레이어를 함께 두는 쪽으로 결정
+- (같은 날 후속) dev-chat 실사용 테스트 중 "6시간 코스 짜줘"가 실제로는
+  2.5시간 분량만 채워 반환되는 별개 버그 발견 — target_item_range()의 목표
+  개수 범위 안에서도 LLM이 일찍 끝내버리는 과소-채움 문제로, 활동 가능
+  시간이 길 때 상한 개수에 가깝게 채우라는 지시를 duration_rule에 추가해
+  해결(`PROMPT_VERSION`을 `agent-interpret-prompts-1.0.14`로 추가 인상)
+
+**v2.1 변경 이력 (SCHEDULE-08/09 + 안정화 작업 반영, v2.0 대비)**
+- 9절 미결 사항이 SCHEDULE-07 시점에 머물러 있던 것을 SCHEDULE-08·09·이후
+  안정화 작업(번호 미부여, 08-10~08-13)까지 반영해 최신화 — 기본프로젝트
+  최종 발표 준비 중 설계 문서가 실제 구현을 못 따라가고 있다는 걸 뒤늦게
+  발견함(발표 피드백 계기)
+- 새로 해소된 항목: 부분 재편성(REJECT_SPECIFIC, SCHEDULE-09), 활동 가능
+  시간에 따른 동적 개수 편성, LLM 호출 타임아웃 분리, 도착 시각 10분 단위
+  반올림, 결과 문구·카드 중복 제거, 세션 복원 버그, SCHEDULE 직후 오분류
+  버그, 부분 재편성 stale 값 버그 2건
+- 새로 추가된 미결 항목: SCHEDULE 응답 지연시간 개선(`thinking_budget=0`)의
+  품질 영향 자동 검증 없음, 단위 환산 버그 수정이 구조적 하드 검증이 아님,
+  "대화 중 고른 장소로 일정 구성" 여전히 미착수
+- 6.2.1절(basis_note) 관련 한계는 그대로 유지 — 스탑별 재계산은 계속 범위 밖
 
 **v2.0 변경 이력 (A의 1차 구현과 병합, v1.3 대비)**
 - A(mintee)가 이 문서와 같은 경로로 독립적으로 작성한 1차 구현 설계(v0.1,
@@ -38,6 +86,18 @@
 - (신규) 1차 점수·근거 문장이 단일 `visit_at` 기준이라 뒷 순서 스탑에는
   부정확할 수 있다는 문제를 D가 발견 — `ScheduleResult.basis_note` 고정
   안내 문구로 대응하기로 결정 (6.2.1절 신설)
+
+---
+
+## 이어지는 설계 문서
+
+이 문서(v2.3) 이후의 SCHEDULE 변경은 주제별로 분리된 두 문서에 있다. 이쪽이
+최신이므로 아래 주제는 그쪽을 먼저 본다.
+
+| 문서 | 다루는 것 |
+|------|-----------|
+| [`saved-places.md`](saved-places.md) | 장소 보관함 — 사용자가 고른 장소를 상태로 들고 있다가 일정에 반드시 반영하는 경로 (D-107·D-110·D-114·D-116) |
+| [`schedule-engine.md`](schedule-engine.md) | 일정 엔진 — 체류시간·도착시각·이동시간 계산을 LLM에서 회수하는 변경 (TP-215~217) |
 
 ---
 
@@ -266,6 +326,11 @@ class SchedulePlanningRequest(BaseModel):
                                          # 검색 중심 기준 거리) D 응답만으로는 후보 간 거리를
                                          # 못 구한다 — A가 C의 AgentContextResponse.places(위경도
                                          # 보유)를 place_id로 매칭해 계산한다. D/C 스키마 변경 불필요.
+    co_visited_hints: list[CoVisitedHint] = []
+                                         # 신규(D-091) — place_associations(D-088) 기반 "이 후보들은
+                                         # 실제로 함께 방문됐다" 힌트. opt-in — plan_schedule()이
+                                         # co_visited_fetcher를 받았을 때만 채운다(app.schedule
+                                         # .associations 참고). D 스키마 변경 없음(place_id만 사용).
 ```
 
 ### 6.2 LLM 출력 스키마
@@ -302,6 +367,20 @@ D가 발견한 문제: 후보 10개의 1차 점수·근거 문장(운영시간·
 채운다(예: `"이 정보는 {visit_at} 기준으로 계산됐어요. 실제 방문
 시간에는 운영시간·날씨 상황이 달라질 수 있어요."`). 근본적인 재계산
 정확도 개선은 이번 범위 밖으로 남겨둔다.
+
+**(2026-08-18 추가, v2.2)** 위 한계 중 "뒷 순서 스탑이 실제로는 마감 이후일
+수 있다"는 부분은 재계산 없이도 상당 부분 완화할 수 있다는 걸 확인해 별도로
+처리했다 — D가 이미 후보마다 내려주는 `operating_hours_display`("09:00~18:00")와
+LLM이 계산한 `estimated_arrival`을 대조하기만 해도, 재방문 시각을 몰라도
+"이미 알고 있던 운영시간과 지금 계산된 도착 시각이 서로 모순되는지"는 판단할
+수 있기 때문이다. `app.schedule.planner._finalize_items()`가 이 대조를
+결정적으로 수행해 어긋나는 스탑에만 `ScheduleItem.warnings`를 채운다.
+프롬프트에도 운영시간을 함께 전달해 LLM이 애초에 그런 배치를 피하도록
+유도하지만, 그 지시만 믿지 않고 항상 이 구조적 재검증을 거친다("구조적
+보장 우선" 원칙 — SCHEDULE-07의 개수 하드 검증, stale 값 무효화와 같은
+접근). basis_note가 안내하는 "근거 데이터가 단일 시각 기준"이라는 한계
+자체는 여전히 남아있다 — 이 재검증도 D가 준 운영시간 값이 정확하다는
+전제 위에서만 유효하다.
 
 LLM은 10개 후보 중 시간·동선 효율을 고려해 **3~5개**를 선택하고 방문
 순서를 결정한다. 나머지는 자동 제외된다.
@@ -422,11 +501,128 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   5→10 확장과 혼잡도 2차 Scoring 처리를 아직 "D 협의 후 결정"으로
   남겨뒀는데, 이미 D와 합의 완료됨(top_k 10, 혼잡도 10개 전부 재계산,
   4·5절 참고) — A가 조건 추출·후속 구현에 들어가기 전에 알려줘야 함.
+  (2026-08-14 재확인: 아직 A에게 공유했다는 기록 없음 — 코드 작업 아니라
+  확인만 필요한 항목이라 우선순위가 계속 밀려온 것으로 보임)
 * `travel_to_next_min`은 현재 TBD인 `estimate_travel_time` Tool과 연동
   가능. Tool 미구현 상태이므로 1차에서는 LLM 추정값을 쓰되, 근거 없는
   추측이 되지 않도록 `pairwise_distances_km`(haversine 기반)을 프롬프트에
-  반드시 함께 제공한다. Tool 구현 완료 시 실측값으로 교체.
-* FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.
+  반드시 함께 제공한다. Tool 구현 완료 시 실측값으로 교체. (SCHEDULE-09
+  시점까지도 Tool 미착수 확인 — C 영역이라 B가 임의로 만들 수 없음)
+* **(2026-08-14 신규)** `ScheduleResult`의 `thinking_budget=0` 적용(응답
+  지연시간 약 6.5배 단축)이 답변 품질에 주는 영향은 자동화된 방식으로
+  검증되지 않았다. 이 프로젝트의 실행 환경이 외부 네트워크를 막고 있어
+  실제 Gemini 응답을 자동으로 비교할 수 없었고, 검증은 사용자의 수동
+  QA(`/dev-chat`)에만 의존했다. 이상 징후가 보고되면 최우선 확인 필요.
+* **(2026-08-14 신규)** `time_available`/`max_travel_time` 조건 추출의
+  단위 환산(분/시간) 수정은 프롬프트·스키마 설명으로만 개선됐고 구조적
+  하드 검증은 아니다 — "5"가 5분인지 잘못 추출된 5시간인지 값만으로는
+  구조적으로 판별할 방법이 없다. 여전히 확률적으로 틀릴 여지가 남아있다.
+* **(2026-08-14 신규)** "대화 중 고른 장소로 일정 구성" — 지금 SCHEDULE은
+  항상 "AI가 후보 10개 중 자율 선택"만 지원한다. 사용자가 대화 중 마음에
+  든 장소를 모아 그걸로 일정을 짜는 기능은 State에 "원하는 장소" 개념
+  자체가 없어 SCHEDULE 입력 모델을 바꿔야 한다(SCHEDULE-08에서 발견, 아직
+  티켓 없음, A와 설계 논의 필요).
+* **(2026-08-14 신규)** 인사동이 실제 지오코딩 별칭 테이블
+  (`_JONGNO_LANDMARK_ADDRESS_ALIASES`)에 없어 불필요한 disambiguation이
+  발생(SCHEDULE-09에서 발견). C(지오코딩) 영역이라 B가 임의로 고치지
+  않음.
+* **(2026-08-14 신규)** 이른 아침 시간대에 후보 조회는 성공(7개)했는데도
+  최종 일정이 빈 배열로 나오는 사례 확인(SCHEDULE-09에서 발견). 영업시간
+  기준 필터링이 D의 스코어링에서 걸렸을 가능성이 높다는 가설만 세움 —
+  D 코드는 B 범위 밖이라 직접 확인하지 못함.
+* **(2026-08-14 신규)** `FakeLLMProvider`의 `_SCHEDULE_MARKERS`가 "일정
+  짜"류 고정 문구만 매칭해 "일정 다시 짜줘"처럼 어순이 바뀐 입력을 못
+  잡는다. 테스트 스텁 전용 한계이고 실제 Gemini는 영향 없음(동적 개수
+  편성 작업 중 발견, 아직 미조치).
+* ~~FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.~~ → SCHEDULE-08에서
+  구현 완료(세로 타임라인, 이동 구간 분리). 아래 "해소된 항목" 참고.
+* **(2026-08-26, D-091/D-092, 해소됨)** `co_visited_hints`(6.1절) 연동 —
+  B 쪽 코드(associations.py/schemas.py/planner.py/프롬프트)와 A 쪽 배선
+  (`agent_runtime.py`의 `plan_schedule`/`plan_partial_schedule` 호출부에
+  `co_visited_fetcher=fetch_co_visited_hints`) 모두 반영 완료. RECOMMEND
+  목록 자체의 2차 스코어링에도 같은 신호를 연결했다(D-092,
+  `rerank_with_co_visited()`, D-040 패턴 재사용, `docs/decision-log.md` 참고)
+  — SCHEDULE 설계 문서인 이 문서의 범위 밖이라 상세는 decision-log에만 남긴다.
+
+**해소된 항목(번호 미부여, 08-18)**
+* 뒷 순서 스탑이 estimated_arrival 기준으로 이미 마감했을 수 있는데도
+  일정에 그대로 들어가는 문제(6.2.1절이 원래 남겨둔 한계): 완전한 재계산
+  대신, D가 후보마다 내려주는 `operating_hours_display`와 LLM이 계산한
+  `estimated_arrival`을 `app.schedule.planner._finalize_items()`가 대조해
+  어긋나면 `ScheduleItem.warnings`에 경고를 채우는 구조적 후처리를 추가.
+  프롬프트에도 운영시간을 함께 전달해 LLM이 애초에 피하도록 유도하되(1단계
+  힌트), 그 지시만으로는 부족하다고 보고 후처리 재검증(2단계, 구조적 보장)을
+  반드시 함께 둠. `PROMPT_VERSION` `1.0.12` → `1.0.13`. (6.2.1절 참고,
+  자세한 배경은 위 v2.2 변경 이력)
+* "6시간 코스 짜줘"처럼 활동 가능 시간이 긴 요청에서 실제로는 2.5시간
+  분량만 채워 반환되는 문제: target_item_range()가 계산하는 목표 개수
+  범위(예: 3~5개) 자체는 정상인데, duration_rule 문구가 "시간이 짧으면
+  줄이라"는 하한 방향 지시만 있고 시간이 넉넉할 때 상한 방향으로 채우라는
+  지시가 없어 LLM이 목표 개수 범위 안에서도 일찍 끝내버림. 시간이 넉넉하면
+  상한 개수에 가깝게 채우고 체류시간도 넉넉히 잡으라는 지시를
+  duration_rule에 추가. `target_item_range()`의 상한 계산이나
+  `ScheduleLLMPlan.max_length=5` 하드 캡은 그대로 둠 — 순수 프롬프트 문구만
+  수정. `PROMPT_VERSION` `1.0.13` → `1.0.14`.
+
+**해소된 항목(안정화 작업, 08-10~08-13, 번호 미부여)**
+* 활동 가능 시간이 짧으면(예: "2시간 코스 짜줘") `min_length=3` 고정
+  하한 때문에 개수 제약을 못 맞춰 502가 반복되던 문제: `target_item_range()`
+  신설로 시간 구간별(2시간 미만/2~3.5시간/3.5시간 이상) 목표 개수를
+  동적으로 계산, 스키마 하한은 1로 완화하고 목표 개수는 프롬프트가
+  매번 지시하는 방식으로 역할 분리.
+* Gemini 응답 지연 대응으로 늘린 `EXTERNAL_API_TIMEOUT_SECONDS`가 원래
+  짧게 끝나야 할 Tool/DB 조회까지 물려받던 문제: `LLM_API_TIMEOUT_SECONDS`
+  신설로 분리(값 없으면 기존 설정 폴백, 하위호환 유지).
+* 도착시각이 "11:59"처럼 어중간하게 나오던 문제: `estimated_arrival`만
+  10분 단위로 반올림하는 후처리 추가(체류·이동 시간은 LLM 추정값 자체가
+  정보라 그대로 둠).
+* "N시간 코스를 짜봤어요" 문구가 말풍선과 카드 양쪽에서 중복 계산되던
+  문제, RECOMMEND 카드가 서버 지연시간(ms)을 프로덕션 화면에도 노출하던
+  버그(SCHEDULE도 동일하게 만들려다 발견): 말풍선을 단일 진실 공급원으로
+  정리, 지연시간은 `isDeveloperView` 플래그로 개발자 화면 전용 통일.
+* SCHEDULE/INFO 메시지가 있는 세션은 새로고침 시 대화 전체가 복원
+  실패하던 버그(storage.ts의 `isChatMessage()` 타입 가드 누락): 두
+  메시지 타입 분기 추가, 회귀 테스트 작성.
+* SCHEDULE 직후 순수 추천 요청("일정 짜줘" 다음 "카페 추천해줘")이 재일정
+  편성으로 오분류되던 버그: 조건 병합 없이 재라벨링 조건을 좁히는 방식은
+  REJECT_ALL 회귀 위험이 있어 기각, 대신 intent 분류 프롬프트에 직전
+  Intent를 노출해 예외 규칙 추가.
+* 개발자 감사 패널이 SCHEDULE 턴을 항상 "추천 0건"으로 표시하던 버그
+  (`recommendations` 기준으로만 집계, SCHEDULE은 `schedule` 필드 사용):
+  SCHEDULE 턴 여부에 따라 라벨·상세 카드·Scoring 탭 분기.
+* REJECT_SPECIFIC 부분 재편성에서 교체 슬롯 앞뒤 pinned 항목의
+  `travel_to_next_min`·도착시각이 옛 값 그대로 남던 stale 값 버그 2건
+  (코드 리뷰로 선제 발견, 실사용 신고 아님): `_resync_downstream_arrivals()`
+  신설, 회귀 테스트 2건 추가.
+* SCHEDULE 응답 지연시간 16.6초 → 2.55초(약 6.5배) 단축:
+  `generate_schedule_plan`/`generate_schedule_fill` 두 호출에
+  `thinking_budget=0` 적용(나머지 9개 호출은 파라미터 기본값 유지로
+  영향 없음). 이후 같은 실측 검증 방식으로 `classify_intent`/
+  `extract_recommend_conditions`에도 확장 적용(각 2.3배/1.8배 단축,
+  정확도 동일 유지 확인) — 나머지 문장 생성·요약류 8개 호출은 품질 저하
+  위험이 커 확장 대상에서 제외.
+
+**해소된 항목(SCHEDULE-09)**
+* "두 번째는 별로야"류 순번 지목, "두가헌은 빼줘"류 이름 지목, "N번째
+  말고는 다 별로야"류 여집합 패턴까지 지원하는 일정 부분 수정
+  (`ModifyType.REJECT_SPECIFIC`) 구현. 지목 안 된 자리는 Python이
+  그대로 유지하고 지목된 자리만 LLM이 새 후보로 채우는 구조(Approach B)
+  — LLM이 pinned 항목까지 통째로 되돌려주는 방식(Approach A)은 SCHEDULE-07의
+  "구조적 보장 우선" 기조에 따라 채택하지 않음.
+* 실사용 재현 버그 2건 수정: 지명 검색(Naver local search) 폴백이
+  호출마다 다른 좌표를 반환해 pinned 항목까지 바뀌던 문제 →
+  `RecommendedItem.name` 저장 예외 추가로 재검색 의존 제거. REJECT_SPECIFIC
+  연속 2회째부터 감지 실패하던 문제 → `set_last_intent()` 신설로
+  relabel 직후 `last_intent` 동기화.
+
+**해소된 항목(SCHEDULE-08)**
+* 세로 타임라인 UI(배지+선 구조, 이동 구간을 카드 사이 별도 컴포넌트로
+  분리) 구현. SCHEDULE-06이 이미 완성해두고 프론트에 노출만 안 됐던
+  재조정("다른 코스 보기")·범위 확대("검색 범위 넓혀서 다시 찾기") 버튼을
+  RECOMMEND의 기존 문구·버튼 패턴 그대로 재사용해 노출.
+* items 빈 배열일 때 프론트가 자체적으로 "0분 코스를 짜봤어요" 헤더를
+  계산해 중복 표시하던 버그 발견·수정(백엔드 SCHEDULE-06 후속과 별개로
+  프론트에도 독립적으로 있던 문제).
 
 **해소된 항목(SCHEDULE-07)**
 * SCHEDULE 다음 턴(및 최초 요청)에 D 후보가 3개 미만이면 편성 동작이

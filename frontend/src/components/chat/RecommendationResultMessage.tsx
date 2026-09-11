@@ -1,19 +1,30 @@
 /*
  * 역할: 추천 API 응답을 채팅 메시지 안에서 장소 카드 목록으로 렌더링한다.
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
- * 출력: 추천 결과 메시지, PlaceCard 목록, 다른 장소 보기/반경 확대 버튼.
+ * 출력: 추천 결과 메시지와 PlaceCard 목록 — **줄은 언제나 하나다**("추천 장소").
+ *   운영시간을 확인하지 못한 후보(원문이 없거나 지금 폐점)도 이 줄에 함께
+ *   들어간다(2026-09-08, 아래 rankedRecommendations 주석). 그 줄 오른쪽에는
+ *   추천 기준 보조설명이 붙는다(PlaceCardRow의 note, 2026-09-09).
+ *
+ * **동작 버튼과 취향 표는 여기 없다.** 각각 RecommendationActionsMessage와
+ * PreferenceTagSummaryTable이 별도 메시지로 그린다 — 버튼은 다음 발화가 나가면
+ * 걷어내야 하는데 카드와 한 메시지에 있으면 같이 지워지기 때문이다.
  * 호출 시점: ChatPage가 recommendation_result 메시지를 렌더링할 때 호출된다.
- * TODO: 지도/동선/저장 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
+ * 담기/빼기는 useSavedPlaces()로 직접 읽고 쓴다 — 카드가 메시지 목록 깊숙이
+ * 있어 prop으로 내리면 중간 컴포넌트 셋을 전부 거쳐야 한다.
+ * TODO: 지도/동선 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
  *
  * showElapsedTime이 false면(실사용자 화면) 지연시간(elapsedMs/serverElapsedMs)을
  * 아예 렌더링하지 않는다 — 개발자 확인용 숫자가 실서비스 화면에 새던 걸 정리함.
  * /dev-chat(ChatMessageList의 isDeveloperView)에서만 true로 넘어온다.
  */
 
-import type { RecommendationItem } from "../../types";
+import { useState } from "react";
+import type { Language, RecommendationItem } from "../../types";
+import { useSavedPlaces } from "../../hooks/useSavedPlaces";
 import { PlaceCard } from "../PlaceCard";
-
-const RADIUS_RELAXATION_STEP_KM = 0.5;
+import { PlaceCardRow } from "./PlaceCardRow";
+import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
@@ -21,9 +32,7 @@ interface RecommendationResultMessageProps {
   elapsedMs: number;
   serverElapsedMs: number;
   showElapsedTime?: boolean;
-  isLoading: boolean;
-  onRequestMore: () => void;
-  onRelaxRadius: () => void;
+  language?: Language;
 }
 
 function formatDuration(milliseconds: number | undefined) {
@@ -39,103 +48,95 @@ export function RecommendationResultMessage({
   elapsedMs,
   serverElapsedMs,
   showElapsedTime = false,
-  isLoading,
-  onRequestMore,
-  onRelaxRadius,
+  language = "ko",
 }: RecommendationResultMessageProps) {
-  // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
-  // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
-  // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
-  // 분리한다.
-  const closedRecommendations = unverifiedRecommendations.filter(
-    (item) => item.operating_hours_display,
+  const text =
+    language === "en"
+      ? {
+          noResults: "We couldn’t find a place that matches those conditions.",
+          recommendations: "Recommended places",
+          recommendationsNote: "Ranked by distance, weather, your preferences, and more",
+        }
+      : {
+          noResults: "조건에 맞는 장소를 찾지 못했어요.",
+          recommendations: "추천 장소",
+          recommendationsNote: "거리·날씨·취향 등을 고려했어요",
+        };
+  const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
+    null,
   );
-  const unknownHoursRecommendations = unverifiedRecommendations.filter(
-    (item) => !item.operating_hours_display,
-  );
-  const hasNoResults =
-    recommendations.length === 0 &&
-    closedRecommendations.length === 0 &&
-    unknownHoursRecommendations.length === 0;
+  const { savedPlaceIds, toggleSaved } = useSavedPlaces();
+  /*
+   * **줄은 하나다**(2026-09-08). 전에는 세 줄이었다 — "추천 장소",
+   * "현재 운영시간이 아닌 장소"(운영시간 원문은 있지만 지금 닫힌 후보),
+   * "운영시간을 확인할 수 없는 장소"(원문조차 없는 후보). 뒤 둘을 차례로
+   * 이 줄에 합쳤다.
+   *
+   * **캡션이 하던 말을 카드가 이미 한다.** 운영시간 자리에 "확인 불가" 또는
+   * "19:00~23:00 (현재 운영시간 아님)"이 찍히고(PlaceCard의 hoursRemainingLabel),
+   * 그 아래 경고 줄에 "방문 전에 운영 여부를 확인해주세요." 또는 "지금은
+   * 운영시간이 아니에요. 방문 전에 다시 확인해주세요."가 붙는다
+   * (domain/scoring.py의 _UNVERIFIED_WARNING·_CLOSED_NOW_WARNING). 캡션은 그
+   * 말을 한 번 더 하면서 줄을 갈랐다.
+   *
+   * **줄 분리는 mintee가 4cab841a에서 넣은 것이고 이 변경이 그걸 덮는다**
+   * (사용자 결정, 2026-09-08). 다만 그 커밋의 핵심 의도인 "폐점 후보의 실제
+   * 운영시간을 보존해 00:00~00:00 표기를 제거"는 그대로 산다 — 그건 줄 분리가
+   * 아니라 카드가 operating_hours_display를 읽는 방식이다.
+   *
+   * **순위 번호가 이어 붙는다**(사용자 결정). 검증된 후보가 5개면 나머지는 6·7위로
+   * 보인다. 백엔드는 원래 검증·미확인을 한 목록에서 함께 줄 세워 rank를 매기지만
+   * (domain/scoring.py의 `rank=index + 1`) 그 값을 응답에 싣지 않으므로,
+   * 화면의 번호는 배열 순서로 다시 붙인 것이다 — 실제로 3위였던 미확인 후보가
+   * 6위로 보일 수 있다. 검증된 후보가 하나도 없으면 미확인 후보가 1위 자리에 온다.
+   *
+   * 순서는 백엔드가 준 그대로다. 각 목록 안은 점수 내림차순이므로 합치면
+   * "검증된 것들(점수순) → 확인 못 한 것들(점수순)"이 된다.
+   */
+  const rankedRecommendations = [...recommendations, ...unverifiedRecommendations];
+  const hasNoResults = rankedRecommendations.length === 0;
 
   return (
-    <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          조건에 맞춰 이런 장소를 찾아봤어요.
-        </p>
-        {showElapsedTime && (
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+    <article className="mr-auto flex w-full flex-col gap-3">
+      {showElapsedTime && (
+        <div className="flex flex-wrap items-baseline justify-end gap-2">
+          <p className="text-xs text-muted">
             {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
           </p>
-        )}
-      </div>
+        </div>
+      )}
 
       {hasNoResults ? (
+        /* 버튼은 여기 없다 — RecommendationActionsMessage가 뒤이어 그린다.
+           안내 문구는 그때 받은 답이라 기록으로 남긴다. */
         <div className="flex flex-col gap-3 text-sm">
-          <p className="text-gray-700 dark:text-gray-300">조건에 맞는 장소를 찾지 못했어요.</p>
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={onRelaxRadius}
-            className="w-fit rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
-          >
-            검색 반경 넓혀서 다시 찾기 (+{RADIUS_RELAXATION_STEP_KM}km)
-          </button>
+          <p className="text-ink">{text.noResults}</p>
         </div>
       ) : (
         <>
-          {recommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">추천 장소</h3>
-              <ul className="flex flex-col gap-3">
-                {recommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
-                ))}
-              </ul>
-            </section>
+          {rankedRecommendations.length > 0 && (
+            <PlaceCardRow caption={text.recommendations} note={text.recommendationsNote}>
+              {rankedRecommendations.map((item, index) => (
+                <PlaceCard
+                  key={item.place_id}
+                  item={item}
+                  rank={index + 1}
+                  language={language}
+                  isSaved={savedPlaceIds.has(item.place_id)}
+                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
+                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                />
+              ))}
+            </PlaceCardRow>
           )}
-
-          {closedRecommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                현재 운영시간이 아닌 장소
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {closedRecommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {unknownHoursRecommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                운영시간을 확인할 수 없는 장소
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {unknownHoursRecommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={onRequestMore}
-              className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
-            >
-              {isLoading ? "불러오는 중..." : "다른 장소 보기"}
-            </button>
-            <span className="self-center text-xs text-gray-500 dark:text-gray-400">
-              다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
-            </span>
-          </div>
         </>
+      )}
+
+      {selectedRecommendation && (
+        <RecommendationDetailPreviewModal
+          item={selectedRecommendation}
+          onClose={() => setSelectedRecommendation(null)}
+        />
       )}
     </article>
   );

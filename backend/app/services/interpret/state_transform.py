@@ -10,7 +10,7 @@ payload를 읽고 operations/rejected_places/reset_scope로 바꾸는 건 해석
 
 from __future__ import annotations
 
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
     Environment,
@@ -41,12 +41,19 @@ _SINGLE_FIELDS = (
     "environment",
     "companion",
     "budget",
+    # (2026-08-19) 취향 발화 원문. budget과 동일 스펙(_single(str, Update, Remove)).
+    # 이 목록에서 빠지면 추출은 되는데 연산이 안 만들어져 상태 병합에서 값이
+    # 조용히 사라진다 — 실제로 그렇게 한 번 놓쳤다.
+    "taste_query",
+    # (2026-08-22) 이동시간 출발점 판정("안국역에서" vs "안국역 근처"). taste_query와
+    # 같은 이유로 이 목록에 반드시 있어야 한다.
+    "travel_origin",
 )
 # agent-state-contract-v1.md §2.2: place_types는 Update/Remove만, place_tags는
 # Add/Update/Remove 다 허용 — 둘 다 Update로 둔다. exclude_tags/special_requirements는
 # Add/Remove만 허용해 Update를 보내면 unsupported_operation으로 조용히 드롭된다.
 _MULTI_FIELDS_UPDATE = ("place_types", "place_tags")
-_MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements")
+_MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements", "accessibility_needs")
 _MULTI_FIELDS = _MULTI_FIELDS_UPDATE + _MULTI_FIELDS_ADD  # _KNOWN_FIELDS 계산용
 _KNOWN_FIELDS = frozenset(_SINGLE_FIELDS) | frozenset(_MULTI_FIELDS)
 
@@ -187,6 +194,19 @@ def transform(
                     value=existing_search_center,
                 )
             )
+            # travel_origin은 그 search_center에 대한 판정이라 같은 장소가
+            # 이어지는 한 함께 이어진다. "안국역에서 10분" 다음 턴 "그럼
+            # 조용한 데로"가 search_center만 복원되고 travel_origin은
+            # 초기화돼 기준점이 사용자 위치로 도로 바뀌는 걸 막는다.
+            existing_travel_origin = session_context.user_conditions.travel_origin
+            if existing_travel_origin is not None:
+                operations.append(
+                    Operation(
+                        op="Update",
+                        field="travel_origin",
+                        value=existing_travel_origin,
+                    )
+                )
 
     elif llm_output.intent is Intent.MODIFY and llm_output.modify is not None:
         modify = llm_output.modify
@@ -225,7 +245,7 @@ def transform(
         reset_scope=reset_scope,
         operations=operations,
         rejected_places=rejected_places,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=turn_prompt_version(llm_output.intent),
     )
 
 
@@ -422,12 +442,20 @@ def _detect_reset_scope(user_input: str, modify_type: ModifyType) -> str | None:
     바뀌면 직전 노출분(recommended)을 비워서, 조건이 되돌아왔을 때 다시 노출될
     수 있게 한다. REJECT_ALL은 대상이 아니다 — 그쪽은 rejected 기록으로 영구
     제외를 이미 표현하므로 기본값을 None으로 유지한다.
+
+    REJECT_SPECIFIC도 "history"다. 지목한 자리만 거절이고 나머지는 유지 대상인데,
+    그 나머지가 직전 턴의 recommended로 제외 목록에 남아 있으면 다음 채점에서 함께
+    빠진다 — "두 번째만 별로야"가 REJECT_ALL과 같은 결과를 내게 된다. 거절한 자리는
+    rejected로 계속 제외되므로 recommended를 비워도 되살아나지 않는다.
+    SCHEDULE 부분 재편성은 pinned_items가 자리를 붙들고 있어 이 값에 영향받지
+    않는다 — 유지 항목은 planner가 후보에서 직접 걸러내고(planner.py) 프롬프트도
+    "pinned_items의 place_id를 다시 고르지 마세요"로 지시한다(fill.md).
     """
 
     for phrase, scope in _RESET_SCOPE_PHRASES:
         if phrase in user_input:
             return scope
-    if modify_type is ModifyType.CHANGE_CONDITION:
+    if modify_type in (ModifyType.CHANGE_CONDITION, ModifyType.REJECT_SPECIFIC):
         return "history"
     return None
 

@@ -94,6 +94,7 @@ class AgentContextRequest(BaseModel):
     conditions: UserConditions
     gps_location: Coordinates | None = None
     excluded_place_ids: list[str] = Field(default_factory=list)
+    resolved_search_center: Coordinates | None = None
 ```
 
 ### 4.2 필드 설명
@@ -103,8 +104,9 @@ class AgentContextRequest(BaseModel):
 | `request_id` | 예 | A가 호출 1건마다 생성하는 추적 ID. 응답에 그대로 반환된다. |
 | `intent` | 예 | v0에서는 항상 `RECOMMEND`. C가 필요한 Context 수집 흐름을 선택하는 기준이다. |
 | `conditions` | 예 | LLM이 추출한 사용자 조건. A는 값을 임의로 Provider 형식으로 변환하지 않는다. |
-| `gps_location` | 아니오 | A가 전달하는 기기 GPS 좌표. 사용자 발화 위치와 분리하며 장소명이 없을 때 검색 중심 fallback으로 사용한다. |
+| `gps_location` | 아니오 | A가 전달하는 기기 GPS 좌표. 사용자 발화 위치와 분리한다. 장소명이 없으면 검색 중심 fallback으로 쓴다. 사용자 위치(`context.user_location`)로는 `conditions.current_location`이 우선하고, 이 값은 발화 위치가 없거나 해석에 실패했을 때 쓰인다(TP-112). |
 | `excluded_place_ids` | 아니오 | 이미 소진된 후보 id(노출분 ∪ 거절분). C는 이걸로 추천 여부를 판정하지 않고, 그만큼 후보를 더 받아와 새 후보가 요청 개수만큼 남게 하는 데만 쓴다. 2절의 "제외 판정은 D 책임"은 그대로다 — 아래 설명 참고. |
+| `resolved_search_center` | 아니오 | 같은 턴 안의 **보충 조회**에서만 채운다. A가 첫 조회에서 확정한 검색 기준점 좌표다. 값이 있으면 C는 장소만 다시 주고 위치 해석·날씨·공휴일을 건너뛴다 — 그 셋의 결과는 A가 보충 배치에서 버리기 때문이다(첫 배치 값을 그대로 쓴다). 보충 1회의 외부 호출이 7건에서 2건으로 준다. 값이 없으면 기존과 동일하게 전부 수집한다. |
 | `current_location` | 아니오 | 사용자가 말한 현재 위치. |
 | `search_center` | 아니오 | 추천 검색 중심 장소. |
 | `place_types`, `place_tags` | 아니오 | 사용자가 원하는 장소 유형·태그. C가 내부 분류 코드로 변환한다. |
@@ -206,8 +208,13 @@ class Clarification(BaseModel):
 
 
 class ResolvedLocation(BaseModel):
+    # 사용자가 말한 문자열(수식어 제거 후). 근거 문장이 기준점을 부를 때 쓰는 값이다 —
+    # resolved_name은 지오코딩으로 풀리면 도로명 주소가 되므로 표시용으로 쓸 수 없다.
     requested_query: str
     resolved_name: str
+    # 이 좌표의 출처. "query"면 requested_query가 사용자가 말한 장소이고,
+    # "device_gps"면 기기 위치라 부를 이름이 없다(requested_query는 자리표시자).
+    source: Literal["query", "device_gps"]
     location: Coordinates
     address: str | None = None
 
@@ -261,7 +268,15 @@ class ContextValue(BaseModel, Generic[T]):
 
 
 class RecommendationContext(BaseModel):
+    # 반경 검색으로 후보를 **모은** 중심. 사용자가 있는 곳이 아니라 "이번 검색을
+    # 어디를 중심으로 했는가"다. search_center → current_location → 기기 GPS 순.
+    # 후보를 **줄 세우는** 기준점은 user_location이다(TP-112, D-067).
     location: ContextValue[ResolvedLocation] | None = None
+    # 사용자가 있는 곳. 기준점(location)이 따로 잡혀도 버리지 않는다.
+    # current_location(발화) → 기기 GPS 순으로 정해진다 — location의
+    # search_center → current_location → GPS와 같은 우선순위다(TP-112).
+    # location과 같은 타입이라 D는 기준점에 쓰던 판정을 그대로 쓸 수 있다.
+    user_location: ContextValue[ResolvedLocation] | None = None
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
@@ -573,8 +588,22 @@ D이고, C가 미리 판정하면 같은 사실에 두 개의 판정이 생긴�
       "data": {
         "requested_query": "경복궁",
         "resolved_name": "경복궁",
+        "source": "query",
         "location": { "latitude": 37.5796, "longitude": 126.977 },
         "address": "서울특별시 종로구"
+      },
+      "error": null,
+      "warnings": [],
+      "provider_metadata": []
+    },
+    "user_location": {
+      "status": "success",
+      "data": {
+        "requested_query": "인사동",
+        "resolved_name": "인사동",
+        "source": "query",
+        "location": { "latitude": 37.5717, "longitude": 126.986 },
+        "address": null
       },
       "error": null,
       "warnings": [],

@@ -11,11 +11,20 @@ from app.agent_context.schemas import AgentContextRequest
 from app.agent_context.schemas import UserConditions as AgentUserConditions
 from app.agent_context.service import ContextService, ContextTools
 from app.config import Settings
+from app.domain.travel_route import (
+    GeoCoordinate,
+    RouteDestination,
+    RouteSource,
+    RouteStatus,
+)
 from app.providers.concentration import RealConcentrationProvider
+from app.providers.driving_route import RealNaverDrivingRouteProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
+from app.providers.kakao_transit_route import RealKakaoTransitRouteProvider
 from app.providers.real_place import RealPlaceProvider
+from app.providers.walking_route import RealKakaoWalkingRouteProvider
 from app.providers.weather import RealWeatherProvider
 from app.schemas import Intent, PlaceType, UserConditions
 from app.tools.holiday import GetHolidaysTool
@@ -62,14 +71,10 @@ async def test_naver_geocoding_real_smoke() -> None:
     async with httpx.AsyncClient() as client:
         provider = RealGeocodingProvider(
             api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
-            api_key=_required_value(
-                "NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret
-            ),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
             client=client,
         )
-        result = await ResolveLocationTool(provider).execute(
-            ResolveLocationQuery("경복궁")
-        )
+        result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("경복궁"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
@@ -79,6 +84,95 @@ async def test_naver_geocoding_real_smoke() -> None:
     print(
         f"Naver Geocoding: {result.location.resolved_name} "
         f"({result.location.latitude:.4f}, {result.location.longitude:.4f})"
+    )
+
+
+async def test_kakao_walking_route_real_smoke() -> None:
+    """경복궁 → 인사동 도보 경로.
+
+    **확인하려는 것은 소요시간 값이 아니라 `source`다.** 세 이동수단 중 도보만
+    fallback으로 `FakeWalkingRouteProvider`가 붙어 있어(`get_travel_route_tool`),
+    카카오 호출이 실패해도 직선거리 추정이 조용히 자리를 메운다 — 응답은 정상으로
+    나가고 실측만 사라진다. 자동차·대중교통은 fallback이 없어 실패가 NO_DATA로
+    드러나지만 도보는 드러나지 않는다.
+
+    실제로 `route_measured_ratio`가 0%로 찍힌 적이 있다(`tools/travel_route.py`의
+    관측 주석). Provider를 직접 부르면 그 fallback을 지나지 않으므로, 키나
+    게이트웨이 문제가 여기서 그대로 드러난다.
+    """
+    async with httpx.AsyncClient() as client:
+        provider = RealKakaoWalkingRouteProvider(
+            api_key=_required_value("KAKAO_MAP_REST_API_KEY", settings.kakao_map_rest_api_key),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5796, 126.9770),
+            (RouteDestination("insadong", GeoCoordinate(37.5744, 126.9856)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    # 추정으로 대체되면 STRAIGHT_LINE_ESTIMATE가 온다. 이 줄이 이 테스트의 목적이다.
+    assert route.source is RouteSource.KAKAO_WALKING
+    # 직선거리 약 0.85km 구간이라 보행 경로는 그보다 길다.
+    assert route.distance_m is not None and 500 < route.distance_m < 5_000
+    assert route.duration_seconds is not None and 300 < route.duration_seconds < 5_400
+    print(
+        f"Kakao Walking: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
+    )
+
+
+async def test_naver_driving_route_real_smoke() -> None:
+    """경복궁 → 광장시장 자동차 경로. 소요시간 단위(밀리초→초) 환산까지 확인한다."""
+    async with httpx.AsyncClient() as client:
+        provider = RealNaverDrivingRouteProvider(
+            api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5788, 126.9770),
+            (RouteDestination("gwangjang", GeoCoordinate(37.5702, 126.9991)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    assert route.source is RouteSource.NAVER_DRIVING
+    assert route.distance_m is not None and 1_000 < route.distance_m < 10_000
+    # 밀리초를 그대로 실으면 여기서 걸린다(2.6km가 22분이면 1332초).
+    assert route.duration_seconds is not None and 60 < route.duration_seconds < 3_600
+    print(
+        f"Naver Driving: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
+    )
+
+
+async def test_kakao_transit_route_real_smoke() -> None:
+    """경복궁 → 남산서울타워 대중교통 경로.
+
+    응답의 `routes[]`가 소요시간 순이 아니므로 최소값을 골랐는지까지 본다 —
+    첫 원소를 쓰면 여기서 더 큰 값이 나온다.
+    """
+    async with httpx.AsyncClient() as client:
+        provider = RealKakaoTransitRouteProvider(
+            api_key=_required_value("KAKAO_MAP_REST_API_KEY", settings.kakao_map_rest_api_key),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5796, 126.9770),
+            (RouteDestination("namsan", GeoCoordinate(37.5512, 126.9882)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    assert route.source is RouteSource.KAKAO_TRANSIT
+    assert route.distance_m is not None and 1_000 < route.distance_m < 30_000
+    # 3km 구간이라 실측 40분 안팎이다. 배차 대기는 포함되지 않은 값이다.
+    assert route.duration_seconds is not None and 300 < route.duration_seconds < 7_200
+    print(
+        f"Kakao Transit: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
     )
 
 
@@ -130,12 +224,8 @@ async def test_context_service_real_smoke() -> None:
 
     async with httpx.AsyncClient() as client:
         geocoding = RealGeocodingProvider(
-            api_key_id=_required_value(
-                "NAVER_MAP_CLIENT_ID", settings.naver_map_client_id
-            ),
-            api_key=_required_value(
-                "NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret
-            ),
+            api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
             client=client,
         )
         weather = RealWeatherProvider(
@@ -183,8 +273,7 @@ async def test_context_service_real_smoke() -> None:
     assert place_data
     assert response.metadata.provider_metadata
     assert all(
-        metadata.retrieved_at.tzinfo is not None
-        for metadata in response.metadata.provider_metadata
+        metadata.retrieved_at.tzinfo is not None for metadata in response.metadata.provider_metadata
     )
     print(
         "ContextService: "
@@ -233,7 +322,8 @@ async def test_gemini_real_smoke() -> None:
     """Gemini 연결 + 구조화 출력 JSON 파싱이 실제로 되는지 확인 (오늘 1순위)."""
     provider = RealGeminiProvider(
         api_key=_llm_api_key(),
-        model_name=settings.llm_model_name,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
     )
 
     classification = (
@@ -245,9 +335,7 @@ async def test_gemini_real_smoke() -> None:
     ).data
     assert classification.intent is Intent.RECOMMEND
 
-    output = (
-        await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
-    ).data
+    output = (await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")).data
     assert output.recommend is not None
     assert output.recommend.conditions.search_center == "경복궁"
     print(f"Gemini RECOMMEND: {output.recommend.conditions.model_dump_json()}")
@@ -257,19 +345,16 @@ async def test_gemini_modify_reject_all_vs_change_condition_real_smoke() -> None
     """MODIFY의 REJECT_ALL vs CHANGE_CONDITION 구분이 핵심 검증 포인트."""
     provider = RealGeminiProvider(
         api_key=_llm_api_key(),
-        model_name=settings.llm_model_name,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
     )
     current = UserConditions(
         search_center="경복궁",
         place_types=[PlaceType.RESTAURANT],
     )
 
-    reject_all = (
-        await provider.extract_modify_conditions("다른 곳 보여줘", current)
-    ).data
-    change_condition = (
-        await provider.extract_modify_conditions("무료인 곳으로", current)
-    ).data
+    reject_all = (await provider.extract_modify_conditions("다른 곳 보여줘", current)).data
+    change_condition = (await provider.extract_modify_conditions("무료인 곳으로", current)).data
 
     reject_modify = reject_all.modify
     change_modify = change_condition.modify
@@ -293,7 +378,4 @@ async def test_kasi_holiday_real_smoke() -> None:
 
     assert result.entries
     assert all(entry.date.startswith("2026") for entry in result.entries)
-    print(
-        f"KASI Holidays: entries={len(result.entries)}, "
-        f"holidays={len(result.holidays)}"
-    )
+    print(f"KASI Holidays: entries={len(result.entries)}, holidays={len(result.holidays)}")

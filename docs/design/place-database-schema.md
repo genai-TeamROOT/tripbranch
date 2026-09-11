@@ -37,6 +37,8 @@ place_sync_runs 1 ───── N places
 
 places 1 ───── 0..1 place_concentration_mappings
 
+places 1 ───── 0..1 place_barrier_free
+
 place_sync_runs 1 ───── 0..1 place_sync_locks
 ```
 
@@ -47,6 +49,8 @@ place_sync_runs 1 ───── 0..1 place_sync_locks
 - 집중률 API에 고유 ID가 없어 `places.content_id`를 매핑의 PK로 사용한다.
 - 동기화 실행을 삭제해도 장소는 삭제하지 않는다.
 - 장소를 삭제하면 연결된 보완정보는 함께 삭제한다.
+- 장소 하나에는 무장애 정보가 없거나 한 건 존재한다. 행이 있다는 것은 "무장애
+  목록에 있어서 조회했다"는 뜻이고, 값이 전부 비어 있으면 항목이 미입력이라는 뜻이다.
 
 ## 4. `place_sync_runs`
 
@@ -277,14 +281,22 @@ TourAPI에 없거나 추천에 바로 사용하기 어려운 TripBranch 자체 �
 | `weather_tags` | `text[]` | 필수 | 날씨 태그, 기본값 빈 배열 |
 | `reservation_required` | `boolean` | 선택 | 예약 필요 여부 |
 | `source_type` | `text` | 필수 | `manual_research`, `external_data`, `derived` |
+| `official_facts` | `jsonb` | 필수 | TourAPI 누락을 공식 출처로 보강한 필드별 객체, 기본값 `{}`. **현재 읽는 코드 없음(보류)** |
 | `verified_at` | `timestamptz` | 선택 | 사람이 마지막으로 확인한 시각 |
 | `created_at` | `timestamptz` | 필수 | 최초 생성 시각 |
 | `updated_at` | `timestamptz` | 필수 | 마지막 수정 시각 |
+
+`official_facts`는 최상위 키가 `places` 필드명과 같고 각 값에 `value`,
+`merge_policy`, `verified_at`, `sources`를 보존한다. **무장애 정보를 여기 담으려던
+접근이 `place_barrier_free` 전용 테이블로 나뉘면서(D-077) 보류됐다.** 컬럼과 값은
+남겨둔다 — 전용 테이블이 담지 못하는 정보가 있어 나중에 반영할 수 있다. 2026-08-25
+기준 116행 전부에 값이 있고, 담긴 키는 `places` 원문 8종과 무장애 6종이다.
 
 ### 제약조건
 
 - `estimated_visit_minutes`는 값이 있다면 `0`보다 커야 한다.
 - 배열에는 `NULL` 원소나 빈 문자열을 넣지 않는다.
+- `official_facts`는 JSON 객체여야 한다(`jsonb_typeof = 'object'`).
 - 장소 삭제 시 보완정보는 `ON DELETE CASCADE`로 함께 삭제한다.
 - `place_type`은 기존 추천 공통 계약의 `attraction`, `cultural_facility`,
   `festival`, `leisure`, `shopping`, `restaurant` 중 하나다.
@@ -347,6 +359,75 @@ TourAPI에 없거나 추천에 바로 사용하기 어려운 TripBranch 자체 �
 - 대표명과 별칭을 합친 집중률 장소: 101개
 - 미매칭: 12개
 - 비활성 장소 참조: 0개
+
+## 6.2 `place_barrier_free`
+
+무장애 여행 정보(`KorWithService2`/`detailWithTour2`) 원문을 캐시한다(D-077).
+`places`와 1:1이며 `detailIntro2`와는 다른 서비스라 호출도 따로 나간다. 무장애
+목록에 있는 장소만 행이 되므로 `places`보다 훨씬 적다(종로구 842건 중 164건).
+
+places 컬럼으로 붙이지 않은 이유는 세 가지다 — 담을 필드가 15개인데 행의 81%가
+전부 null이고(무장애 정보가 등록된 장소는 4개 구 2,570건 중 496건),
+`places.detail_fetch_status`가 `detailIntro2` 조회 상태라 다른 조회의 상태를
+얹으면 한 컬럼이 두 가지를 뜻하게 되며, 대상 목록 자체가 다른 엔드포인트에서 온다.
+
+| 컬럼 | PostgreSQL 형식 | 필수 | 응답 키 | 채움률 | 설명 |
+| --- | --- | --- | --- | --- | --- |
+| `content_id` | `text` | 필수 | `contentid` | — | PK이자 `places.content_id` FK |
+| `approach_route_raw` | `text` | 선택 | `route` | 64.9% | 도로·주차장에서 출입문 앞까지의 접근로 |
+| `entrance_access_raw` | `text` | 선택 | `exit` | 62.1% | 주출입구의 단차·경사로·문 종류 |
+| `accessible_restroom_raw` | `text` | 선택 | `restroom` | 52.2% | 장애인 화장실 |
+| `accessible_parking_raw` | `text` | 선택 | `parking` | 47.1% | 장애인 주차구역 |
+| `elevator_raw` | `text` | 선택 | `elevator` | 42.2% | 승강기 |
+| `disability_etc_raw` | `text` | 선택 | `handicapetc` | 22.2% | 그 밖의 장애인 편의 |
+| `braille_block_raw` | `text` | 선택 | `braileblock` | 19.7% | 점자블록 |
+| `wheelchair_rental_raw` | `text` | 선택 | `wheelchair` | 16.9% | 휠체어 **대여** |
+| `public_transport_raw` | `text` | 선택 | `publictransport` | 13.6% | 저상버스·역 승강기 |
+| `stroller_rental_raw` | `text` | 선택 | `stroller` | 13.6% | 유모차 대여 |
+| `infant_family_etc_raw` | `text` | 선택 | `infantsfamilyetc` | 13.1% | 기저귀교환대·어린이실 |
+| `nursing_room_raw` | `text` | 선택 | `lactationroom` | 12.4% | 수유실 |
+| `braille_promotion_raw` | `text` | 선택 | `brailepromotion` | 10.5% | 점자 안내물 |
+| `audio_guide_raw` | `text` | 선택 | `audioguide` | 9.6% | 음성 안내 |
+| `guide_dog_raw` | `text` | 선택 | `helpdog` | 9.1% | 보조견 동반 |
+| `fetched_at` | `timestamptz` | 필수 | — | — | 확인한 시각 |
+| `created_at` | `timestamptz` | 필수 | — | — | 최초 생성 시각 |
+| `updated_at` | `timestamptz` | 필수 | — | — | 마지막 수정 시각 |
+
+채움률은 2026-08-25 실측이다(4개 구 무장애 등록 496건에서 숙박 69건을 뺀 427건).
+응답 필드 28개 중 5%를 넘긴 15개만 담는다.
+
+### 컬럼 이름이 응답 키와 다른 이유
+
+두 필드가 이름과 반대로 읽히기 때문이다.
+
+- `wheelchair`는 휠체어 출입이 아니라 **대여**다("대여 가능(1대/안내데스크)").
+  휠체어로 들어갈 수 있는지는 `route`·`exit`의 서술로 판단해야 한다.
+- `exit`는 출구가 아니라 **주출입구**다.
+
+`route`와 `exit`는 접근로와 출입구를 나눈 필드인데 작성자가 뒤바꿔 넣은 사례가
+있다(가나아트센터). 휠체어 접근 판정은 두 값을 함께 읽는다.
+
+### 제약조건
+
+- 장소 삭제 시 무장애 정보는 `ON DELETE CASCADE`로 함께 삭제한다.
+- 행이 있다는 것은 "무장애 목록에 있어서 조회했다"는 뜻이다. 목록에 없는 장소는
+  행을 만들지 않는다.
+
+### 적재 규칙
+
+- 무장애 목록(`areaBasedList2`)을 먼저 1회 부르고, 거기 있는 장소만 대상으로
+  삼는다. 목록에 없는 장소는 행을 만들지 않는다 — 없다는 사실은 목록이 매번
+  알려주므로 저장할 이유가 없다.
+- 대상은 상세조회 대상(`detail_content_ids`)을 따라가지 않는다. 그쪽은 "이번에
+  바뀐 장소"라서, 따라가면 이미 DB에 있던 장소가 영영 대상이 되지 않는다.
+- 재조회는 `places.detail_fetched_at`과 같은 TTL로 막는다. 한 번 확인한 장소는
+  TTL 안에는 다시 부르지 않으므로, 구별로 처음 한 번만 목록 크기만큼 호출하고
+  그 뒤로는 목록 1회로 끝난다.
+- 숙박(`content_type_id = 32`)은 관광 대상에서 제외해 부르지 않는다.
+- **값이 비어 있어도 행을 남긴다.** 목록에 있는데 필드가 전부 빈 장소가 4개 구에서
+  60건이다 — 전부 쇼핑(38)이고 용산구에 50건이 몰려 있으며, 몰 입점 매장이
+  2022·2024년에 일괄 등록되면서 레코드만 만들어지고 항목은 입력되지 않았다.
+  남기지 않으면 실행할 때마다 같은 빈 응답을 다시 받는다.
 
 ## 7. 인덱스
 
@@ -475,6 +556,8 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 | `202608040001_add_concentration_search_key.sql` | 2026-08-04 | 조회용 검색어 단수 컬럼 추가 (D-043) |
 | `202608080001_add_place_parking_fee_image_columns.sql` | 2026-08-08 | `places`에 주차·요금·할인·이미지 6개 컬럼 추가 (D-056) |
 | `202608080002_add_concentration_search_keys.sql` | 2026-08-08 | 검색어를 순서 있는 목록으로 교체하고 단수 컬럼 삭제 (D-057) |
+| `202608240001_add_official_facts_to_place_enrichments.sql` | 2026-08-24 | `place_enrichments`에 `official_facts jsonb` 추가. 무장애는 전용 테이블로 가면서 보류됐고 컬럼은 남긴다 |
+| `202608250002_create_place_barrier_free.sql` | 2026-08-25 | `place_barrier_free` 생성 (D-077). 같은 날 `202608250001`을 구글 프로필이 먼저 써서 번호를 옮겼다 |
 
 - 최초 두 건은 Supabase SQL Editor로 적용해 원격 마이그레이션 이력이 생성되지
   않았다. Supabase CLI 최초 도입 시 `supabase/README.md`의 이력 복구 절차를 먼저

@@ -17,11 +17,13 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
+from app.agent_context.info_schemas import RealtimeInfoDetailItem
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
     Clarification,
     ContextValue,
+    Coordinates,
     PlaceCandidate,
     RecommendationContext,
     ResponseMetadata,
@@ -35,6 +37,7 @@ from app.schemas import (
     UserConditions,
 )
 from app.services.runtime.compare_context_schemas import (
+    CompareCandidate,
     CompareContextRequest,
     CompareContextResponse,
 )
@@ -46,6 +49,8 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
+    RealtimeCommercialInfoResult,
 )
 from app.state.schema import now_kst
 
@@ -68,13 +73,30 @@ _FAKE_COMPARE_PLACE_NAMES: dict[str, str] = {
     "runtime-stub-restaurant-1": "런타임 스텁 식당",
     "runtime-stub-market-1": "런타임 스텁 시장",
 }
+# TRAVEL_TIME 실측 연결(2026-08-21) — 실제 C처럼 place_id별 좌표를 함께 흉내 낸다.
+# 값 자체는 종로 일대의 임의 좌표로, 실측 provider가 실제로 거리를 계산할 수 있게
+# 서로 떨어뜨려 둔다.
+_FAKE_COMPARE_PLACE_COORDINATES: dict[str, tuple[float, float]] = {
+    "fake-place-1": (37.5796, 126.9770),
+    "fake-place-2": (37.5824, 126.9910),
+    "fake-place-3": (37.5735, 126.9788),
+    # _FAKE_CANDIDATES(RECOMMEND 고정 후보)의 location과 같은 값 — COMPARE로
+    # 이어지는 통합 테스트가 실제 RECOMMEND 결과를 그대로 재사용하므로 여기서도
+    # 좌표가 있어야 한다.
+    "runtime-stub-museum-1": (37.5796, 126.9770),
+    "runtime-stub-cafe-1": (37.5798, 126.9772),
+    "runtime-stub-park-1": (37.5800, 126.9774),
+    "runtime-stub-gallery-1": (37.5802, 126.9776),
+    "runtime-stub-restaurant-1": (37.5804, 126.9778),
+    "runtime-stub-market-1": (37.5806, 126.9780),
+}
 # 비교가 성립하는 최소 후보 수. C(agent_context.service)의 _MIN_COMPARE_ITEMS와 같다.
 _FAKE_MIN_COMPARE_ITEMS = 2
 # criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
 # 방식이라 특정 필드를 요구하지 않는다.
 _FAKE_COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
-    CompareCriteria.DISTANCE: "distance_km",
     CompareCriteria.TIME: "remaining_minutes",
+    CompareCriteria.TRAVEL_TIME: "latitude",
 }
 
 # concentration 외 question_type(D-054)의 고정 fields — 키는
@@ -229,9 +251,7 @@ class FakeToolProvider:
             metadata=metadata,
         )
 
-    async def fetch_compare_context(
-        self, request: CompareContextRequest
-    ) -> CompareContextResponse:
+    async def fetch_compare_context(self, request: CompareContextRequest) -> CompareContextResponse:
         """C의 비교 컨텍스트 조립을 고정 데이터로 흉내 낸다.
 
         place_id를 장소명으로 바꾸는 것만 가짜로 하고, 판정 규칙은 실제 C와 같게
@@ -244,15 +264,22 @@ class FakeToolProvider:
         """
 
         candidates = sorted(request.candidates, key=lambda item: item.rank)
-        items = [
-            ComparisonItem(
+
+        def _build_item(candidate: CompareCandidate) -> ComparisonItem:
+            coordinates = _FAKE_COMPARE_PLACE_COORDINATES.get(candidate.place_id)
+            return ComparisonItem(
                 place_id=candidate.place_id,
                 place_name=_FAKE_COMPARE_PLACE_NAMES[candidate.place_id],
                 rank=candidate.rank,
                 distance_km=candidate.distance_km,
                 remaining_minutes=candidate.remaining_minutes,
                 environment_type=candidate.environment_type,
+                latitude=coordinates[0] if coordinates else None,
+                longitude=coordinates[1] if coordinates else None,
             )
+
+        items = [
+            _build_item(candidate)
             for candidate in candidates
             if candidate.place_id in _FAKE_COMPARE_PLACE_NAMES
         ]
@@ -290,12 +317,16 @@ class FakeToolProvider:
         그 외(카페 등)는 근접치 fallback 성공을 시뮬레이션한다. 실제 장소
         해석·근접치 탐색 오케스트레이션은 C 내부 구현(A는 하지 않음).
 
-        question_type=concentration은 위 흐름 그대로다. 그 외 7종(D-054/D-055,
+        question_type=concentration은 위 흐름 그대로다. realtime_commercial은 특정
+        매장 대신 용리단길 카페 상권을 빌린 고정 응답을 돌린다. 그 외 7종(D-054/D-055,
         backend/docs/package-a/info-question-types-handoff.md)은 알려진
         관광지면 고정 fields/event를 채운 성공 응답을, 그 외는 no_data를
         반환한다 — C처럼 근접치 fallback을 흉내 내지는 않는다(그 오케스트레이션
         자체가 C 내부 책임이라 A 쪽 Fake에서 재현할 필요가 없다).
         """
+        # 공중화장실은 지명 없이 기기 위치로도 답하므로 되묻기보다 먼저 본다.
+        if request.question_type == "public_toilet":
+            return self._fake_public_toilet_info(request)
         if not request.place_name:
             return InfoContextResponse(
                 request_id=request.request_id,
@@ -309,6 +340,8 @@ class FakeToolProvider:
 
         if request.question_type == "event":
             return self._fake_event_info(request)
+        if request.question_type == "realtime_commercial":
+            return self._fake_realtime_commercial_info(request)
         if request.question_type != "concentration":
             return self._fake_place_info(request)
 
@@ -343,6 +376,76 @@ class FakeToolProvider:
             ),
         )
 
+    def _fake_public_toilet_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        """인사동 주변 두 곳을 고정으로 돌린다.
+
+        좌표를 채워 프론트 카드의 도보 길찾기 경로까지 fake 모드에서 확인할 수
+        있게 한다 — 좌표가 비면 카드가 주소 검색으로 폴백해 다른 경로를 타게 된다.
+        """
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="public_toilet",
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name or "현재 위치",
+                fields={
+                    "인사동마루 신관 개방화장실": "도보 50m · 지금 이용 가능 · 24시간",
+                    "쌈지길(지하1층)": "도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+                },
+                detail_items=[
+                    RealtimeInfoDetailItem(
+                        title="인사동마루 신관 개방화장실",
+                        subtitle="도보 50m · 지금 이용 가능 · 24시간",
+                        details={
+                            "거리": "도보 50m",
+                            "개방 여부": "지금 이용 가능",
+                            "개방시간": "24시간",
+                            "주소": "서울특별시 종로구 인사동길 35-4",
+                            "유형": "민간개방",
+                            "화장실": "남자, 여자",
+                            "장애인화장실": "남자, 여자",
+                        },
+                        latitude=37.57432,
+                        longitude=126.98563,
+                    ),
+                    RealtimeInfoDetailItem(
+                        title="쌈지길(지하1층)",
+                        subtitle="도보 60m · 지금은 닫혀 있음 · 10:30~20:30",
+                        details={
+                            "거리": "도보 60m",
+                            "개방 여부": "지금은 닫혀 있음",
+                            "개방시간": "10:30~20:30",
+                            "주소": "서울특별시 종로구 인사동길 44",
+                            "유형": "민간개방",
+                        },
+                        latitude=37.57411,
+                        longitude=126.98527,
+                    ),
+                ],
+                source_url="https://data.seoul.go.kr/dataList/OA-22586/S/1/datasetView.do",
+            ),
+        )
+
+    def _fake_realtime_commercial_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name,
+                area_name="용리단길",
+                area_code="POI076",
+                proxy_distance_km=0.2,
+                category_label="음식·음료 · 커피·음료",
+                commercial_level="바쁜 시간대",
+                observed_at="2026-08-20 14:00",
+            ),
+        )
+
     def _fake_place_info(self, request: InfoContextRequest) -> InfoContextResponse:
         if request.place_name not in _FAKE_ATTRACTION_NAMES:
             return InfoContextResponse(
@@ -367,9 +470,15 @@ class FakeToolProvider:
                 requested_place_name=request.place_name,
                 resolved_place_name=request.place_name,
                 place_id="fake-place-id",
+                destination_coordinates=Coordinates(latitude=37.5796, longitude=126.9770),
                 fields=dict(fields),
-                place_card=_FAKE_PLACE_CARD.model_copy(
-                    update={"place_name": request.place_name}
+                # 실제 C와 마찬가지로 주소(location_info)는 위치 해석 결과만으로
+                # 답하므로 PlaceDetails를 추가 조회하지 않는다. A가 이 응답에서도
+                # 최소 InfoPlaceCard를 만들도록 Runtime 회귀 테스트를 맞춘다.
+                place_card=(
+                    None
+                    if request.question_type == "location_info"
+                    else _FAKE_PLACE_CARD.model_copy(update={"place_name": request.place_name})
                 ),
             ),
         )

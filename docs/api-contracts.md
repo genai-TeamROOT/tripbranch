@@ -39,6 +39,7 @@ type AgentResponse = {
   message: string;                          // 챗봇 말풍선 텍스트
   recommendations?: RecommendationResponse; // RECOMMEND/MODIFY + complete일 때만
   schedule?: ScheduleResult;                // SCHEDULE + complete일 때만
+  suggested_follow_ups?: string[];          // 다음 발화 제안 버튼 문구, 0~3개
   llm_execution?: LLMExecutionMetadata;     // 개발자 Audit용
   tool_execution?: ToolExecutionDebug;      // 개발자 Audit용
 };
@@ -47,6 +48,13 @@ type AgentResponse = {
 - `recommendations`와 `schedule`은 동시에 채워지지 않습니다.
 - `message`에 카드·일정 상세를 다시 풀어쓰지 않습니다. 상세는
   [Agent 응답 생성 설계](./design/agent-response-generation.md) 참고.
+- `suggested_follow_ups`는 이 턴 뒤에 버튼으로 보여줄 다음 발화 후보입니다. 버튼을 누르면
+  **그 문구가 그대로 `user_input`으로 재전송됩니다** — `clarification.options`가 `id`를
+  `clarification_choice`로 보내 Intent를 못 박는 것과 다릅니다. 되묻기 턴
+  (`status = needs_clarification`)과 `OUT_OF_SCOPE` 턴에서는 항상 빈 배열입니다(D-102).
+  **`POST /api/chat/stream`에서는 이 필드가 항상 빈 배열이고**, 문구는 `done` 뒤에 오는
+  별도 `follow_ups` 이벤트로 전달됩니다
+  ([스트리밍 설계](./design/agent-response-streaming.md) 4.3절).
 - 상세 필드는 `backend/app/schemas.py`의 `AgentRequest`, `AgentResponse`를
   기준으로 합니다.
 
@@ -149,6 +157,15 @@ type RecommendationItem = {
   // 그 후보에 실제 적용된 당일 운영 구간. 운영시간 미확인 후보는 null이다.
   // 24시간 개방은 "24시간", 원문 "09:00~24:00"은 "09:00~24:00"으로 내려간다.
   operating_hours_display: string | null; // 예: "09:00~18:00"
+  // 실측 경로값. 값이 있으면 distance Feature 점수도 직선거리가 아니라 이 소요시간으로
+  // 계산된 것이다. 조회 실패나 그 이동수단의 경로 Provider가 아직 없으면 세 필드가 함께
+  // null이고, 그때는 distance_km(직선거리)가 유일한 거리 정보다. 프론트는 null일 때
+  // 시간을 자체 추정하지 않고 직선거리로만 표시한다.
+  // travel_mode는 어떤 이동수단으로 잰 값인지다. 지금 서버가 실제로 채우는 값은
+  // "walking"뿐이고, 대중교통·자동차는 각 이동수단 카드에서 Provider가 붙는다.
+  travel_distance_m: number | null;
+  travel_duration_seconds: number | null;
+  travel_mode: "walking" | "transit" | "driving" | null;
   environment_type: "indoor" | "outdoor" | "mixed" | "unknown";
   recommendation_reason: string;
   explanations: string[]; // Rule 기반 Feature별 설명 문장(0~3개), 기여도 큰 순

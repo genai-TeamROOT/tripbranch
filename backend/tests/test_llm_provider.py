@@ -15,7 +15,9 @@ from app.providers.gemini_prompts import (
     build_compare_extraction_instruction,
     build_intent_classification_instruction,
     build_modify_extraction_instruction,
+    build_recommend_extraction_instruction,
     build_schedule_planning_instruction,
+    format_schedule_planning_context,
 )
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
@@ -34,6 +36,7 @@ from app.schemas import (
     PlaceType,
     RecommendationItem,
     StatedWeather,
+    Transport,
     UserConditions,
     WeatherIntent,
 )
@@ -204,7 +207,7 @@ async def test_generate_general_answer_service_identity_mentions_trivy() -> None
 async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> None:
     provider = FakeLLMProvider()
     comparison = ComparisonResult(
-        criteria=CompareCriteria.DISTANCE,
+        criteria=CompareCriteria.TRAVEL_TIME,
         items=[
             ComparisonItem(
                 place_id="p1",
@@ -232,6 +235,50 @@ async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> N
     # 0.2km를 3.6km/h로 환산해 올림한 값이다(추천 카드와 같은 표기 규칙).
     assert "도보 약 4분" in result.data
     assert "점수" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_generate_compare_summary_travel_time_recommends_shortest_duration() -> None:
+    """TRAVEL_TIME은 수단 상관없이 가장 빨리 갈 수 있는 곳을 추천하고, 실측 거리와
+    도보·자동차·대중교통 소요시간을 함께 말한다.
+
+    같은 항목의 distance_km(추천 시점 스냅샷 직선거리)는 travel_time 기준에서는
+    실측값과 섞이면 혼동을 주므로 언급하지 않는다.
+    """
+    provider = FakeLLMProvider()
+    comparison = ComparisonResult(
+        criteria=CompareCriteria.TRAVEL_TIME,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="경복궁",
+                rank=1,
+                distance_km=0.2,
+                travel_distance_km=1.8,
+                travel_walking_minutes=22,
+                travel_driving_minutes=12,
+                travel_transit_minutes=18,
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="국립민속박물관",
+                rank=2,
+                distance_km=0.5,
+                travel_distance_km=3.4,
+                travel_walking_minutes=40,
+                travel_driving_minutes=20,
+                travel_transit_minutes=25,
+            ),
+        ],
+    )
+
+    result = await provider.generate_compare_summary(comparison)
+
+    assert "경복궁" in result.data
+    assert "자동차로 약 12분" in result.data
+    assert "도보로 약 22분" in result.data
+    assert "대중교통으로 약 18분" in result.data
+    assert "0.2" not in result.data
 
 
 @pytest.mark.asyncio
@@ -569,6 +616,46 @@ async def test_extract_recommend_conditions_bare_place_sets_search_center() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_input", "expected_transport"),
+    [
+        ("차로 갈만한 카페 추천해줘", Transport.CAR),
+        ("걸어서 갈 수 있는 곳 추천해줘", Transport.WALK),
+        ("대중교통으로 갈 만한 곳 추천해줘", Transport.PUBLIC),
+    ],
+)
+async def test_extract_recommend_conditions_transport(
+    user_input: str, expected_transport: Transport
+) -> None:
+    """TP-105 — transport=CAR가 채워져야 D의 자동차 경로 실측이 실제로 호출된다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions(user_input)).data
+
+    assert output.recommend.conditions.transport is expected_transport
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_transport_not_mentioned_stays_null() -> None:
+    """이동수단을 언급하지 않았으면 추정하지 않고 null로 둔다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")).data
+
+    assert output.recommend.conditions.transport is None
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_travel_time_alone_does_not_imply_transport() -> None:
+    """이동시간만 말하고 이동수단은 말하지 않으면 transport를 유추해서 채우지 않는다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions("30분 안에 갈 수 있는 곳")).data
+
+    assert output.recommend.conditions.transport is None
+
+
+@pytest.mark.asyncio
 async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> None:
     """MODIFY에서도 '조용한'은 혼잡도 회피(AVOID)로 추출해야 한다.
 
@@ -591,6 +678,18 @@ async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> N
         "place_tags",
         "concentration_intent",
     ]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_transport_change() -> None:
+    """MODIFY도 이동수단 변경 발화를 transport로 추출하고 changed_fields에 남긴다."""
+    provider = FakeLLMProvider()
+    current = UserConditions(search_center="창경궁", transport=Transport.WALK)
+
+    output = (await provider.extract_modify_conditions("차로 가는 걸로 바꿔줘", current)).data
+
+    assert output.modify.condition_changes.transport is Transport.CAR
+    assert "transport" in output.modify.changed_fields
 
 
 @pytest.mark.asyncio
@@ -986,6 +1085,61 @@ def test_modify_instruction_includes_reject_specific_rule_and_shown_count() -> N
     assert "현재 노출된 일정/추천 항목 수: 3" in instruction
 
 
+def test_recommend_instruction_includes_time_unit_conversion_rule() -> None:
+    """time_available/max_travel_time이 분 단위임을 명시하지 않아 LLM이 "5시간"을
+    그대로 5로 뽑는 실사용 오류가 확인됨(2026-08-13) — 프롬프트에 환산 규칙을
+    명시적으로 넣었는지 확인한다."""
+    instruction = build_recommend_extraction_instruction()
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
+
+
+def test_condition_instructions_treat_permissive_expressions_as_unrestricted() -> None:
+    """허용은 선호가 아니다.
+
+    "야외도 괜찮아"는 기존 실내 조건을 풀어야 하고, "비/사람 많아도 괜찮아"는
+    각각 날씨·혼잡을 즐기거나 선호한다는 뜻이 아니다. RECOMMEND와 MODIFY가 공통
+    규칙을 모두 포함하는지 고정해 모델·프롬프트 변경 때 조용한 오분류를 막는다.
+    """
+    recommend = build_recommend_extraction_instruction()
+    modify = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    for instruction in (recommend, modify):
+        assert "비 와도 괜찮아" in instruction
+        assert "weather_intent=IGNORE" in instruction
+        assert "사람 많아도 괜찮아" in instruction
+        assert "concentration_intent=IGNORE" in instruction
+
+
+def test_condition_instructions_include_transport_mapping_rules() -> None:
+    """TP-105 — D의 자동차 경로 실측이 transport=CAR를 보고 동작하므로,
+    RECOMMEND/MODIFY 양쪽 프롬프트에 구체 매핑 규칙이 있는지 고정한다.
+    한쪽만 규칙이 있으면 그 인텐트에서만 조용히 동작이 갈린다.
+    """
+    recommend = build_recommend_extraction_instruction()
+    modify = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    for instruction in (recommend, modify):
+        assert "이동수단(transport) 규칙" in instruction
+        assert 'transport="car"' in instruction
+        assert 'transport="walk"' in instruction
+        assert 'transport="public"' in instruction
+        assert "야외도 괜찮아" in instruction
+        assert 'environment="any"' in instruction
+
+
+def test_modify_instruction_includes_time_unit_conversion_rule() -> None:
+    """위와 같은 이유로 MODIFY(조건 변경) 프롬프트에도 같은 환산 규칙이 있어야 한다 —
+    "이번엔 5시간으로 다시 짜줘"처럼 SCHEDULE 다음 턴 조건 변경이 이 경로를 탄다."""
+    instruction = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
+
+
 @pytest.mark.asyncio
 async def test_extract_modify_conditions_tc08_change_condition_budget() -> None:
     provider = FakeLLMProvider()
@@ -1087,44 +1241,193 @@ async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
 
     assert len(result.items) == 3
     assert [item.place_id for item in result.items] == ["place-0", "place-1", "place-2"]
-    assert result.items[-1].travel_to_next_min is None
-    assert all(
-        item.travel_to_next_min is not None for item in result.items[:-1]
-    )
-    assert result.total_duration_min > 0
+    # 시각 필드는 LLM 응답 계약에서 빠졌다(TP-215) — 스텁도 만들지 않는다.
+    assert all(item.estimated_duration_min > 0 for item in result.items)
     assert result.route_summary
 
 
 class TestBuildSchedulePlanningInstructionDynamicCount:
-    """SCHEDULE-10: 활동 가능 시간(time_available_min)에 따라 프롬프트의 목표
-    개수 지시가 달라진다 — 짧은 시간에도 3~5개를 고정 지시하던 문제 해소."""
+    """받은 목표 개수 범위를 프롬프트가 그대로 옮긴다.
+
+    범위 계산은 이 함수의 일이 아니다(TP-239) — budget.derive_item_range()가
+    후보 분류와 거리까지 보고 구하고, 이 함수는 후보를 모르므로 받아 쓴다.
+    """
 
     def test_시간_제한이_없으면_기존_3에서_5개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=None)
+        instruction = build_schedule_planning_instruction(
+            time_available_min=None, item_range=(3, 5)
+        )
         assert "3~5개" in instruction
         assert "3개 이상 5개 이하" in instruction
         assert "3~4시간 내외로 구성" in instruction
 
-    def test_두시간_미만이면_한두개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=90)
-        assert "1~2개" in instruction
-        assert "1개 이상 2개 이하" in instruction
+    def test_받은_범위를_그대로_쓴다(self):
+        instruction = build_schedule_planning_instruction(
+            time_available_min=90, item_range=(1, 1)
+        )
+        assert "1개" in instruction
+        assert "1개 이상 1개 이하" in instruction
         assert "3~5개" not in instruction
-        assert "활동 가능 시간이 90분" in instruction
+        assert "활동 가능 시간은 90분" in instruction
 
-    def test_두시간_이상_세시간반_미만이면_두네개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=180)
-        assert "2~4개" in instruction
-        assert "2개 이상 4개 이하" in instruction
+    def test_같은_시간이어도_범위가_다르면_문구가_다르다(self):
+        """**상한이 활동 가능 시간만으로 정해지지 않는다는 증거다.**
 
-    def test_세시간반_이상이면_다시_3에서_5개_문구를_쓴다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=240)
-        assert "3~5개" in instruction
-        assert "활동 가능 시간이 240분" in instruction
+        후보가 박물관뿐이면 3시간에 2곳, 관광지면 3곳이다. 예전에는 시간만 보고
+        버킷으로 정해서 같은 시간이면 항상 같은 문구가 나갔다.
+        """
+
+        museums = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 2)
+        )
+        attractions = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 3)
+        )
+
+        assert "2개 이상 2개 이하" in museums
+        assert "2개 이상 3개 이하" in attractions
+
+    def test_붙어_있는_후보가_있으면_짧게_제안해_달라고_부탁한다(self):
+        """**여는 것만으로는 짧아지지 않는다.** (TP-243)
+
+        `policy_for(clustered=True)`가 최소값을 45분까지 열어두지만, 그 여유를
+        실제로 쓰는 것은 예산이 빡빡할 때의 `fit_durations_to_budget()`뿐이다.
+        시간을 넉넉히 말한 요청에서는 붙어 있는 곳도 90분씩 그대로 나갔다
+        (2026-09-07 실측). 그래서 프롬프트가 부탁한다.
+        """
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4), clustered_candidates=True
+        )
+
+        assert "걸어서 5분 안쪽에 붙어 있는" in instruction
+        assert "45~60분으로 짧게 제안" in instruction
+
+    def test_완화_대상이_아닌_분류는_그대로_잡으라고_함께_말한다(self):
+        """박물관에 45분을 제안해도 `policy_for()`가 90분으로 되돌린다. 안 그러면
+        LLM의 판단만 버려지고 편성은 그대로다."""
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4), clustered_candidates=True
+        )
+
+        assert "문화시설과 식사 자리는 붙어 있어도 원래대로" in instruction
+
+    def test_붙어_있는_후보가_없으면_그_문단이_없다(self):
+        """**대조군.** 늘 붙으면 프롬프트가 없는 사실을 말하게 된다."""
+
+        instruction = build_schedule_planning_instruction(
+            time_available_min=180, item_range=(2, 4)
+        )
+
+        assert "붙어 있는" not in instruction
+
+    def test_시간을_말하지_않은_요청에도_붙는다(self):
+        """가정 예산(240분)으로 도는 턴이야말로 이 부탁이 필요한 자리다 — 예산이
+        넉넉해 아무도 체류를 안 줄이는 쪽이라서다."""
+
+        instruction = build_schedule_planning_instruction(
+            item_range=(3, 5), clustered_candidates=True
+        )
+
+        assert "45~60분으로 짧게 제안" in instruction
 
     def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
-        instruction = build_schedule_planning_instruction(time_available_min=90)
+        instruction = build_schedule_planning_instruction(
+            time_available_min=90, item_range=(1, 1)
+        )
         assert "비현실적으로 짧게" in instruction
+
+
+class TestBuildSchedulePlanningInstructionDoesNotPushToFill:
+    """**"상한까지 채우라"는 지시를 뺐다** (TP-239).
+
+    2026-08-18에 과소-채움을 막으려고 넣은 문구다. 그때는 상한이 버킷 상수라
+    예산과 무관했고 "범위 안인데 덜 채운다"가 아까운 상황이었다. 지금은 상한이
+    예산에서 나오고 총 소요 시간은 budget.fit_durations_to_budget()이 체류시간을
+    조절해 맞춘다 — 여기서 넉넉히 잡으라고 시키면 그 조절과 정면으로 싸운다.
+    """
+
+    def test_개수를_늘려_시간을_채우라고_시키지_않는다(self) -> None:
+        instruction = build_schedule_planning_instruction(360, item_range=(2, 5))
+
+        assert "가깝게 채우고" not in instruction
+        assert "너무 일찍 끝내지" not in instruction
+        assert "넉넉히 잡아" not in instruction
+
+    def test_개수를_늘리지_말라고_명시한다(self) -> None:
+        instruction = build_schedule_planning_instruction(360, item_range=(2, 5))
+
+        assert "개수를 늘리지 마세요" in instruction
+        assert "체류시간을 늘려 잡지 마세요" in instruction
+
+    def test_상한이_이미_예산에서_계산된_값임을_알려준다(self) -> None:
+        """LLM이 범위를 의심하고 임의로 벗어나지 않게 근거를 준다."""
+
+        instruction = build_schedule_planning_instruction(180, item_range=(2, 3))
+
+        assert "실제로 들어가는 수로 이미 계산한 값" in instruction
+
+
+class TestSchedulePlanningContextIncludesOperatingHours:
+    """지난번 발표 후 논의: 뒷 순서 스탑이 도착 예정 시각 기준으로 이미 폐점일
+    수 있는 문제(9절 "폐점 스탑 감지")에, planner.py의 구조적 후처리에 더해
+    프롬프트에도 운영시간을 함께 전달해 LLM이 애초에 피하도록 유도한다."""
+
+    def test_instruction에_운영시간_고려_규칙이_있다(self) -> None:
+        instruction = build_schedule_planning_instruction(item_range=(3, 5))
+        assert "운영시간" in instruction
+        assert "마감했을 곳" in instruction
+
+    def test_instruction이_시각을_계산하지_말라고_지시한다(self) -> None:
+        """TP-215 — 도착시각·이동시간·총 소요시간은 응답을 받은 뒤 엔진이 채운다.
+        warnings도 마찬가지라 아예 응답 스키마에서 빠졌다."""
+
+        instruction = build_schedule_planning_instruction(item_range=(3, 5))
+        assert "시각은 계산하지 마세요" in instruction
+        assert "estimated_arrival" not in instruction
+        assert "travel_to_next_min" not in instruction
+        assert "total_duration_min" not in instruction
+
+    def test_후보_목록에_운영시간이_포함된다(self) -> None:
+        candidate = RecommendationItem(
+            place_id="place-1",
+            name="장소 1",
+            category="attraction",
+            distance_km=0.3,
+            remaining_minutes=120,
+            operating_hours_display="09:00~18:00",
+            environment_type="indoor",
+            recommendation_reason="테스트용 고정 후보입니다.",
+            explanations=[],
+            warnings=[],
+            score=0.5,
+            feature_scores={},
+            weights_used={},
+        )
+        request = SchedulePlanningRequest(
+            candidates=[candidate],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={},
+        )
+
+        context = format_schedule_planning_context(request, "15:00")
+
+        assert "운영시간=09:00~18:00" in context
+
+    def test_운영시간_미확인_후보는_확인불가로_표시된다(self) -> None:
+        candidate = _fake_recommendation_item("place-1", "장소 1")
+        request = SchedulePlanningRequest(
+            candidates=[candidate],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={},
+        )
+
+        context = format_schedule_planning_context(request, "15:00")
+
+        assert "운영시간=확인불가" in context
 
 
 # --- COMPARE targets 이름 지목 ---------------------------------------------
@@ -1166,7 +1469,32 @@ async def test_extract_compare_request_mixes_ordinal_and_name() -> None:
 
     assert output.compare is not None
     assert output.compare.targets == [1, 3]
-    assert output.compare.criteria is CompareCriteria.DISTANCE
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_input",
+    ["첫 번째랑 백인제가옥 중에 어디가 더 빨리 갈까?", "둘 중 얼마나 걸려?", "어디가 덜 막힐까?"],
+)
+async def test_extract_compare_request_travel_time_criteria(user_input: str) -> None:
+    """TP-105/106 실측 연결 — "빨리 갈까?"류 발화는 travel_time으로 판별한다.
+
+    "덜 막힐까?"(실시간 교통 정체)는 아직 별도 API 연동 전이라 지금은 같은
+    travel_time 기준(실측 경로, 정체 미반영)으로 받는다(연결 과제로 남김).
+    """
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            user_input,
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
 
 
 @pytest.mark.asyncio

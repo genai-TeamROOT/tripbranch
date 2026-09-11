@@ -12,14 +12,14 @@ docs/decision-log.md D-046 참고.
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, time
 from typing import Any
 
 from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
-from app.place_search_policy import EARTH_RADIUS_KM
+from app.domain.ranking_origin import haversine_km, resolve_ranking_origin
 from app.providers.tour_category_registry import get_tour_category_registry
+from app.schemas import UserConditions
 
 # 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
 # 면세점과 시장이 함께 있다) lcls_systm3(소분류)로 TourCategoryRegistry를 조회해
@@ -85,6 +85,7 @@ def map_context_to_scoring_candidates(
     context: RecommendationContext,
     *,
     visit_at: datetime,
+    conditions: UserConditions | None = None,
 ) -> tuple[ScoringCandidate, ...]:
     """A–C 공개 Context를 D의 ScoringCandidate 목록으로 변환한다.
 
@@ -104,7 +105,10 @@ def map_context_to_scoring_candidates(
     ):
         return ()
 
-    origin = location_value.data.location
+    # 거리는 사용자 기준으로 잰다 — 후보를 모은 중심(검색 기준점)과 줄을 세우는
+    # 기준점은 다르다(TP-112, ranking_origin.py). 사용자 위치를 모르면 검색
+    # 기준점으로 돌아간다.
+    origin = (resolve_ranking_origin(context, conditions) or location_value.data).location
     source = (
         places_value.provider_metadata[0].source if places_value.provider_metadata else "unknown"
     )
@@ -114,7 +118,7 @@ def map_context_to_scoring_candidates(
             name=place.name,
             category=place.category,
             environment_type=_environment_type(place.category, place.lcls_systm3),
-            distance_km=_haversine_km(
+            distance_km=haversine_km(
                 origin.latitude,
                 origin.longitude,
                 place.location.latitude,
@@ -125,6 +129,10 @@ def map_context_to_scoring_candidates(
                 visit_at,
             ),
             raw_source=source,
+            # 무장애 조건이 없는 요청에서는 None이다. 값이 있으면 그대로 옮기고
+            # 여기서 판정하지 않는다 — 원문을 읽어 내린 판정은 저장소에 있고,
+            # D가 다시 해석하면 같은 장소에 두 규칙이 생긴다.
+            accessibility_verdicts=place.accessibility_verdicts,
         )
         for place in places_value.data
     )
@@ -168,11 +176,13 @@ def _operating_hours_from_context(
         return None
     # 휴무는 운영 구간과 독립이다 — 24시간 영업(all_day)도 정기 휴무일이 있을 수 있다.
     regular_closure = _is_regular_closure(schedule, visit_at)
+    uncertain_closure = has_uncertain_closure(schedule, visit_at)
     if schedule.get("availability") == "all_day":
         return OperatingHours(
             open_time=time.min,
             close_time=time.max,
             is_regular_closure=regular_closure,
+            has_uncertain_closure=uncertain_closure,
         )
 
     raw_rules = schedule.get("rules")
@@ -204,6 +214,7 @@ def _operating_hours_from_context(
                 open_time=active[0],
                 close_time=active[1],
                 is_regular_closure=regular_closure,
+                has_uncertain_closure=uncertain_closure,
             )
 
     # 정기 휴무·영업 전·영업 종료 후에도 카드에는 실제 운영 구간을 표시한다.
@@ -214,6 +225,7 @@ def _operating_hours_from_context(
             open_time=fallback_range[0],
             close_time=fallback_range[1],
             is_regular_closure=regular_closure,
+            has_uncertain_closure=uncertain_closure,
         )
     if regular_closure:
         # 요일 열거에서 빠져 유도한 휴무는 그날 구간 자체가 원문에 없다. 표시할
@@ -233,16 +245,57 @@ def _is_regular_closure(schedule: dict[str, Any], visit_at: datetime) -> bool:
 
     `closure_rules`에는 원문에 적힌 휴무(`매주 월요일`)와 운영 요일 열거에서
     빠진 요일로 유도한 휴무가 함께 들어온다(`operating_hours.py`).
+
+    `week_ordinals`가 있으면 **그 달의 몇 번째 그 요일인지**까지 본다
+    (`2,4주 일요일`). 없으면 매주다 — 이 키를 모르는 기존 행도 그 뜻으로 읽힌다.
+
+    `uncertain`인 규칙은 **휴무로 치지 않는다.** 주기 휴무인 것은 알지만 몇 번째인지
+    원문에 없는 경우인데(`월 1회 월요일`), 매주로 치면 안 쉬는 주에 후보가 통째로
+    사라진다. 그 사실은 경고로 따로 알린다(`uncertain_closure_note()`).
     """
     weekday = _WEEKDAY_NAMES[visit_at.weekday()]
-    closure_rules = schedule.get("closure_rules")
-    if not isinstance(closure_rules, list):
-        return False
+    ordinal = _weekday_ordinal(visit_at)
+    for rule in _closure_rules(schedule):
+        if rule.get("uncertain"):
+            continue
+        weekdays = rule.get("weekdays")
+        if not isinstance(weekdays, list) or weekday not in weekdays:
+            continue
+        ordinals = rule.get("week_ordinals")
+        if isinstance(ordinals, list) and ordinal not in ordinals:
+            continue
+        return True
+    return False
+
+
+def _closure_rules(schedule: dict[str, Any]) -> list[dict[str, Any]]:
+    rules = schedule.get("closure_rules")
+    if not isinstance(rules, list):
+        return []
+    return [rule for rule in rules if isinstance(rule, dict)]
+
+
+def _weekday_ordinal(visit_at: datetime) -> int:
+    """그 달의 몇 번째 그 요일인가(1부터).
+
+    "그 달 N번째 주에 속한 요일"로 세지 않는다 — 그러면 주 경계 정의를 끌어들여야
+    하고 1일의 요일에 따라 답이 흔들린다(ClosureRule.week_ordinals 주석 참고).
+    """
+    return (visit_at.day - 1) // 7 + 1
+
+
+def has_uncertain_closure(schedule: dict[str, Any], visit_at: datetime) -> bool:
+    """방문 요일에 "몇 번째인지 모르는" 주기 휴무가 걸려 있는지 본다.
+
+    걸려 있으면 그날 문을 닫을 수도 있지만 확인할 수 없다. 후보는 살리고 경고만
+    붙인다 — 소비 측이 카드에 안내를 그린다.
+    """
+    weekday = _WEEKDAY_NAMES[visit_at.weekday()]
     return any(
-        isinstance(rule, dict)
+        rule.get("uncertain")
         and isinstance(rule.get("weekdays"), list)
         and weekday in rule["weekdays"]
-        for rule in closure_rules
+        for rule in _closure_rules(schedule)
     )
 
 
@@ -271,18 +324,3 @@ def _context_time_ranges(value: object) -> tuple[tuple[time, time], ...]:
     return tuple(result)
 
 
-def _haversine_km(
-    latitude_a: float,
-    longitude_a: float,
-    latitude_b: float,
-    longitude_b: float,
-) -> float:
-    latitude_delta = math.radians(latitude_b - latitude_a)
-    longitude_delta = math.radians(longitude_b - longitude_a)
-    value = (
-        math.sin(latitude_delta / 2) ** 2
-        + math.cos(math.radians(latitude_a))
-        * math.cos(math.radians(latitude_b))
-        * math.sin(longitude_delta / 2) ** 2
-    )
-    return round(EARTH_RADIUS_KM * 2 * math.asin(math.sqrt(value)), 3)

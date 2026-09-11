@@ -47,20 +47,28 @@ interface Conditions {
 
   // 날씨 (사용자 발화 기준 — API로 보충한 값은 api_context.api_weather에 별도 저장)
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
+  // "비 와도 괜찮아"처럼 날씨를 감수하는 허용 표현은 ENJOY가 아니라 IGNORE다.
   weather_intent: "AVOID" | "ENJOY" | "NO_MENTION" | "IGNORE" | null;
 
   // 혼잡도 (weather_intent와 동일 패턴 — 상세는 concentration-conditions.md 참고)
+  // "사람 많아도 괜찮아"는 SEEK가 아니라 IGNORE다. SEEK는 혼잡함을 목적으로 원할 때만 쓴다.
   concentration_intent: "AVOID" | "SEEK" | "IGNORE" | null;
 
   // 이동
   transport: "walk" | "public" | "car" | null;
   max_travel_time: number | null;
+  // 이동시간의 출발점 판정(사실이 아니라 판정 — D-071). "안국역에서/까지 10분"처럼
+  // 조사가 출발점을 확정할 때만 "search_center". "근처/주변"이나 미언급은 null이며
+  // 그때는 기존 기본값(D-067, 사용자 위치 우선)이 그대로 적용된다. "user_location"은
+  // 추출 단계에서 쓰지 않고, 결과를 받은 뒤 기준점 전환 버튼이 생기면 그때 쓴다.
+  travel_origin: "user_location" | "search_center" | null;
 
   // 시간
   time_available: number | null;
 
   // 환경
-  // 언급이 없으면 null. "any"는 "실내외 상관없어"처럼 무관함을 명시했을 때만 쓴다
+  // 언급이 없으면 null. "any"는 "실내외 상관없어"나 "야외도 괜찮아"처럼
+  // 선택지를 넓히는 허용 표현을 명시했을 때만 쓴다.
   // — 미언급을 "any"로 표현하면 되묻기 답변 턴에서 앞 턴의 indoor를 덮어쓴다(D-053).
   environment: "indoor" | "outdoor" | "any" | null;
 
@@ -260,6 +268,7 @@ missing_conditions 처리 흐름:
 | `concentration_intent` | 단일 | Update | Remove → null (가중치 제외) |
 | `transport` | 단일 | Update | Remove → null (기본값 walk 적용) |
 | `max_travel_time` | 단일 | Update | Remove → null (기본 반경 적용) |
+| `travel_origin` | 단일 | Update | Remove → null (D-067 기본값 적용) |
 | `time_available` | 단일 | Update | Remove → null |
 | `environment` | 단일 | Update | Remove → null |
 | `companion` | 단일 | Update | Remove → null |

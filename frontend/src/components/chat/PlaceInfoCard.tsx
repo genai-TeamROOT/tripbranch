@@ -1,12 +1,30 @@
 /*
  * 역할: INFO 장소 질의의 간략 답변과 전체 장소 상세 정보를 한 카드에 표시한다.
  * 입력: C가 한 번의 상세 조회로 내려준 InfoPlaceCard.
- * 출력: 접힌 답변 요약과 펼친 개요·운영·주차·요금·편의시설.
+ * 출력: 질문 답 요약과 클릭 시 열리는 장소 상세 모달.
  * 호출 시점: ChatMessageList가 place_info_result 메시지를 렌더할 때 호출된다.
  */
 
-import { useState } from "react";
-import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
+import { Fragment, useState } from "react";
+import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import { useTripState } from "../../state/TripContext";
+import { useNaverDirections } from "../../hooks/useNaverDirections";
+import { openNaverMapSearch } from "../../utils/naverDirections";
+import {
+  groupSubwayArrivals,
+  parseSubwayArrival,
+  subwayLineColor,
+  type SubwayLineGroup,
+} from "../../utils/subwayDisplay";
+import { PlaceCardRow } from "./PlaceCardRow";
+import { PlaceThumbnail } from "../PlaceThumbnail";
+import {
+  ConcentrationForecastBars,
+  PopulationForecastBars,
+  RoadTrafficStatusSection,
+} from "./CongestionForecastBars";
+import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
+import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const FIELD_LABELS: Record<string, string> = {
   operating_hours: "운영시간",
@@ -18,24 +36,67 @@ const FIELD_LABELS: Record<string, string> = {
   pet: "반려동물 동반",
   credit_card: "카드 결제",
   restroom: "화장실",
+  address: "주소",
+  telephone: "전화번호",
+  /* 무장애 여행 정보(D-077). 계약 키를 그대로 두면 화면에 wheelchair_access처럼
+   * 영문 키가 그대로 찍힌다. */
+  wheelchair_access: "휠체어 접근",
+  accessible_restroom: "장애인 화장실",
+  accessible_parking: "장애인 주차",
+  wheelchair_rental: "휠체어 대여",
+  stroller_rental: "유모차 대여",
+  nursing_room: "수유실",
+  guide_dog: "보조견 동반",
+  braille_block: "점자블록",
+  braille_promotion: "점자 안내물",
+  audio_guide: "음성 안내",
+  public_transport: "대중교통",
+  infant_family_etc: "영유아·가족 편의",
+  disability_etc: "장애인 편의 기타",
   overview: "개요",
   homepage: "홈페이지",
+  concentration: "혼잡도",
+  event: "행사",
+  "상권 지역": "상권 지역",
+  "상권 기준": "상권 기준",
+  업종: "업종",
+  "실시간 활동": "실시간 활동",
+  "기준 시각": "기준 시각",
+  안내: "안내",
 };
 
-const DETAIL_FIELDS: Array<[keyof InfoPlaceCardData, string]> = [
-  ["operating_hours", "운영시간"],
-  ["rest_date", "휴무일"],
-  ["parking", "주차"],
-  ["parking_fee", "주차 요금"],
-  ["fee", "요금"],
-];
-
-const FACILITY_FIELDS: Array<[keyof InfoPlaceCardData, string]> = [
-  ["baby_carriage", "유모차"],
-  ["pet", "반려동물 동반"],
-  ["credit_card", "카드 결제"],
-  ["restroom", "화장실"],
-];
+/* 이 목록에 있는 필드는 백엔드 계약 키라 항상 같은 항목만 나온다. 그 외
+   자유 텍스트 키(상권 지역 등)는 영어 화면에서도 한글 그대로 둔다. */
+const FIELD_LABELS_EN: Record<string, string> = {
+  operating_hours: "Hours",
+  rest_date: "Closed on",
+  fee: "Admission",
+  parking: "Parking",
+  parking_fee: "Parking fee",
+  baby_carriage: "Stroller rental",
+  pet: "Pets allowed",
+  credit_card: "Card payment",
+  restroom: "Restroom",
+  address: "Address",
+  telephone: "Phone",
+  wheelchair_access: "Wheelchair access",
+  accessible_restroom: "Accessible restroom",
+  accessible_parking: "Accessible parking",
+  wheelchair_rental: "Wheelchair rental",
+  stroller_rental: "Stroller rental",
+  nursing_room: "Nursing room",
+  guide_dog: "Guide dogs allowed",
+  braille_block: "Braille blocks",
+  braille_promotion: "Braille guides",
+  audio_guide: "Audio guide",
+  public_transport: "Public transport",
+  infant_family_etc: "Family amenities",
+  disability_etc: "Other accessibility",
+  overview: "Overview",
+  homepage: "Website",
+  concentration: "Crowd level",
+  event: "Event",
+};
 
 interface PlaceInfoCardProps {
   card: InfoPlaceCardData;
@@ -63,15 +124,15 @@ function parseOperatingHours(value: string): OperatingHoursRow[] | null {
 }
 
 function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
+  /* 위쪽 여백을 두지 않는다 — 이 묶음은 <dd> 안에 들어가고, 여백을 주면 값
+     블록만 라벨보다 내려가 같은 행인데 서로 어긋나 보인다(2026-09-09 화면
+     확인). 행 간격은 바깥 <dl>이 맡는다. */
   return (
-    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+    <div className="grid gap-2 sm:grid-cols-2">
       {rows.map(({ period, hours }) => (
-        <div
-          key={period}
-          className="rounded border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
-        >
-          <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{period}</p>
-          <p className="mt-0.5 text-sm text-gray-900 dark:text-gray-100">{hours}</p>
+        <div key={period} className="rounded-xl bg-chip px-3 py-2">
+          <p className="text-xs font-semibold text-label">{period}</p>
+          <p className="mt-0.5 text-sm text-ink">{hours}</p>
         </div>
       ))}
     </div>
@@ -88,134 +149,492 @@ function formatCardValue(fieldKey: keyof InfoPlaceCardData, value: string) {
   return formatted.trim();
 }
 
-function DetailValues({
-  card,
-  entries,
+function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
+  return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
+}
+
+function isPublicToiletCard(card: InfoPlaceCardData): boolean {
+  return card.question_type === "public_toilet";
+}
+
+/* 개방 여부 칩 색. "확인 필요"를 초록으로 두면 열려 있다고 읽히므로 중립색을 쓴다. */
+const TOILET_OPEN_CHIP_STYLE: Record<string, string> = {
+  "지금 이용 가능": "bg-[#e7f6ec] text-calm",
+  "지금은 닫혀 있음": "bg-rust-tint text-rust",
+  "개방시간 확인 필요": "bg-chip text-muted",
+};
+
+/* 화장실 한 곳. 카드 전체가 도보 길찾기 버튼이다(CompareResultCards와 같은 방식) —
+ * 급해서 묻는 질문이라 한 번 눌러 바로 출발할 수 있어야 한다. 좌표가 없으면
+ * 주소로 지도 검색을 폴백하고, 그것도 없으면 정보만 보여준다. */
+function PublicToiletSummary({
+  item,
+  deviceLocation,
+  isEn,
 }: {
-  card: InfoPlaceCardData;
-  entries: Array<[keyof InfoPlaceCardData, string]>;
+  item: RealtimeInfoDetailItem;
+  deviceLocation: string | null;
+  isEn: boolean;
 }) {
-  const visibleEntries = entries.filter(([key]) => {
-    const value = card[key];
-    return typeof value === "string" && value.trim();
-  });
-  if (visibleEntries.length === 0) return null;
+  const openLabel = item.details["개방 여부"] ?? "";
+  const distance = item.details["거리"];
+  const hours = item.details["개방시간"];
+  const address = item.details["주소"];
+  const accessible = item.details["장애인화장실"];
+
+  const hasCoordinates = item.latitude != null && item.longitude != null;
+  /* 출발점은 훅이 정한다(위치 설정의 출발지 → 기기 좌표). 주소만 있는 항목은 길찾기
+     대신 장소 검색으로 여는 기존 경로가 그대로 남는다. */
+  const directions = useNaverDirections(deviceLocation);
+  const canRoute = (hasCoordinates && directions.canRoute) || Boolean(address);
+
+  const openDirections = () => {
+    if (hasCoordinates && directions.canRoute) {
+      void directions.openDirections({
+        destLat: item.latitude as number,
+        destLng: item.longitude as number,
+        destName: item.title,
+        // 화장실은 걸어서 간다 — 대중교통 경로를 띄우면 급한 사람에게 쓸모없다.
+        mode: "walk",
+      });
+      return;
+    }
+    if (address) openNaverMapSearch(address);
+  };
 
   return (
-    <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-      {visibleEntries.map(([key, label]) => (
-        <DetailValue key={key} card={card} fieldKey={key} label={label} />
-      ))}
-    </dl>
+    <article
+      className={`min-w-0 rounded-xl border border-border bg-white px-3 py-2.5${
+        canRoute ? " cursor-pointer transition-colors hover:bg-chip" : ""
+      }`}
+      role={canRoute ? "button" : undefined}
+      tabIndex={canRoute ? 0 : undefined}
+      aria-label={
+        canRoute
+          ? isEn
+            ? `Walking directions to ${item.title} on Naver Maps`
+            : `${item.title}까지 네이버 지도 도보 길찾기`
+          : undefined
+      }
+      onClick={canRoute ? openDirections : undefined}
+      onKeyDown={
+        canRoute
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDirections();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <span className="min-w-0 flex-1 text-sm font-bold text-ink" title={item.title}>
+          {item.title}
+        </span>
+        {openLabel && (
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              TOILET_OPEN_CHIP_STYLE[openLabel] ?? "bg-chip text-muted"
+            }`}
+          >
+            {openLabel}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {distance && (
+          <span className="rounded-md bg-sky-light px-1.5 py-0.5 text-[11px] font-semibold text-brand-deep">
+            {distance}
+          </span>
+        )}
+        {hours && <span className="text-[11px] text-muted">{hours}</span>}
+        {accessible && (
+          <span className="rounded-md bg-chip px-1.5 py-0.5 text-[11px] text-muted">
+            {isEn ? "Accessible" : "장애인화장실"} {accessible}
+          </span>
+        )}
+      </div>
+
+      {address && <p className="mt-1 truncate text-[11px] text-muted">{address}</p>}
+
+      {canRoute && (
+        <span className="mt-2 flex w-fit items-center gap-0.5 text-xs font-semibold text-brand">
+          {isEn ? "Walking directions on Naver Maps" : "네이버 지도로 도보 길찾기"}
+          <span aria-hidden="true">›</span>
+        </span>
+      )}
+    </article>
   );
 }
 
-function DetailValue({
-  card,
-  fieldKey,
-  label,
+function PublicToiletList({
+  items,
+  deviceLocation,
+  isEn,
 }: {
-  card: InfoPlaceCardData;
-  fieldKey: keyof InfoPlaceCardData;
-  label: string;
+  items: RealtimeInfoDetailItem[];
+  deviceLocation: string | null;
+  isEn: boolean;
 }) {
-  const value = card[fieldKey];
-  if (typeof value !== "string") return null;
-  const operatingHours = fieldKey === "operating_hours" ? parseOperatingHours(value) : null;
-
   return (
-    <div
-      className={`rounded-md bg-gray-50 px-3 py-2 dark:bg-gray-800/70${
-        operatingHours ? " sm:col-span-2" : ""
-      }`}
+    <section className="grid gap-2 px-4 py-3">
+      {items.map((item) => (
+        <PublicToiletSummary
+          key={item.title}
+          item={item}
+          deviceLocation={deviceLocation}
+          isEn={isEn}
+        />
+      ))}
+    </section>
+  );
+}
+
+type ParkingLotType = "공영" | "민영" | "기타";
+
+const PARKING_TYPE_BADGE_STYLE: Record<ParkingLotType, string> = {
+  공영: "bg-sky-light text-brand-deep",
+  민영: "bg-gold-tint text-[#8a5a12]",
+  기타: "bg-chip text-muted",
+};
+
+// 서버는 이름 앞에 "[공영]"/"[민영]"을 붙여 보낸다(기타는 접두어 없음). 뱃지로
+// 따로 떼어 보여주는 편이 대괄호 텍스트보다 한눈에 들어온다.
+function splitParkingTitle(title: string): { type: ParkingLotType; name: string } {
+  const matched = title.match(/^\[(공영|민영)\]\s*(.+)$/);
+  if (!matched) return { type: "기타", name: title };
+  return { type: matched[1] as ParkingLotType, name: matched[2] };
+}
+
+// _format_realtime_parking()이 만드는 "상태(거리, 총 대수, 요금)" 형태를 상태 칩과
+// 메타 태그들로 나눈다. 괄호가 없으면(형식이 안 맞으면) 값 전체를 상태로 둔다.
+function parseParkingValue(value: string): { status: string; available: boolean; meta: string[] } {
+  const matched = value.match(/^(.+?)\(([^)]*)\)\s*$/);
+  if (!matched) return { status: value, available: false, meta: [] };
+  const status = matched[1].trim();
+  // 백엔드가 ", "로 이어 붙인다(_format_realtime_parking). 콤마 하나로 나누면
+  // "약 1,076m"처럼 숫자 자체에 천 단위 콤마가 있는 항목이 잘린다.
+  const meta = matched[2]
+    .split(", ")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const available = /^현재\s+[\d,]+대\s+주차\s*(가능|중)/.test(status);
+  return { status, available, meta };
+}
+
+// 근처 주차장 응답은 최대 9곳까지 나와, 이름 줄 + 값 줄로 다 펼치면 세로로 너무
+// 길어진다. 뱃지·상태 칩으로 밀도를 낮추고, 거리·대수·요금은 아래 한 줄에
+// 작은 태그로 모은다.
+function RealtimeParkingSummary({ title, value }: { title: string; value: string }) {
+  const { type, name } = splitParkingTitle(title);
+  const { status, available, meta } = parseParkingValue(value);
+  return (
+    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${PARKING_TYPE_BADGE_STYLE[type]}`}
+          >
+            {type}
+          </span>
+          <span className="min-w-0 truncate text-sm font-bold text-ink" title={name}>
+            {name}
+          </span>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+            available ? "bg-emerald-50 text-emerald-700" : "bg-chip text-muted"
+          }`}
+        >
+          {status}
+        </span>
+      </div>
+      {meta.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-1 pl-[calc(1.75rem+0.375rem)] text-xs text-muted">
+          {meta.map((part) => (
+            <span key={part}>{part}</span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// 목록형 실시간 카드(주차·행사)가 공유하는 "더 보기" 자리. 접힌 채로 시작해
+// 답변 흐름을 밀어내지 않다가, 누르면 나머지를 펼친다.
+function MoreItemsButton({
+  hiddenCount,
+  unit,
+  onClick,
+}: {
+  hiddenCount: number;
+  unit: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold text-brand-deep hover:bg-chip"
+      onClick={onClick}
     >
-      <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
-      {operatingHours ? (
-        <dd><OperatingHoursRows rows={operatingHours} /></dd>
-      ) : (
-        <dd className="mt-0.5 whitespace-pre-line text-gray-800 dark:text-gray-100">
-          {formatCardValue(fieldKey, value)}
-        </dd>
+      {hiddenCount}{unit} 더 보기
+      <span aria-hidden="true">⌄</span>
+    </button>
+  );
+}
+
+// 기본으로 보여줄 주차장 수. 근처 주차장(최대 9곳)·공영주차장(최대 5곳) 응답이
+// 전부 펼쳐지면 카드가 답변 흐름을 밀어내므로, 나머지는 펼쳐야 보이게 접는다.
+const REALTIME_PARKING_COLLAPSED_COUNT = 3;
+
+function RealtimeParkingList({ answers }: { answers: [string, string][] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? answers : answers.slice(0, REALTIME_PARKING_COLLAPSED_COUNT);
+  const hiddenCount = answers.length - visible.length;
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {visible.map(([title, value]) => (
+        <RealtimeParkingSummary key={title} title={title} value={value} />
+      ))}
+      {hiddenCount > 0 && (
+        <MoreItemsButton hiddenCount={hiddenCount} unit="곳" onClick={() => setExpanded(true)} />
+      )}
+    </section>
+  );
+}
+
+// event(TourAPI 행사)도 realtime_event(서울시 실시간 행사)와 같은 가로 스크롤
+// 사진 카드로 보여준다 — 둘 다 realtime_detail_items 모양(제목/부제/썸네일)으로
+// 내려오므로 렌더는 공유하고 판정만 question_type을 더 받는다.
+function isEventCardRow(card: InfoPlaceCardData): boolean {
+  return card.question_type === "realtime_event" || card.question_type === "event";
+}
+
+// 추천 카드(PlaceCard)와 같은 너비·비율의 사진 카드다 — 폭이 다르면 같은 줄에
+// 섞였을 때(추천 결과 다음에 행사가 오는 경우 등) 스크롤 리듬이 어긋난다.
+function RealtimeEventCard({ item }: { item: RealtimeInfoDetailItem }) {
+  const openable = Boolean(item.external_url);
+  return (
+    <li className="w-40 shrink-0">
+      <div
+        className={`relative w-full text-left${openable ? " cursor-pointer" : ""}`}
+        role={openable ? "link" : undefined}
+        tabIndex={openable ? 0 : undefined}
+        aria-label={openable ? `${item.title} 행사 정보 보기` : undefined}
+        onClick={
+          openable
+            ? () => window.open(item.external_url as string, "_blank", "noopener")
+            : undefined
+        }
+        onKeyDown={
+          openable
+            ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  window.open(item.external_url as string, "_blank", "noopener");
+                }
+              }
+            : undefined
+        }
+      >
+        <div className="group relative overflow-hidden rounded-2xl">
+          {/* 서울시 응답에 THUMBNAIL이 비는 경우가 있다. */}
+          <PlaceThumbnail src={item.thumbnail_url} />
+        </div>
+        <div className="pt-2">
+          <p className="line-clamp-2 text-sm font-bold text-ink">{item.title}</p>
+          {item.subtitle && (
+            <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">
+              {item.subtitle}
+            </p>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+// 행사는 이름 자체가 길어 주차장처럼 3곳으로 접으면 답변보다 목록이 먼저
+// 눈에 띈다. 대신 가로 스크롤이라 접을 필요가 없다 — 추천 결과와 같은 방식
+// (PlaceCardRow)으로 한 줄에 늘어놓고 옆으로 넘겨 보게 한다.
+function RealtimeEventCardRow({ items }: { items: RealtimeInfoDetailItem[] }) {
+  return (
+    <div className="px-4 py-3">
+      <PlaceCardRow>
+        {items.map((item) => (
+          <RealtimeEventCard key={item.title} item={item} />
+        ))}
+      </PlaceCardRow>
+    </div>
+  );
+}
+
+function isRealtimeSubwayCard(card: InfoPlaceCardData): boolean {
+  return card.question_type === "realtime_subway";
+}
+
+// 한 방면(상행/하행 등) 안의 도착 한 건. 행선지(종착역)와 도착 안내를
+// 한 줄에 놓는다 — 방면 묶음 헤더가 이미 방향을 말해주므로 여기서는
+// 반복하지 않는다.
+function SubwayArrivalRow({ item }: { item: RealtimeInfoDetailItem }) {
+  const { arrival } = parseSubwayArrival(item.subtitle ?? "");
+  const arrivalKnown = arrival !== null && !arrival.includes("미제공");
+  const destination = item.details["종착역"] ? `${item.details["종착역"]}행` : "행선지 정보 미제공";
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-xs text-ink">{destination}</span>
+      {arrival && (
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${
+            arrivalKnown ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted"
+          }`}
+        >
+          {arrival}
+        </span>
       )}
     </div>
   );
 }
 
+// 같은 역·같은 호선이라도 상행/하행은 다른 방향이라, 방면마다 별도 칸으로
+// 나눠 나란히 보여준다(2026-09-02 실사용 지적) — 나열 순서만으로는 구분이
+// 안 됐다.
+function SubwayLineGroupCard({ group }: { group: SubwayLineGroup }) {
+  return (
+    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: subwayLineColor(group.stationLine) }}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate text-sm font-bold text-ink" title={group.stationLine}>
+          {group.stationLine}
+        </span>
+      </div>
+      <div
+        className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}
+      >
+        {group.directions.map((direction) => (
+          <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2 py-1.5">
+            <p className="text-[11px] font-semibold text-muted">{direction.direction}</p>
+            <div className="mt-1 grid gap-1">
+              {direction.items.map((item, index) => (
+                <SubwayArrivalRow key={`${item.title}-${index}`} item={item} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
+  const groups = groupSubwayArrivals(items);
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {groups.map((group) => (
+        <SubwayLineGroupCard key={group.stationLine} group={group} />
+      ))}
+    </section>
+  );
+}
+
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+  const { language, device_location } = useTripState();
+  const isEn = language === "en";
   const answers = Object.entries(card.answer_fields);
 
   return (
-    <article className="mr-auto w-full max-w-xl overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span>
-          <span className="block text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {card.place_name ?? "장소 상세 정보"}
-          </span>
-          <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
-            {expanded ? "상세 정보 접기" : "상세 정보 보기"}
-          </span>
-        </span>
-        <span aria-hidden="true" className="text-gray-500 dark:text-gray-400">
-          {expanded ? "⌃" : "⌄"}
-        </span>
-      </button>
-
-      {!expanded && answers.length > 0 && (
-        <dl className="border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
-          {answers.map(([key, value]) => (
-            <div key={key} className="flex gap-2">
-              <dt className="shrink-0 text-gray-500 dark:text-gray-400">
-                {FIELD_LABELS[key] ?? key}
-              </dt>
-              <dd className="min-w-0 flex-1 whitespace-pre-line text-gray-800 dark:text-gray-100">
-                {key === "operating_hours" && parseOperatingHours(value) ? (
-                  <OperatingHoursRows rows={parseOperatingHours(value) ?? []} />
-                ) : (
-                  formatCardValue(key as keyof InfoPlaceCardData, value)
-                )}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      )}
-
-      {expanded && (
-        <div className="flex flex-col gap-4 border-t border-gray-100 px-4 py-4 dark:border-gray-800">
-          {card.thumbnail_url && (
-            <img
-              src={card.thumbnail_url}
-              alt={`${card.place_name ?? "장소"} 썸네일`}
-              loading="lazy"
-              className="h-48 w-full rounded-md object-cover"
-            />
-          )}
-          {card.overview && (
-            <section>
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
-              <p className="mt-1 whitespace-pre-line text-sm leading-6 text-gray-700 dark:text-gray-300">
-                {card.overview}
-              </p>
-            </section>
-          )}
-          <DetailValues card={card} entries={DETAIL_FIELDS} />
-          <DetailValues card={card} entries={FACILITY_FIELDS} />
-          {card.homepage && (
-            <a
-              href={card.homepage}
-              target="_blank"
-              rel="noreferrer"
-              className="w-fit text-sm font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300"
-            >
-              공식 홈페이지 보기
-            </a>
-          )}
+    <article className="mr-auto w-full overflow-hidden rounded-2xl bg-white shadow-resting">
+      {card.thumbnail_url && (
+        // 기본 카드에서 장소를 바로 알아볼 수 있도록, 작은 아이콘보다 충분히 큰
+        // 중간 높이 썸네일을 카드 상단에 둔다. 상세 영역에서는 중복하지 않는다.
+        <div className="flex h-44 w-full items-center justify-center overflow-hidden bg-chip">
+          <img
+            src={card.thumbnail_url}
+            alt={isEn ? `${card.place_name ?? "Place"} image` : `${card.place_name ?? "장소"} 이미지`}
+            loading="lazy"
+            className="h-full w-full object-cover"
+          />
         </div>
+      )}
+      {/* 이름 자리는 누를 수 없다 — 상세를 여는 것은 옆의 "장소 상세보기" 글자뿐이다.
+          장소 이름을 함께 누를 수 있게 하면 카드 안에서 어디를 눌러야 상세가
+          열리는지가 흐려진다. 배경 없이 글자만 두고 브랜드 색으로 눌러지는
+          자리임을 알린다 — 일정 상세(ScheduleRoute)의 같은 자리 버튼과 문구·
+          스타일을 맞췄다. */}
+      <div className="flex w-full items-center justify-between gap-3 px-4 py-3">
+        <span className="min-w-0 text-sm font-bold text-ink">
+          {card.place_name ?? (isEn ? "Place details" : "장소 상세 정보")}
+        </span>
+        <button
+          type="button"
+          className="shrink-0 whitespace-nowrap text-xs font-bold text-brand"
+          aria-haspopup="dialog"
+          onClick={() => setShowDetail(true)}
+        >
+          {isEn ? "View place details" : "장소 상세보기"}
+        </button>
+      </div>
+
+      {isPublicToiletCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <PublicToiletList
+          items={card.realtime_detail_items ?? []}
+          deviceLocation={device_location}
+          isEn={isEn}
+        />
+      ) : isRealtimeParkingCard(card) && answers.length > 0 ? (
+        <RealtimeParkingList answers={answers} />
+      ) : isEventCardRow(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <RealtimeEventCardRow items={card.realtime_detail_items ?? []} />
+      ) : isRealtimeSubwayCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <SubwayArrivalList items={card.realtime_detail_items ?? []} />
+      ) : answers.length > 0 ? (
+        /* 라벨 열은 grid의 auto 트랙 하나가 맡는다. 행마다 <dt>를 따로 두면 그
+           행의 라벨 글자 폭이 그대로 열 폭이 되어, "휴무일"(3자)과 "운영시간"(4자)
+           사이에서 값이 시작하는 자리가 어긋난다(2026-09-09 화면 확인). dt/dd 를
+           감싸는 행 <div>를 두지 않는 것이 핵심이다 — 감싸면 행마다 별개의 포맷
+           맥락이 되어 서로의 라벨 폭을 모른다. 행 간격(gap-y)도 여기서 준다 —
+           예전에는 행이 서로 붙어 있어 휴무일의 두 번째 줄과 다음 항목이 한
+           덩어리로 읽혔다. */
+        <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 px-4 py-3 text-sm">
+          {answers.map(([key, value]) => {
+            const hoursRows = key === "operating_hours" ? parseOperatingHours(value) : null;
+            return (
+              <Fragment key={key}>
+                {/* 값이 칩 묶음이면 라벨을 6px 내린다. 칩의 첫 글자는 칩 안쪽
+                    여백(py-2, 8px)만큼 내려가 있어서, 라벨을 행 맨 위에 두면
+                    같은 행인데 라벨만 위로 뜬다. 다른 행은 값이 글자라 그대로 맞다. */}
+                <dt className={`text-muted ${hoursRows ? "pt-1.5" : ""}`}>
+                  {isEn
+                    ? (FIELD_LABELS_EN[key] ?? FIELD_LABELS[key] ?? key)
+                    : (FIELD_LABELS[key] ?? key)}
+                </dt>
+                <dd className="min-w-0 whitespace-pre-line text-ink">
+                  {hoursRows ? (
+                    <OperatingHoursRows rows={hoursRows} />
+                  ) : (
+                    formatCardValue(key as keyof InfoPlaceCardData, value)
+                  )}
+                </dd>
+              </Fragment>
+            );
+          })}
+        </dl>
+      ) : null}
+
+      <ConcentrationForecastBars card={card} />
+      <PopulationForecastBars card={card} />
+      <SeoulRealtimeSummarySection card={card} />
+      <RoadTrafficStatusSection card={card} />
+
+      {showDetail && (
+        <RecommendationDetailPreviewModal card={card} onClose={() => setShowDetail(false)} />
       )}
     </article>
   );

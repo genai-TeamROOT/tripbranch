@@ -3,6 +3,8 @@
 계약 문서: docs/package-b/agent-state-contract-v1.md (Phase 1 전제)
 """
 
+from datetime import timedelta
+
 import pytest
 
 from app.state.schema import (
@@ -10,7 +12,11 @@ from app.state.schema import (
     ConditionChangeLog,
     RecommendationHistory,
     RecommendedItem,
+    SavedPlaceItem,
+    SavedPlaceList,
+    TraceRecord,
     UserConditions,
+    now_kst,
 )
 from app.state.store import InMemoryStateStore
 
@@ -135,6 +141,53 @@ class TestHistory:
         assert store.get_history("sess_없음") is None
 
 
+class TestSavedPlaces:
+    """보관함은 이력과 별도 엔티티다. (SCHEDULE-12)"""
+
+    def test_보관함을_저장하고_조회한다(self, store):
+        store.save_saved_places(
+            SavedPlaceList(
+                session_id="sess_A",
+                items=[
+                    SavedPlaceItem(
+                        place_id="126511", name="경복궁", saved_from_run_id="r1"
+                    )
+                ],
+            )
+        )
+
+        got = store.get_saved_places("sess_A")
+        assert [item.place_id for item in got.items] == ["126511"]
+        assert got.items[0].name == "경복궁"
+
+    def test_보관함도_격리된다(self, store):
+        store.save_saved_places(SavedPlaceList(session_id="sess_A"))
+
+        got = store.get_saved_places("sess_A")
+        got.items.append(
+            SavedPlaceItem(place_id="x", name="x", saved_from_run_id="r")
+        )
+
+        assert store.get_saved_places("sess_A").items == []
+
+    def test_없는_세션의_보관함은_None이다(self, store):
+        assert store.get_saved_places("sess_없음") is None
+
+    def test_보관함_삭제가_이력에_영향을_주지_않는다(self, store):
+        store.save_history(
+            RecommendationHistory(
+                session_id="sess_A",
+                recommended=[RecommendedItem(place_id="126511", run_id="r1", rank=1)],
+            )
+        )
+        store.save_saved_places(SavedPlaceList(session_id="sess_A"))
+
+        store.delete_saved_places("sess_A")
+
+        assert store.get_saved_places("sess_A") is None
+        assert store.get_history("sess_A") is not None
+
+
 class TestChangeLog:
     def test_기록이_누적된다(self, store):
         store.append_change_logs(
@@ -175,12 +228,84 @@ class TestChangeLog:
         store.append_change_logs([])
         assert store.get_change_logs("sess_A") == []
 
-    def test_삭제_메서드가_존재하지_않는다(self, store):
-        """ChangeLog는 append-only이므로 삭제 경로를 제공하지 않는다.
+    def test_append_change_logs에는_개별_행을_수정_삭제하는_경로가_없다(self, store):
+        """append_change_logs/get_change_logs 자체는 여전히 추가·조회만 한다.
 
-        (계약 2.8절)
+        (계약 2.8절) 세션 전체를 지우는 delete_change_logs(TP-134, 아래
+        TestCleanup)는 별개의 정리 전용 경로이며, 개별 기록을 골라 수정·삭제하는
+        기능은 여전히 없다.
         """
-        assert not hasattr(store, "delete_change_logs")
+        assert not hasattr(store, "update_change_log")
+        assert not hasattr(store, "delete_change_log")
+
+
+class TestCleanup:
+    """TP-134 — 만료된 세션 정리.
+
+    list_stale_session_ids/delete_change_logs/delete_traces는 정리 스크립트
+    (scripts/cleanup_expired_sessions.py) 전용 경로다.
+    """
+
+    def test_cutoff보다_오래된_세션만_찾는다(self, store):
+        old_time = now_kst() - timedelta(days=40)
+        recent_time = now_kst() - timedelta(days=1)
+        store.save_state(AgentState(session_id="sess_old", last_active_at=old_time))
+        store.save_state(
+            AgentState(session_id="sess_recent", last_active_at=recent_time)
+        )
+
+        cutoff = now_kst() - timedelta(days=30)
+
+        assert store.list_stale_session_ids(cutoff) == ["sess_old"]
+
+    def test_대상이_없으면_빈_리스트다(self, store):
+        assert store.list_stale_session_ids(now_kst()) == []
+
+    def test_delete_change_logs가_세션의_기록을_전부_지운다(self, store):
+        store.append_change_logs(
+            [
+                ConditionChangeLog(
+                    session_id="sess_A", run_id="r1", seq=0, op="Update", field="budget"
+                )
+            ]
+        )
+
+        store.delete_change_logs("sess_A")
+
+        assert store.get_change_logs("sess_A") == []
+
+    def test_delete_change_logs는_다른_세션에_영향을_주지_않는다(self, store):
+        store.append_change_logs(
+            [
+                ConditionChangeLog(
+                    session_id="sess_A", run_id="r1", seq=0, op="Update", field="budget"
+                )
+            ]
+        )
+        store.append_change_logs(
+            [
+                ConditionChangeLog(
+                    session_id="sess_B", run_id="r1", seq=0, op="Update", field="budget"
+                )
+            ]
+        )
+
+        store.delete_change_logs("sess_A")
+
+        assert len(store.get_change_logs("sess_B")) == 1
+
+    def test_delete_traces가_세션의_기록을_전부_지운다(self, store):
+        store.append_traces(
+            [TraceRecord(session_id="sess_A", run_id="r1", trace_id="t1", step="interpret")]
+        )
+
+        store.delete_traces("sess_A")
+
+        assert store.get_traces("sess_A") == []
+
+    def test_없는_세션의_정리_삭제는_오류가_아니다(self, store):
+        store.delete_change_logs("sess_없음")
+        store.delete_traces("sess_없음")
 
 
 class TestClear:

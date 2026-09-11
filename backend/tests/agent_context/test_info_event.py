@@ -4,6 +4,7 @@
 있어야 근접 매칭 경로가 실제로 실행된다.
 """
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -26,12 +27,14 @@ from app.providers.contracts import (
 from app.providers.festival import FakeFestivalProvider, FestivalEvent
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
+from app.providers.seoul_citydata import FakeRealtimeCityDataProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.repositories.fake_places import FakePlaceLocationRepository
 from app.tools.concentration import GetConcentrationTool
 from app.tools.festival import GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.realtime_citydata import GetRealtimeCityDataTool
 from app.tools.resolve_location import ResolveLocationTool
 from app.tools.weather_forecast import GetWeatherForecastTool
 
@@ -52,7 +55,7 @@ class StubFestivalProvider:
         error: Exception | None = None,
         status: ProviderStatus = ProviderStatus.SUCCESS,
     ) -> None:
-        self.calls: list[tuple[str, str, date]] = []
+        self.calls: list[tuple[str, str | None, date]] = []
         self._events = events or []
         self._error = error
         self._status = status
@@ -60,7 +63,7 @@ class StubFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
         limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
@@ -82,6 +85,7 @@ def _event(
     latitude: float | None = 37.5718,
     longitude: float | None = 126.9761,
     address: str | None = "서울특별시 종로구 세종대로 175",
+    image_url: str | None = None,
 ) -> FestivalEvent:
     return FestivalEvent(
         content_id=f"id-{title}",
@@ -91,10 +95,14 @@ def _event(
         address=address,
         latitude=latitude,
         longitude=longitude,
+        image_url=image_url,
     )
 
 
-def _service(festival_provider: object | None = None) -> ContextService:
+def _service(
+    festival_provider: object | None = None,
+    citydata_provider: object | None = None,
+) -> ContextService:
     place_provider = FakePlaceProvider()
     return ContextService(
         ContextTools(
@@ -109,6 +117,11 @@ def _service(festival_provider: object | None = None) -> ContextService:
             festivals=(
                 GetFestivalsTool(festival_provider)  # type: ignore[arg-type]
                 if festival_provider is not None
+                else None
+            ),
+            realtime_citydata=(
+                GetRealtimeCityDataTool(citydata_provider)  # type: ignore[arg-type]
+                if citydata_provider is not None
                 else None
             ),
         ),
@@ -245,11 +258,12 @@ class TestQuery:
     @pytest.mark.asyncio
     async def test_법정동_코드로_조회한다(self) -> None:
         # sigunguCode를 쓰면 응답 다수가 필터에서 탈락한다(D-055).
+        # 구는 넘기지 않는다 — 서울 전체를 한 번에 받아 지원 구만 남긴다(D-025).
         provider = StubFestivalProvider([_event("행사")])
 
         await _service(provider).fetch_info_context(_request())
 
-        assert provider.calls == [("11", "110", TODAY)]
+        assert provider.calls == [("11", None, TODAY)]
 
 
 class TestFailures:
@@ -279,6 +293,52 @@ class TestFailures:
 
         assert response.status == "needs_clarification"
         assert provider.calls == []
+
+    @pytest.mark.asyncio
+    async def test_행사_되묻기는_전용_코드를_쓴다(self) -> None:
+        """"축제 추천해줘"는 장소를 물은 발화가 아니다(TP-237).
+
+        `place_required`를 그대로 쓰면 A가 "어떤 장소에 대해 알고 싶으신가요?"로
+        되묻는데, 사용자가 묻지 않은 것을 되묻는 셈이 된다.
+        """
+        provider = StubFestivalProvider([_event("행사")])
+
+        response = await _service(provider).fetch_info_context(_request(place_name=None))
+
+        assert response.clarification is not None
+        assert response.clarification.code == "event_place_required"
+        assert response.clarification.missing_fields == ["place_name"]
+
+    @pytest.mark.asyncio
+    async def test_realtime_event도_같은_되묻기_코드를_쓴다(self) -> None:
+        response = await _service(
+            StubFestivalProvider([_event("행사")]), _EmptyEventCityDataProvider()
+        ).fetch_info_context(
+            InfoContextRequest(
+                request_id="request-realtime-event-clarify",
+                place_name=None,
+                place_context="explicit",
+                question_type="realtime_event",
+            )
+        )
+
+        assert response.clarification is not None
+        assert response.clarification.code == "event_place_required"
+
+    @pytest.mark.asyncio
+    async def test_행사가_아닌_질의는_기존_코드를_유지한다(self) -> None:
+        """되묻기 코드를 늘린 것이 다른 유형까지 바꾸지 않았는지 못 박는다."""
+        response = await _service().fetch_info_context(
+            InfoContextRequest(
+                request_id="request-hours-clarify",
+                place_name=None,
+                place_context="explicit",
+                question_type="operating_hours",
+            )
+        )
+
+        assert response.clarification is not None
+        assert response.clarification.code == "place_required"
 
 
 class TestFakeProviderShape:
@@ -311,3 +371,78 @@ class TestFakeProviderShape:
         distances = [item.distance_km for item in _event_result(response).events]
         assert all(value is not None for value in distances)
         assert any(value > 0 for value in distances if value is not None)
+
+
+class _EmptyEventCityDataProvider(FakeRealtimeCityDataProvider):
+    """서울시 실시간 도시데이터가 행사를 하나도 안 주는 상태."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def get_area_citydata(self, area_name_or_code: str):  # type: ignore[no-untyped-def]
+        self.calls.append(area_name_or_code)
+        result = await super().get_area_citydata(area_name_or_code)
+        return provider_result(
+            replace(result.data, events=()),
+            source=result.metadata.source,
+            status=result.metadata.status,
+        )
+
+
+def _realtime_event_request() -> InfoContextRequest:
+    return InfoContextRequest(
+        request_id="request-realtime-event-1",
+        place_name="경복궁",
+        place_context="explicit",
+        question_type="realtime_event",
+    )
+
+
+class TestRealtimeEventFallback:
+    """서울시 실시간이 비면 TourAPI로 한 번 더 본다.
+
+    두 출처가 거의 겹치지 않아서다 — 2026-09-04 실측에서 그날 진행 중인 행사가 서울시
+    95건·TourAPI 21건인데 양쪽에 다 있는 것은 3건뿐이었다. 한쪽만 보고 "없다"고 답하면
+    다른 쪽에 있는 것을 통째로 놓친다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_서울시_실시간이_비면_TourAPI_행사를_돌려준다(self) -> None:
+        citydata = _EmptyEventCityDataProvider()
+        festivals = StubFestivalProvider([_event("한복문화주간")])
+
+        response = await _service(festivals, citydata).fetch_info_context(
+            _realtime_event_request()
+        )
+
+        assert citydata.calls, "서울시 실시간을 먼저 봐야 한다"
+        assert festivals.calls, "비었으면 TourAPI로 넘어가야 한다"
+        result = _event_result(response)
+        assert response.status == "success"
+        assert [item.title for item in result.events] == ["한복문화주간"]
+
+    @pytest.mark.asyncio
+    async def test_서울시_실시간에_행사가_있으면_TourAPI를_부르지_않는다(self) -> None:
+        festivals = StubFestivalProvider([_event("한복문화주간")])
+
+        response = await _service(festivals, FakeRealtimeCityDataProvider()).fetch_info_context(
+            _realtime_event_request()
+        )
+
+        assert not festivals.calls, "서울시 실시간으로 답했으면 TourAPI를 부를 이유가 없다"
+        assert response.status == "success"
+        assert not isinstance(response.result, EventInfoResult)
+
+    @pytest.mark.asyncio
+    async def test_양쪽_다_비면_no_data다(self) -> None:
+        citydata = _EmptyEventCityDataProvider()
+        # 작년에 끝난 행사만 있는 상태 — is_ongoing()이 전부 떨어뜨린다.
+        festivals = StubFestivalProvider([_event("작년 축제", start_offset=-400, end_offset=-390)])
+
+        response = await _service(festivals, citydata).fetch_info_context(
+            _realtime_event_request()
+        )
+
+        assert festivals.calls
+        assert response.status == "no_data"
+        assert _event_result(response).events == []

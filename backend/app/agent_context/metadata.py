@@ -23,6 +23,10 @@ def collect_provider_metadata(
     seen: set[tuple[str, str, datetime]] = set()
     context_values = (
         context.location,
+        # 발화 위치를 따로 지오코딩하면 호출이 하나 더 는다. 여기 넣지 않으면 그
+        # 호출만 응답 메타데이터에서 빠진다 — 기준점과 같은 질의를 재사용한 경우는
+        # 아래 seen 집합이 중복으로 걸러낸다.
+        context.user_location,
         context.weather,
         context.places,
         context.holidays,

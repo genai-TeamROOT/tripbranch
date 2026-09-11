@@ -1,18 +1,13 @@
-"""세션의 최신 컨텍스트(GPS 포함)를 확보한다.
+"""세션의 현재 컨텍스트를 확보한다.
 
-역할: Intent 분류/조건 추출 전에, 세션의 현재 상태(SessionContextResponse)를 최신 GPS
-정보까지 반영해서 확보한다. B(Agent State)의 get_session_context()/update_api_context()를
-조합해서 쓴다.
-입력: session_id(없으면 새 세션), device_location("위도,경도" 문자열 — api_context.gps_location과
-동일 포맷).
-출력: 최신 SessionContextResponse.
+역할: Intent 분류/조건 추출 전에 세션의 현재 상태(SessionContextResponse)를 읽어 온다.
+입력: session_id(없으면 새 세션), device_location(더 이상 쓰지 않는다 — 아래 참고).
+출력: SessionContextResponse.
 
-알려진 한계(TODO, interpret 통합 시 해결): get_session_context()/update_api_context()는
-세션을 새로 만들지 않는다(B 계약상 read-only). 세션은 오직 apply()만 생성한다. 따라서
-session_id가 아직 없는 최초 턴에서는 이 함수가 GPS를 심을 세션이 없어 gps_expired=True인
-채로 그대로 반환한다 — 그 턴의 apply()가 세션을 만든 뒤, 곧바로 이어서
-update_api_context()를 한 번 더 호출해 GPS를 심는 후속 처리가 필요하다. 이 후속 처리는
-interpret.py 통합 작업(다음 세션)에서 연결한다.
+**GPS를 심던 함수였다.** 서버가 사용자 위치를 저장하지 않게 되면서(state/store.py::
+for_persistence) 심을 이유가 사라졌다. 이번 턴의 좌표는 요청에 실려 와 그대로 쓰이고
+(agent_runtime의 valid_gps), 서버에 두던 것은 요청에 좌표가 없을 때를 위한 여벌이었다.
+device_location 인자는 호출부 두 곳의 서명을 함께 바꾸지 않으려고 남겨 뒀다.
 
 (2026-08-05, D-038) 과거에는 GPS와 함께 날씨(api_context.api_weather)도 여기서
 조회·저장했으나, 이 값을 실제로 읽는 소비자가 backend/frontend 어디에도 없어 제거했다
@@ -22,12 +17,10 @@ interpret.py 통합 작업(다음 세션)에서 연결한다.
 
 from __future__ import annotations
 
-from app.state.schema import now_kst
+from app.auth.principal import Principal
 from app.state.service import (
     SessionContextResponse,
-    UpdateApiContextRequest,
     get_session_context,
-    update_api_context,
 )
 from app.state.store import StateStore
 
@@ -37,23 +30,24 @@ async def ensure_current_context(
     device_location: str | None,
     *,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> SessionContextResponse:
-    """GPS를 최신화한 SessionContextResponse를 반환한다."""
+    """GPS를 최신화한 SessionContextResponse를 반환한다.
 
-    context = get_session_context(session_id, store=store)
+    principal은 그대로 get_session_context()에 넘겨 소유권을 대조한다
+    (D-063 결정 2 후속, D-073) — 이 함수가 apply()보다 먼저 호출되는
+    경로(라우트의 1단계 컨텍스트 확보)라 여기서도 대조가 필요하다.
+    """
 
-    if context.session_exists and context.api_context.gps_expired and device_location:
-        update_api_context(
-            UpdateApiContextRequest(
-                session_id=context.session_id,
-                gps_location=device_location,
-                gps_location_updated_at=now_kst(),
-            ),
-            store=store,
-        )
-        context = get_session_context(context.session_id, store=store)
-
-    return context
+    # 좌표를 세션에 심던 자리였다. 이제 심지 않는다 — 저장소가 위치를 남기지
+    # 않으므로(state/store.py::for_persistence) 저장해도 아무것도 안 남고, 저장된
+    # 값이 늘 비어 있어 "만료됐거나 값이 다르면 갱신" 조건이 매 턴 참이 된다.
+    # 그대로 두면 턴마다 아무것도 저장하지 않는 쓰기와 재조회가 한 번씩 더 나간다.
+    #
+    # 이번 턴의 좌표는 요청에 실려 와 그대로 쓰인다(agent_runtime의 valid_gps).
+    # 서버에 두던 것은 요청에 좌표가 없을 때를 위한 여벌이었는데, 화면이 매 턴
+    # 보내고 있어 실제로 쓰이는 일이 드물었다.
+    return get_session_context(session_id, store=store, principal=principal)
 
 
 __all__ = ["ensure_current_context"]

@@ -27,8 +27,18 @@ class ProviderSource(StrEnum):
     TOUR_API_PLACE = "tour_api_place"
     TOUR_API_FESTIVAL = "tour_api_festival"
     SUPABASE_PLACES = "supabase_places"
+    SUPABASE_PLACE_EVIDENCE = "supabase_place_evidence"
+    SUPABASE_PLACE_MOOD = "supabase_place_mood"
+    SUPABASE_BARRIER_FREE_PLACES = "supabase_barrier_free_places"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
+    SEOUL_CITYDATA_COMMERCIAL = "seoul_citydata_commercial"
+    SEOUL_CITYDATA_POPULATION = "seoul_citydata_population"
+    SEOUL_MUNICIPAL_PARKING = "seoul_municipal_parking"
+    SEOUL_PUBLIC_TOILET = "seoul_public_toilet"
     KASI_HOLIDAY = "kasi_holiday"
+    KAKAO_WALKING_ROUTE = "kakao_walking_route"
+    NAVER_DRIVING_ROUTE = "naver_driving_route"
+    KAKAO_TRANSIT_ROUTE = "kakao_transit_route"
     GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
     FAKE_LOCAL_SEARCH = "fake_local_search"
@@ -37,7 +47,14 @@ class ProviderSource(StrEnum):
     FAKE_FESTIVAL = "fake_festival"
     FAKE_PLACES = "fake_places"
     FAKE_CONCENTRATION = "fake_concentration"
+    FAKE_SEOUL_CITYDATA = "fake_seoul_citydata"
+    FAKE_MUNICIPAL_PARKING = "fake_municipal_parking"
+    FAKE_PUBLIC_TOILET = "fake_public_toilet"
     FAKE_HOLIDAY = "fake_holiday"
+    FAKE_WALKING_ROUTE = "fake_walking_route"
+    FAKE_DRIVING_ROUTE = "fake_driving_route"
+    FAKE_TRANSIT_ROUTE = "fake_transit_route"
+    FAKE_BARRIER_FREE_PLACES = "fake_barrier_free_places"
     FAKE_LLM = "fake_llm"
 
 
@@ -55,9 +72,7 @@ class ProviderMetadata:
         if self.retrieved_at.tzinfo is None:
             raise ValueError("retrieved_at은 timezone-aware datetime이어야 합니다.")
         if self.detail_fetched_at is not None and self.detail_fetched_at.tzinfo is None:
-            raise ValueError(
-                "detail_fetched_at은 timezone-aware datetime이어야 합니다."
-            )
+            raise ValueError("detail_fetched_at은 timezone-aware datetime이어야 합니다.")
 
 
 T = TypeVar("T")

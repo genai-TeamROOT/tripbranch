@@ -6,7 +6,7 @@ docs/design/test-cases.md의 TC-07~09와 conditions-schema.md §5 예시5(place_
 
 from __future__ import annotations
 
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
     Environment,
@@ -64,7 +64,7 @@ def test_recommend_resets_soft_and_updates_all_set_fields() -> None:
     assert ops[("Update", "place_tags")] == ["카페"]
     assert request.confirmed is True
     assert request.intent == "RECOMMEND"
-    assert request.prompt_version == PROMPT_VERSION
+    assert request.prompt_version == turn_prompt_version(Intent.RECOMMEND)
 
 
 def test_schedule_merges_conditions_same_as_recommend() -> None:
@@ -217,6 +217,45 @@ def test_recommend_without_new_location_preserves_existing_search_center() -> No
     assert ops[("Update", "place_tags")] == ["카페"]
 
 
+def test_recommend_without_new_location_preserves_existing_travel_origin() -> None:
+    """search_center가 복원되면 그 장소에 대한 travel_origin 판정도 함께 이어진다.
+
+    "안국역에서 10분" 다음 턴 "그럼 조용한 데로"에서 search_center만 복원되고
+    travel_origin이 초기화되면 기준점이 도로 사용자 위치로 바뀐다(D-071).
+    """
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(concentration_intent="AVOID")),
+    )
+    context = _context(
+        user_conditions=StateUserConditions(search_center="안국역", travel_origin="search_center")
+    )
+
+    request = transform(llm_output, context, "그럼 조용한 데로")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "안국역"
+    assert ops[("Update", "travel_origin")] == "search_center"
+
+
+def test_recommend_with_new_search_center_does_not_restore_previous_travel_origin() -> None:
+    """새 목적지를 말하면 이전 turn의 travel_origin 판정을 끌고 오지 않는다."""
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(search_center="광화문")),
+    )
+    context = _context(
+        user_conditions=StateUserConditions(search_center="안국역", travel_origin="search_center")
+    )
+
+    request = transform(llm_output, context, "광화문 근처 추천해줘")
+
+    fields = {op.field for op in request.operations}
+    assert "travel_origin" not in fields
+
+
 def test_recommend_with_new_search_center_does_not_restore_previous_center() -> None:
     llm_output = LLMOutput(
         intent=Intent.RECOMMEND,
@@ -266,6 +305,49 @@ def test_reject_specific_only_marks_targeted_index_as_rejected() -> None:
     assert [(r.place_id, r.reason_code) for r in request.rejected_places] == [
         ("B", "not_interested"),
     ]
+    # 유지 대상(A·C)이 직전 턴의 recommended로 제외 목록에 남아 있으면 다음 채점에서
+    # 함께 빠져 REJECT_ALL과 같은 결과가 된다 — history를 비워 되살린다.
+    assert request.reset_scope == "history"
+
+
+def test_reject_specific_resets_history_so_kept_places_survive() -> None:
+    """REJECT_SPECIFIC은 "history"를 돌려준다.
+
+    지목한 자리만 거절이고 나머지는 유지 대상인데, 그 나머지가 직전 턴의
+    recommended로 제외 목록(`recommended ∪ rejected ∪ closed_excluded`)에 남아
+    있으면 다음 채점에서 함께 빠진다 — "두 번째만 별로야"가 "다 바꿔줘"와 같은
+    결과를 내게 된다. CHANGE_CONDITION이 같은 이유로 이미 "history"를 쓰고 있고,
+    REJECT_SPECIFIC만 그 처리가 빠져 있었다(SCHEDULE-09 신설 당시 누락).
+
+    거절한 자리는 rejected로 계속 제외되므로 recommended를 비워도 되살아나지 않는다.
+    """
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_SPECIFIC, target_indices=[2]),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "두 번째만 다른 데로")
+
+    assert request.reset_scope == "history"
+    assert [r.place_id for r in request.rejected_places] == ["B"]
+
+
+def test_reject_all_still_keeps_history() -> None:
+    """REJECT_ALL은 그대로 None이다 — rejected 기록으로 영구 제외를 이미 표현한다.
+
+    이 구분이 깨지면 "다른 곳 보여줘"가 거절한 장소를 다시 후보로 올린다.
+    """
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_ALL),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "다른 곳 보여줘")
+
     assert request.reset_scope is None
 
 
@@ -481,7 +563,7 @@ def test_non_recommend_non_modify_intents_have_no_operations() -> None:
     compare_output = LLMOutput(
         intent=Intent.COMPARE,
         status=OutputStatus.COMPLETE,
-        compare=ComparePayload(targets="all", criteria=CompareCriteria.DISTANCE),
+        compare=ComparePayload(targets="all", criteria=CompareCriteria.TRAVEL_TIME),
     )
     general_output = LLMOutput(
         intent=Intent.GENERAL,

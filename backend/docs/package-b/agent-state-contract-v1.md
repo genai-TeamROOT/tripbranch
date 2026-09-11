@@ -19,6 +19,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 - 저장소는 인메모리를 기준으로 한다. (서버 재시작 시 상태 소멸)
 - 로그인이 없으며 모든 세션은 익명이다.
 - 사용자 원문 발화와 LLM 원문 응답은 저장하지 않는다.
+  **단 화면 기록(`session_messages`)은 예외다 — 5.6절 참고.**
 - B는 자연어의 의미를 해석하지 않는다. A가 해석한 결과를 적용만 한다.
 - 조건 데이터는 출처에 따라 `user_conditions`와 `api_context`로 분리 저장한다.
 
@@ -32,7 +33,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 
 | 층 | 내용 | B 저장 | 생성 주체 |
 | --- | --- | --- | --- |
-| `user_conditions` | 사용자 발화에서 추출한 조건 15개 | O | A (Structured Output) |
+| `user_conditions` | 사용자 발화에서 추출한 조건 16개 | O | A (Structured Output) |
 | `api_context` | GPS·날씨 API로 확보한 외부 데이터 | O | A 또는 Runtime |
 | `answer_conditions` | 위 둘을 병합한 최종 조건 | **X** | A |
 
@@ -49,7 +50,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (15개 필드)
+### 1.2 user_conditions (18개 필드)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
 
@@ -70,8 +71,12 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 13 | `exclude_tags` | list[string] | 복수 | 제외 태그 |
 | 14 | `special_requirements` | list[string] | 복수 | 특수 요구사항 |
 | 15 | `concentration_intent` | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
+| 16 | `taste_query` | string \| null | 단일 | 취향 발화 원문(2026-08-19 신설). 벡터 검색 질의로 쓴다 — `special_requirements`와 달리 일정·교통 조건을 섞지 않는다 |
+| 17 | `travel_origin` | string \| null | 단일 | 이동시간의 출발점 판정(2026-08-22 신설, D-071). `"user_location"` \| `"search_center"`. "안국역에서 10분"처럼 조사가 출발점을 확정할 때만 `"search_center"` |
+| 18 | `accessibility_needs` | list[string] | 복수 | 무장애 요구(2026-09-02 신설, `14fb1d3`). A의 추출 프롬프트가 채운다 |
 
-- 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
+- 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements`,
+  `accessibility_needs` 5개다.
 - **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
 - **B는 각 필드의 허용값을 검증하지 않는다.** 허용값 목록은 패키지 A가 정의한다.
 
@@ -102,7 +107,7 @@ time_available  : 분 단위
 `null`을 그대로 전달함으로써
 "사용자가 지정한 값"과 "시스템이 채운 값"을 구분할 수 있게 한다.
 
-### 1.4 api_context (4개 필드)
+### 1.4 api_context (5개 필드)
 
 외부에서 확보한 데이터를 `user_conditions`와 분리해 저장한다.
 
@@ -112,6 +117,12 @@ time_available  : 분 단위
 | `api_weather` | string \| null | 날씨 API | 1시간 |
 | `gps_location_updated_at` | string \| null | 시스템 | — |
 | `api_weather_updated_at` | string \| null | 시스템 | — |
+| `gps_location_confirmed_at` | string \| null | 시스템 (PR #188, 2026-08-20) | — (A가 30분 기준으로 자체 판정) |
+
+**기기 좌표 세 필드는 DB에 저장되지 않는다 (2026-09-08, `6df2e24`).**
+`gps_location`, `gps_location_updated_at`, `gps_location_confirmed_at`은 요청을
+처리하는 동안에만 상태에 있고 저장 직전에 빠진다. 스키마에서 없앤 것이 아니므로
+이 절의 유효 기간 규칙은 **한 요청 안에서만** 의미가 있다 — 5.6절 "저장 경계" 참고.
 
 **유효 기간 규칙**
 
@@ -126,6 +137,20 @@ time_available  : 분 단위
   사용자가 조건을 바꾼 것이 아니기 때문이다.
 - `api_context`는 `operations` 대상이 아니며 별도 경로로 갱신한다. (6.5절)
 - 날씨 API 실패 시 `api_weather`는 `null`로 두며 만료된 이전 값을 재사용하지 않는다.
+
+**gps_location_confirmed_at (PR #188, 2026-08-20)**
+
+프론트가 먼저 구현한 위치 재확인 UX(GPS 확보 후 30분이 지나면 "N분 전
+위치로 계속" / "현재 위치 다시 가져오기"를 묻는 흐름)를 세션 단위로도
+일관되게 유지하기 위한 필드다. `gps_location_updated_at`(GPS 데이터의
+기술적 TTL, 1시간)과 의미가 다르므로 혼용하지 않는다 — 이 필드는 사용자가
+실제로 "현재 위치 다시 가져오기"에 성공했을 때만 갱신되고, "N분 전
+위치로 계속"을 선택하면 갱신되지 않는다. B는 30분 경과 여부를 판정하지
+않는다 — 값을 그대로 반환할 뿐, A가 이 값과 현재 시각을 비교해
+판단한다(1.4절의 "B는 만료 여부만 판정" 원칙과 달리, 이 필드는 만료
+판정 자체를 A에 완전히 위임한다 — TTL 기준이 아직 프론트 전용 정책이라
+B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A는 `null`을
+최초 재확인 대상으로 처리한다.
 
 ### 1.5 answer_conditions (B 미저장)
 
@@ -150,6 +175,7 @@ time_available  : 분 단위
     "place_tags": [],
     "weather": null,
     "weather_intent": null,
+    "concentration_intent": null,
     "transport": null,
     "max_travel_time": null,
     "time_available": null,
@@ -157,13 +183,17 @@ time_available  : 분 단위
     "companion": null,
     "budget": null,
     "exclude_tags": [],
-    "special_requirements": []
+    "special_requirements": [],
+    "taste_query": null,
+    "accessibility_needs": [],
+    "travel_origin": null
   },
   "api_context": {
     "gps_location": null,
     "api_weather": null,
     "gps_location_updated_at": null,
-    "api_weather_updated_at": null
+    "api_weather_updated_at": null,
+    "gps_location_confirmed_at": null
   },
   "condition_version": 0,
   "last_run_id": null,
@@ -179,8 +209,8 @@ time_available  : 분 단위
 | 필드 | 설명 |
 | --- | --- |
 | `session_id` | 대화 단위 식별자 (4절) |
-| `user_conditions` | 사용자 발화에서 추출된 현재 조건 15개 |
-| `api_context` | 외부 확보 데이터 4개 |
+| `user_conditions` | 사용자 발화에서 추출된 현재 조건 18개 (1.2절) |
+| `api_context` | 외부 확보 데이터 5개 (1.4절). **그중 기기 좌표 3개는 DB에 저장되지 않는다** — 5.6절 |
 | `condition_version` | `user_conditions` 변경 횟수. 동시 갱신 감지용 |
 | `last_run_id` | 이 상태를 마지막으로 갱신한 실행 식별자 |
 | `last_intent` | 직전 턴의 인텐트. A의 맥락 판정용으로 반환 |
@@ -215,7 +245,7 @@ time_available  : 분 단위
 | 키 | 타입 | 설명 |
 | --- | --- | --- |
 | `op` | string | `Add` / `Update` / `Remove` / `Keep` |
-| `field` | string | 1.2절 `user_conditions` 15개 필드 중 하나 |
+| `field` | string | 1.2절 `user_conditions` 16개 필드 중 하나 |
 | `value` | any \| null | 적용할 값. `Remove`·`Keep`은 생략 가능 |
 
 - 연산은 **4종**이다.
@@ -246,8 +276,10 @@ time_available  : 분 단위
 | `budget` | 단일 | `Update` / `Remove` | `null` |
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
+| `taste_query` | 단일 | `Update` / `Remove` | `null`로 설정 |
+| `travel_origin` | 단일 | `Update` / `Remove` | `null`로 설정 |
 
-**15개 필드 모두 `Remove`를 허용한다.**
+**17개 필드 모두 `Remove`를 허용한다.**
 `conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
 `api_context.gps_location`으로 이관되었으므로,
 `user_conditions`에는 해제 불가 필드가 없다.
@@ -374,6 +406,13 @@ A가 명시적으로 유지를 판단했다는 신호이므로 변경 기록에�
 - 무효한 연산은 기록하지 않고 `ignored_operations`로만 반환한다.
 - `api_context` 갱신은 별도 경로이므로 이 기록에 남기지 않는다.
 - 사용자 원문 발화와 LLM 원문 응답은 기록하지 않는다.
+- **append-only의 범위(갱신 2026-08-24, D-074):** 개별 레코드를 골라
+  수정·삭제하는 경로는 여전히 없다 — 이력을 조작해 지난 기록을 다르게
+  보이게 할 수 없다는 뜻이다. 다만 세션 전체가 정리 대상(30일 이상
+  미사용)이 되면 그 세션에 속한 기록을 통째로 지우는 `delete_change_logs`가
+  있다(`trace_records`는 `delete_traces`) —
+  `backend/scripts/cleanup_expired_sessions.py` 전용이며 일반 요청 흐름에서는
+  호출되지 않는다.
 
 ### 2.9 적용 예시
 
@@ -430,10 +469,16 @@ version: 6 → 7
 | --- | --- | --- |
 | `recommended` | 사용자에게 노출된 적 있는 장소 | 중복 노출 방지 |
 | `rejected` | 사용자가 명시적으로 거부한 장소 | 재노출 방지 |
+| `closed_excluded` | D의 하드 필터가 폐점이라 걸러낸 장소(TP-82, 2026-08-20) | 폐점 후보 반복 수집 방지 |
 
-두 이력은 초기화 범위가 다르므로 별도 구조로 관리한다. (5절)
+세 이력은 초기화 범위가 다르므로 별도 구조로 관리한다. (5절)
 Phase 1에서는 제외 목적으로 동일하게 사용하지만,
 구조를 분리해 두어 이후 스코어링 정책에서 다르게 취급할 수 있도록 한다.
+`closed_excluded`는 "노출됐다"도 "사용자가 거절했다"도 아니다 — D 응답에
+아예 담기지 못해 `recommended`/`rejected` 어느 경로도 탈 수 없었던 후보를
+위한 세 번째 분류다(TP-82: 밤 시간대처럼 폐점 비율이 높을 때 "다른 곳
+보여줘"를 반복하면 노출 이력이 없는 폐점 후보가 매 회차 재수집돼 카드 수가
+줄어드는 문제로 발견).
 
 ### 3.2 이력 구조
 
@@ -450,6 +495,10 @@ Phase 1에서는 제외 목적으로 동일하게 사용하지만,
     { "place_id": "126508", "run_id": "run_01J8XKQ9Z8Y7X6",
       "reason_code": "too_far",
       "rejected_at": "2026-07-23T09:07:30+09:00" }
+  ],
+  "closed_excluded": [
+    { "place_id": "126520", "run_id": "run_01J8XKQ5A1B2C3",
+      "excluded_at": "2026-07-23T09:05:12+09:00" }
   ],
   "updated_at": "2026-07-23T09:07:30+09:00"
 }
@@ -491,17 +540,33 @@ B는 값을 검증하지 않고 그대로 저장한다. 값이 없으면 `null`�
 
 `recommended`와 `rejected`는 append-only 리스트이며 기존 항목을 수정하지 않는다.
 
+**closed_excluded 항목 (TP-82, 2026-08-20)**
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `place_id` | string | D의 하드 필터(`_is_closed`)가 폐점이라 걸러낸 장소 식별자 |
+| `run_id` | string | 해당 실행 식별자 |
+| `excluded_at` | string | 기록 시각 (ISO 8601) |
+
+패키지 D의 `RecommendationResponse.excluded_closed_place_ids`를 그대로
+받아 저장한다 — 폐점 여부 판단은 D의 책임이고 B는 검증하지 않는다. 이
+리스트도 append-only다.
+
 ### 3.3 제외 ID 목록
 
 ```
 excluded_place_ids = recommended의 place_id ∪ rejected의 place_id
+                      ∪ closed_excluded의 place_id (TP-82, 2026-08-20)
 ```
 
 - 중복은 제거하여 반환한다.
 - 순서는 보장하지 않는다.
 - 추천 이력이 없는 `place_id`가 `rejected`로 전달되어도 검증하지 않고 저장한다.
 
-세션이 유지되는 동안 계속 누적된다.
+세션이 유지되는 동안 계속 누적된다. 단, `closed_excluded`는 5절의 history
+reset(`recommended`를 비우는 범위)에서 `recommended`와 함께 비워진다 —
+폐점 여부는 시각에 따라 바뀌는 사실이라 `rejected`처럼 영구 보관할 근거가
+아니기 때문이다.
 
 ### 3.4 마지막 노출 목록
 
@@ -772,6 +837,25 @@ B는 GPS 확보 여부로 세션 생성을 거부하지 않는다.
 `api_context` 갱신(6.5절)은 `updated_at`을 갱신하지 않으며,
 `last_active_at`만 갱신한다.
 
+### 5.3-1 신원 연결과 소유권 검증 (TP-101, D-063, D-073)
+
+세션을 확보하는 시점에 인증된 `Principal`(있으면)을 연결한다.
+
+- **연결(`attach_user_id`)**: `AgentState.user_id`가 비어 있으면 `Principal.user_id`로
+  채운다. 이미 값이 있으면 절대 덮어쓰지 않는다 — 빈 칸을 채우는 것은 소유권
+  이전이 아니지만, 값이 있는 세션을 덮어쓰는 것은 소유권 탈취다(D-063 결정 3).
+- **소유권 검증(`verify_ownership`, D-073)**: `Principal`이 있고 `AgentState.user_id`도
+  이미 있는데 둘이 다르면 요청을 거부한다(403, `session_ownership_mismatch`).
+  `Principal`이 없는 요청(토큰 미전송)과 `user_id`가 비어 있는 세션은 거부 대상이
+  아니다 — 지금은 인증이 optional이라 정상 경로다.
+- **적용 범위**: `apply()`(6.1/6.2절), `get_session_context()`(6.3절),
+  `delete_session()`(GET/DELETE `/api/state/{session_id}`, 이 계약 문서에
+  별도 절 없음) 세 진입점 모두에서 검증한다. 나머지 진입점
+  (`record_recommendation` 등)은 같은 요청 안에서 `apply()`가 이미 통과시킨
+  `session_id`만 이어받으므로 별도로 재검증하지 않는다.
+- **아직 하지 않는 것**: 모든 요청에 신원을 강제하는 것(Phase 4, 전면 필수화)은
+  이 범위 밖이다 — 착수 시점 자체가 미정이다(`guest-auth-design.md` 5절).
+
 ### 5.4 만료 판정
 
 B가 관리하는 만료는 세 종류이며, 모두 시각 비교로 판정한다.
@@ -794,6 +878,12 @@ B가 관리하는 만료는 세 종류이며, 모두 시각 비교로 판정한�
 - `status`를 `expired`로 표시한다.
 - 만료된 State는 복구하지 않으며 신규 세션으로 시작한다.
 - Phase 1에서는 만료된 세션 데이터를 즉시 삭제하지 않는다.
+- **갱신(2026-08-24, D-074/TP-134):** 이 lazy 판정은 세션이 다시 조회될
+  때만 `status`를 바꾸므로, 다시 조회되지 않는 세션은 행 자체가 무기한
+  DB에 남는다. `backend/scripts/cleanup_expired_sessions.py`가
+  `last_active_at` 기준 30일(조정 가능) 이상 지난 세션을 실제로 삭제하는
+  별도 경로를 담당한다 — 요청 처리 흐름과는 분리된 정리 전용 스크립트이며,
+  위 "요청이 수신된 시점에 해당 세션만 확인한다(lazy)" 원칙과는 무관하다.
 
 **api_context 만료 처리**
 
@@ -814,19 +904,22 @@ TTL 값은 실사용 후 조정 가능하다.
 
 ### 5.5 초기화 범위
 
-| 종류 | `reset_scope` | 조건 | 추천 이력 | 거절 이력 | session_id |
-| --- | --- | --- | --- | --- | --- |
-| Soft Reset | `soft` | 초기화 | 유지 | 유지 | 유지 |
-| History Reset | `history` | 유지 | 초기화 | **유지** | 유지 |
-| Full Reset | `full` | 초기화 | 초기화 | 초기화 | **신규 발급** |
+| 종류 | `reset_scope` | 조건 | 추천 이력 | 폐점 제외 이력 | 거절 이력 | session_id |
+| --- | --- | --- | --- | --- | --- | --- |
+| Soft Reset | `soft` | 초기화 | 유지 | 유지 | 유지 | 유지 |
+| History Reset | `history` | 유지 | 초기화 | 초기화 | **유지** | 유지 |
+| Full Reset | `full` | 초기화 | 초기화 | 초기화 | 초기화 | **신규 발급** |
 
 **Soft Reset**
 `user_conditions`만 초기화하고 이력은 유지한다.
 조건이 바뀌더라도 이미 노출된 장소를 다시 보여주지 않기 위함이다.
 
 **History Reset**
-추천 이력만 비우고 거절 이력은 유지한다.
-사용자가 명시적으로 거부한 장소를 재노출하지 않기 위함이다.
+추천 이력과 `closed_excluded`(TP-82, 2026-08-20)를 비우고 거절 이력은
+유지한다. 사용자가 명시적으로 거부한 장소를 재노출하지 않기 위함이다.
+`closed_excluded`는 `rejected`와 달리 "그 시점에 닫혀 있었다"는 시간
+의존적 사실이라 `recommended`와 같은 범위에서 함께 비운다 — 영구 보관할
+근거가 아니다.
 
 **Full Reset**
 기존 세션을 만료 처리하고 신규 세션을 발급한다.
@@ -894,8 +987,9 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장한다**
 
-- `user_conditions` 15개 필드 (구조화된 조건값)
-- `api_context` 4개 필드 (외부 확보 데이터 + 확보 시각)
+- `user_conditions` 18개 필드 (구조화된 조건값)
+- `api_context` 중 **날씨 두 필드만** — `api_weather`, `api_weather_updated_at`.
+  나머지 셋은 기기 좌표라 저장하지 않는다 (아래 "저장 경계")
 - `place_id` (TourAPI `contentid`)
 - `distance_km` / `remaining_minutes` / `environment_type` — COMPARE 전용
   Feature 스냅샷 (3.2절, 3.7절 예외 참고). 일반 장소 상세와는 성격이 다르다.
@@ -910,17 +1004,35 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장하지 않는다**
 
-- 사용자 원문 발화
-- LLM 원문 응답 텍스트
+- 사용자 원문 발화 — **화면 기록은 예외다** (아래 "화면 기록")
+- LLM 원문 응답 텍스트 — **화면 기록은 예외다** (아래 "화면 기록")
+- 기기 좌표 3개 (`gps_location` · `gps_location_updated_at` ·
+  `gps_location_confirmed_at`) — **상태에는 있고 DB에만 없다** (아래 "저장 경계")
 - Chain-of-Thought 등 내부 추론 과정
 - 장소 상세 정보 (이름·주소·좌표·영업시간)
 - `answer_conditions` (병합 결과)
+- 추천 Scoring 세부 근거값 (`concentration_rate`, `feature_scores`, `weights_used`) — D-050 참고, 아래 설명
 
 **`answer_conditions`를 저장하지 않는 이유**
 
 `user_conditions`와 `api_context`를 병합한 결과이므로,
 저장하면 그 자체가 오래된 값으로 남아 현재 값으로 오인될 수 있다.
 매 실행 시 패키지 A가 최신 값으로 재생성한다.
+
+**Scoring 세부 근거값을 저장하지 않는 이유 — 그리고 재검토가 필요한 이유 (2026-08-14 추가)**
+
+`RecommendedPlace`(7.2절)는 `place_id`/`rank` 두 필드만 갖는다. 혼잡도 2차 Scoring(D-040)이
+반영된 뒤에도 노출 이력의 **순서**는 최종 순위를 정확히 반영하지만, 혼잡도 점수(`concentration_rate`)·
+등급·`feature_scores`/`weights_used` 같은 **세부 근거**는 그 턴의 HTTP 응답에만 존재하고 B에는
+전혀 남지 않는다(D-050). 당초 이 결정은 "지금 당장 그 데이터를 쓸 곳이 없다"는 이유로 보류됐다.
+
+기본프로젝트 최종 발표에서 "추천이 실제로 잘 됐는지 무엇으로 판단하는가"라는 피드백을 받았다 —
+확인해보니 현재 검증 수단(`scoring_fixture_v1.py`/`test_scoring.py`)은 "가중치 공식을 코드로
+정확히 구현했는가"만 검증하고, 그 공식 자체가 좋은 추천인지 사후에 재현·평가할 방법은 없다.
+Scoring 세부 근거값을 B가 저장해두면, 최소한 "그때 왜 이 순서였는지"를 재현해 평가 근거로 삼을
+수 있는 길이 열린다 — B-01 이후 원래 의도적으로 미룬 항목이지만, **더 이상 "쓸 곳이 없는" 상태가
+아니게 됐다.** 저장 여부·스키마 확장 필요성은 여전히 D 협의가 먼저 필요하지만(B 혼자 결정할 사안이
+아님), 심화프로젝트에서 이 D-050 보류를 다시 여는 것을 우선순위로 제안한다.
 
 **원문을 저장하지 않아도 되는 이유**
 
@@ -934,6 +1046,80 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 "사용자가 어떤 표현을 썼는가"만 확인할 수 없으며,
 이는 AF-11 평가 Fixture의 영역이다.
+
+**저장 경계 — 상태에 있는 것이 곧 DB에 있는 것은 아니다 (2026-09-08, `6df2e24`)**
+
+`store.for_persistence(state)`가 저장 직전에 사본을 만들어 **기기 좌표 세 필드를
+뺀다** — `gps_location`, `gps_location_updated_at`, `gps_location_confirmed_at`.
+필드를 스키마에서 없앤 것이 아니라 DB에 적지 않는 것이라, 한 요청을 처리하는
+동안에는 그대로 쓴다. 그래서 원본을 건드리지 않고 사본을 만들어 돌려준다.
+
+- **저장소 두 구현이 모두 이 함수를 거친다** (`store.py`의 인메모리,
+  `supabase_store.py`). 인메모리만 값을 계속 들고 있으면, 저장이 사라져 깨지는
+  경로를 테스트가 통과시킨다
+- 뺄 수 있는 근거는 화면이 매 턴 좌표를 실어 보낸다는 점이다. 서버 사본은
+  "요청에 없을 때를 위한 여벌"이었는데 실제로는 매번 온다. 그 여벌을 읽던 자리는
+  둘(Runtime의 도구 조회 GPS, INFO 도보시간)이고 둘 다 없으면 이번 턴 값만 쓴다.
+  `gps_location_confirmed_at`은 채우는 코드도 읽는 코드도 없다 — 30분 재확인은
+  화면이 `sessionStorage`의 시각으로 판정한다
+- 개인정보가 이유다. 로그아웃해도 남고 세션마다 한 벌씩 쌓여 2026-09-07 기준
+  1,800건 이상이었다
+- **장소 이름(`current_location` · `search_center`)은 남긴다.** 함께 빼려다
+  되돌렸다 — 되묻기 버튼이 세션에 저장된 조건을 베껴 재실행하는데 이름이 사라지면
+  위치가 빈 채로 돌아 또 되묻기로 끝난다. 이름까지 빼려면 그 재실행 경로를 먼저
+  요청값 기준으로 고쳐야 한다 (TP-256)
+
+**이 절이 상태 스키마와 1:1이 아니게 된 것 자체가 계약이다.** 이 문서를 읽는
+사람은 "상태에 있으면 DB에도 있다"를 가정하면 안 된다 — `api_context`의 좌표 세
+필드가 반례다.
+
+**화면 기록은 원문 금지의 예외다 (`session_messages`, PR #354)**
+
+위 "저장하지 않는다"의 첫 두 항목(사용자 원문 발화 · LLM 원문 응답 텍스트)과
+3.2절의 "B는 `place_id`만 저장한다"를 **`session_messages`가 여는 자리다.**
+
+- `user_input` — 그 턴의 사용자 원문 발화. `payload` 안에도 있지만 밖으로 꺼내
+  두었다(목록을 훑을 때 `payload` 전체를 열지 않으려는 것)
+- `payload` — A의 `AgentResponse`를 직렬화한 그대로. **B는 열어보지 않는다.**
+  파싱하면 A의 스키마가 바뀔 때마다 B가 따라가야 하고, 지금 B는 `app.schemas`에
+  의존하지 않는다 (`trace_records`의 `step`을 다루는 방식과 같다)
+
+**원칙을 지우지 않는 이유.** 원문 금지가 지키려던 것은 "과거 정보가 현재 정보로
+오인되는" 상황이고, 그것은 저장이 아니라 **표시**에서 지킨다 — 운영시간처럼 시간이
+지나면 틀리는 값은 복원 화면에서 다시 그리지 않는다. 그래서 원칙은 `agent_states`에
+그대로 살아 있고, 예외는 화면 기록 한 곳이다.
+
+`recent_turns`와 겸하지 않는다. 저것은 모델에 넣을 맥락이라
+`MAX_RECENT_TURNS`(=5)에서 잘리고, 이것은 사람이 다시 볼 화면이라 자르지 않는다.
+추천 이력과도 다르다 — 그것은 "다음 추천에서 뺄 곳"이라 대화를 이어갈 때 비워진다.
+
+**보관 기간 — 사실상의 개인정보 보관 기간이다 (D-074, 기본 30일)**
+
+`agent_states.last_active_at`이 기준 일수(기본 30일, `--days`로 조정)보다 오래되면
+그 세션에 딸린 행을 전부 지운다
+(`backend/scripts/cleanup_expired_sessions.py`). 원문이 남는 자리가 생긴 뒤로는
+이 값이 **개인정보 보관 기간**이다 — CLI 인자 기본값으로만 존재한다는 사실과
+그것이 정책값이라는 사실은 다르다.
+
+수명은 "무엇에 딸려 있나"로 갈린다.
+
+| 대화에 딸림 — 30일에 사라진다 | 정리 대상이 아니다 |
+| --- | --- |
+| `agent_states` | `saved_schedules` |
+| `recommendation_histories` | `user_preferences` |
+| `condition_change_logs` | `user_favorites` |
+| `trace_records` | `response_feedback` |
+| `session_messages` | |
+| `saved_places` | |
+
+오른쪽 셋은 **사람에 딸려 있어** 대화를 지워도 남는다(라우트가
+`RequiredPrincipal`을 쓰고 세션 TTL과 무관하다). `response_feedback`은 세션
+생애주기와 무관한 분석 데이터라 제외됐다(D-074 결정 2).
+
+**D-074 결정 2의 대상 목록이 낡았다.** 그때는 네 테이블이었고 지금은
+`session_messages`(TP-222 후속) · `saved_places`(SCHEDULE-12)가 더 있다 —
+`_delete_one()`이 여섯을 지운다. decision-log D-074에 정정을 덧붙였다.
+
 
 ## 6. A → B 전달 계약 초안
 
@@ -1015,12 +1201,13 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
   "session_id": "sess_01J8XKQ2M7N4P9",
   "run_id": "run_01J8XKQ5A1B2C3",
   "session_created": false,
-  "user_conditions": { "...15개 필드..." },
+  "user_conditions": { "...16개 필드..." },
   "api_context": {
     "gps_location": "37.5565,126.9236",
     "api_weather": "rain",
     "gps_expired": false,
-    "weather_expired": false
+    "weather_expired": false,
+    "gps_location_confirmed_at": "2026-08-20T09:05:00+09:00"
   },
   "condition_version": 5,
   "condition_changed": true,
@@ -1039,7 +1226,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
 | `session_id` | string | 신규·기존 무관하게 항상 포함 |
 | `run_id` | string | 이번 실행 식별자 |
 | `session_created` | bool | 세션 신규 발급 여부 |
-| `user_conditions` | object | 병합 완료된 현재 조건 15개 전체 |
+| `user_conditions` | object | 병합 완료된 현재 조건 16개 전체 |
 | `api_context` | object | 외부 데이터 + 만료 플래그 |
 | `condition_version` | int | 병합 후 조건 버전 |
 | `condition_changed` | bool | 이번 요청으로 조건이 실제 변경됐는지 |
@@ -1083,8 +1270,8 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "last_recommended_run_id": "run_01J8XKQ5A1B2C3",
   "last_intent": "MODIFY",
   "pending_clarification": null,
-  "user_conditions": { "...15개 필드..." },
-  "api_context": { "...4개 필드 + 만료 플래그..." },
+  "user_conditions": { "...16개 필드..." },
+  "api_context": { "...5개 필드 + 만료 플래그..." },
   "condition_version": 5
 }
 ```
@@ -1158,6 +1345,39 @@ SCHEDULE 흐름은 생략하면 된다(3.7절 예외 참고). `name`은 SCHEDULE
 재편성 전용 선택 필드다(2026-08-11, D-060) — 있으면 항상 넘기는 것을
 권장한다. 자세한 사유는 3.7절 예외 참고.
 
+### 6.4b 폐점 제외 기록 (Agent Runtime → B, TP-82, 2026-08-20)
+
+D의 하드 필터가 폐점이라 걸러낸 후보 id를 6.4와 별도 경로로 기록한다 —
+`recommended`에 섞으면 "노출했다"로 잘못 취급되어 COMPARE의 "첫 번째"가
+실제로 안 보여준 장소를 가리키게 된다.
+
+**요청**
+
+```json
+{
+  "session_id": "sess_01J8XKQ2M7N4P9",
+  "run_id": "run_01J8XKQ5A1B2C3",
+  "place_ids": ["126520", "126521"]
+}
+```
+
+**응답**
+
+```json
+{ "recorded": 2 }
+```
+
+**호출 주체**
+AF-05 Agent Runtime이 D 응답(`RecommendationResponse.excluded_closed_place_ids`)을
+받은 직후 호출한다. `place_ids`가 비어 있으면(폐점 제외가 없었던 회차)
+아무것도 기록하지 않는다.
+
+`run_id`는 6.1 요청에서 발급된 값을 그대로 사용한다.
+
+여기 기록된 id는 3.3절의 `excluded_place_ids`에 합류해, 같은 세션의 다음
+회차 후보 수집(패키지 C 조회)에서 자동으로 제외된다 — Agent Runtime이
+별도로 병합할 필요가 없다.
+
 ### 6.5 api_context 갱신 (A 또는 Runtime → B)
 
 GPS·날씨 API로 확보한 데이터를 저장한다.
@@ -1171,7 +1391,8 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
   "gps_location": "37.5570,126.9240",
   "gps_location_updated_at": "2026-07-23T10:05:00+09:00",
   "api_weather": "good",
-  "api_weather_updated_at": "2026-07-23T10:05:00+09:00"
+  "api_weather_updated_at": "2026-07-23T10:05:00+09:00",
+  "gps_location_confirmed_at": "2026-08-20T10:05:00+09:00"
 }
 ```
 
@@ -1184,7 +1405,8 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
     "gps_location": "37.5570,126.9240",
     "api_weather": "good",
     "gps_expired": false,
-    "weather_expired": false
+    "weather_expired": false,
+    "gps_location_confirmed_at": "2026-08-20T10:05:00+09:00"
   }
 }
 ```
@@ -1195,6 +1417,11 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 - `condition_version`을 증가시키지 않는다.
 - `updated_at`을 갱신하지 않는다. (`last_active_at`은 갱신)
 - 날씨 API 실패로 `api_weather: null`이 전달되면 `null`로 저장한다.
+- `gps_location_confirmed_at`(PR #188, 2026-08-20)은 `gps_location`과
+  독립된 필드다 — "현재 위치 다시 가져오기" 성공 시에만 A가 이 필드도
+  함께 넘긴다. "N분 전 위치로 계속"을 선택했을 때는 이 필드를 생략해야
+  값이 그대로 유지된다(같은 요청에서 `gps_location`만 갱신해도 이
+  필드는 안 바뀐다).
   만료된 이전 값을 재사용하지 않는다.
 - `updated_at` 값이 전달되지 않으면 B가 수신 시각을 사용한다.
 
@@ -1335,3 +1562,4 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 08-11 | COMPARE 데이터 출처 (D-050 확정) | A안 채택 — `recommended` 항목에 `distance_km`/`remaining_minutes`/`environment_type` 3개 필드 추가. B안(A가 세션에 마지막 응답 캐시)은 되묻기·0건 응답 시 이전 목록 덮어쓰기 위험이 있어 기각. C안(C가 재계산)은 §13의 "이미 계산된 데이터" 정의와 어긋나 기각. Supabase 마이그레이션 불필요(`recommended` 컬럼이 jsonb) | C 문서 §1, A 댓글 |
 | 08-11 | SCHEDULE 부분 재편성 장소 이름 (D-060) | `recommended` 항목에 `name` 필드 추가. 원래는 pinned 자리 이름을 매 턴 C 응답에서 재매칭하도록 설계했으나, "경복궁" 지명 검색이 호출마다 다른 좌표로 resolve돼(Naver local search fallback) 이번 턴 후보가 매번 완전히 달라지는 사례가 실사용 테스트로 확인됨 — pinned 유지가 매번 실패해 REJECT_SPECIFIC이 REJECT_ALL처럼 전체 재편성으로 조용히 폴백되는 버그로 이어짐. C의 지명 resolve 안정화(근본 수정)는 범위 밖이라 B 자체 저장으로 해결 | 실사용 재현 (session sess_1786433109...) |
 | 08-11 | `last_intent` relabel 동기화 (D-061) | `set_last_intent()` 서비스 함수 추가. Agent Runtime의 SCHEDULE 재조정 감지(3-3절)는 apply() 이후에 intent 라벨만 SCHEDULE로 바꿔치기하는데, apply()는 이미 그 이전(원본 MODIFY) 값으로 `last_intent`를 저장해버려 실제 저장값과 어긋났다. SCHEDULE → REJECT_SPECIFIC → REJECT_SPECIFIC처럼 재조정이 연속될 때 두 번째부터 재조정 감지 자체가 실패해 전체가 새로 짜이는 버그로 이어짐 — relabel 직후 `last_intent`를 다시 SCHEDULE로 덮어써 해결 | 실사용 재현 (3턴 연속 REJECT_SPECIFIC) |
+| 08-14 | Scoring 세부 근거값 미저장(D-050) 재검토 필요성 명시 | 기본프로젝트 발표 피드백("추천 품질을 무엇으로 검증하는가") 반영 — 저장 여부 결정 자체는 바뀌지 않았으나(여전히 D 협의 필요), "쓸 곳이 없어 보류"라는 기존 근거가 더 이상 유효하지 않다는 점을 5.6절에 추가 기록. 심화프로젝트 우선순위 후보로 제안 | 발표 피드백 |

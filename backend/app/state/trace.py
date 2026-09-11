@@ -7,6 +7,9 @@ B는 step 이름이나 버전 값의 의미를 해석하지 않고, 호출자(A/
 그대로 저장한다. (agent-state-contract-v1.md 1절 경계 원칙과 동일)
 """
 
+from datetime import datetime
+from typing import Any
+
 from app.state.schema import TraceRecord, now_kst
 from app.state.session import new_trace_id
 from app.state.store import StateStore
@@ -24,6 +27,7 @@ def record(
     latency_ms: int | None = None,
     token_usage: int | None = None,
     error_type: str | None = None,
+    metrics: dict[str, Any] | None = None,
 ) -> TraceRecord:
     """실행 단계 1건을 기록한다. (llmops-trace-contract-v1.md 3·4절)
 
@@ -41,6 +45,7 @@ def record(
         latency_ms=latency_ms,
         token_usage=token_usage,
         error_type=error_type,
+        metrics=metrics,
         recorded_at=now_kst(),
     )
     store.append_traces([trace])
@@ -52,4 +57,16 @@ def get_traces(store: StateStore, session_id: str) -> list[TraceRecord]:
     return store.get_traces(session_id)
 
 
-__all__ = ["record", "get_traces"]
+def list_for_stats(
+    store: StateStore, since: datetime | None = None, until: datetime | None = None
+) -> list[TraceRecord]:
+    """집계(TP-157)를 위해 세션을 가리지 않고 전체 trace를 모은다.
+
+    get_traces와 달리 세션 하나로 좁히지 않는다 — step별 평균 지연시간이나
+    최근 에러처럼 세션 단위로 물을 수 없는 질문에 답하기 위함이다.
+    since/until은 recorded_at 기준 반열린구간이며 둘 다 선택이다.
+    """
+    return store.list_traces_for_stats(since=since, until=until)
+
+
+__all__ = ["record", "get_traces", "list_for_stats"]

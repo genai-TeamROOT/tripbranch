@@ -117,18 +117,18 @@ class TestSessionLifecycle:
 # ================================================================ GPS
 
 class TestApiContext:
-    def test_최초_턴에_심은_GPS가_다음_턴에_살아있다(self, client):
-        """ensure_current_context 는 세션을 만들 수 없어 최초 턴에는 GPS를 못 심는다.
+    def test_좌표는_세션에_남지_않는다(self, client):
+        """예전에는 최초 턴 직후 세션에 GPS를 심어 다음 턴이 재사용했다.
 
-        라우터가 apply() 로 세션이 생긴 직후 update_api_context 를 호출해
-        다음 턴부터 gps_expired 가 false 가 되어야 한다.
+        서버가 사용자 좌표를 저장하지 않게 되면서(state/store.py::for_persistence)
+        심는 자리를 없앴다 — 매 턴 요청에 실려 오므로 세션에 둘 이유가 없다.
         """
         first = interpret(client, "경복궁 근처 카페 추천해줘")
         sid = first["state"]["session_id"]
 
         second = interpret(client, "무료인 곳으로", session_id=sid)
 
-        assert second["state"]["gps_expired"] is False
+        assert second["state"]["gps_expired"] is True
 
 
 # ================================================================ 조건

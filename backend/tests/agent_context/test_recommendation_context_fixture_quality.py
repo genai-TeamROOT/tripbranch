@@ -232,6 +232,7 @@ def _context_location() -> AgentContextValue:
         data=ResolvedLocation(
             requested_query="경복궁",
             resolved_name="경복궁",
+            source="query",
             location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
         ),
     )

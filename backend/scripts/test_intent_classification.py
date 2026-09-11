@@ -13,6 +13,7 @@ pytest 스위트에는 포함하지 않는다 — 실제 API 호출 비용과 �
 from __future__ import annotations
 
 import csv
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -20,7 +21,8 @@ from pathlib import Path
 
 import httpx
 
-BASE_URL = "http://localhost:8000"
+# 변경 전/후를 나란히 재려면 두 서버를 동시에 띄워야 해서 포트를 바꿀 수 있게 둔다.
+BASE_URL = os.getenv("INTENT_EVAL_BASE_URL", "http://localhost:8000")
 REQUEST_INTERVAL_SECONDS = 0.7
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "test_results"
 RESULTS_CSV = RESULTS_DIR / "intent_classification_results.csv"
@@ -345,7 +347,11 @@ def run() -> list[CaseResult]:
             try:
                 response = client.post(f"{BASE_URL}/api/interpret", json=payload)
                 response.raise_for_status()
-                body = response.json()
+                # /api/interpret은 LLMOutput을 output으로 한 겹 감싸 돌려준다.
+                # 예전엔 최상위에 intent가 있었고 이 스크립트는 그 시절 형태를
+                # 그대로 읽고 있어서, 2026-08-30 실행 시 50건 전부 빈 값으로
+                # 나왔다(정확도 0%로 보이지만 실제로는 파싱 실패였다).
+                body = response.json().get("output") or {}
                 actual_intent = body.get("intent", "")
                 status = body.get("status", "")
                 summary = _summarize_payload(actual_intent, body)

@@ -34,7 +34,6 @@ def _item(content_type_id: str, **overrides: str) -> dict:
     [
         ("12", PlaceType.ATTRACTION),
         ("14", PlaceType.CULTURAL_FACILITY),
-        ("15", PlaceType.FESTIVAL),
         ("28", PlaceType.LEISURE),
         ("38", PlaceType.SHOPPING),
         ("39", PlaceType.RESTAURANT),
@@ -49,8 +48,14 @@ def test_분류코드가_PlaceType_어휘로_변환된다(
 
 
 def test_조회조건과_응답어휘가_왕복한다() -> None:
-    """PlaceType으로 조회한 결과가 같은 PlaceType으로 돌아와야 한다."""
+    """PlaceType으로 조회한 결과가 같은 PlaceType으로 돌아와야 한다.
+
+    축제(festival)만 예외다. 조회 어휘에는 남아 있지만 후보에서 빠지므로(D-120)
+    왕복하지 않는다 — 이 어긋남을 아는 채로 두는 것이지 빠뜨린 것이 아니다.
+    """
     for place_type, content_type_id in PLACE_TYPE_TO_CONTENT_TYPE_ID.items():
+        if place_type == PlaceType.FESTIVAL.value:
+            continue
         candidate = map_tour_api_item(_item(content_type_id))
         assert candidate is not None
         assert candidate.category == place_type
@@ -60,6 +65,14 @@ def test_조회조건과_응답어휘가_왕복한다() -> None:
 def test_LLM이_요청할_수_없는_유형은_후보에서_제외한다(content_type_id: str) -> None:
     """여행코스(25)·숙박(32)은 PlaceType에 없어 조건으로 지정할 수 없다."""
     assert map_tour_api_item(_item(content_type_id)) is None
+
+
+def test_축제는_끝난_행사를_거를_수_없어_후보에서_제외한다() -> None:
+    """places에 행사 기간 컬럼이 없어 종료 여부를 판정할 수 없다(D-120).
+
+    25·32와 달리 조회 어휘(PlaceType.FESTIVAL)에는 남아 있으므로 사유를 나눠 둔다.
+    """
+    assert map_tour_api_item(_item("15")) is None
 
 
 def test_알_수_없는_분류코드는_unknown으로_남긴다() -> None:
@@ -89,6 +102,7 @@ def test_응답_변환에서_제외_유형만_빠진다() -> None:
                         _item("12", contentid="1"),
                         _item("32", contentid="2"),  # 숙박
                         _item("39", contentid="3"),
+                        _item("15", contentid="4"),  # 축제
                     ]
                 }
             }

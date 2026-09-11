@@ -248,3 +248,135 @@ it("소요시간 탭에서 단계별 합계와 C 세부 시간을 보여준다",
   ).toBeInTheDocument();
   expect(screen.getByText(/후보 혼잡도 보강 · 180ms · success/)).toBeInTheDocument();
 });
+
+it("소요시간 탭에서 답변 생성 호출의 재시도 여부와 소요 시간을 보여준다 (D-076 검토 후속)", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "generate_compare_summary",
+          attempted_models: ["gemini-3.5-flash"],
+          served_model: "gemini-3.5-flash",
+          latency_ms: 13200,
+          retry_count: 1,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+  turn.stageTimings = [
+    {
+      stage: "composing_message",
+      message: "비교 결과를 정리하고 있어요.",
+      started_at_ms: 0,
+      duration_ms: 13200,
+    },
+  ];
+
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "소요시간" }));
+
+  // 예전에는 composing_message 단계에서 latency_ms를 아예 안 보여줬다 — 이제는 보인다.
+  expect(screen.getByText(/generate_compare_summary · gemini-3.5-flash · 13.2초/)).toBeInTheDocument();
+  // retry_count=1(재시도 1회, 총 시도 2회)이면 "시도 2회"가 보인다.
+  expect(screen.getByText("시도 2회")).toBeInTheDocument();
+});
+
+it("소요시간 탭에서 재시도가 없었던 호출도 시도 1회로 표시한다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "classify_intent",
+          attempted_models: ["gemini-3.5-flash-lite"],
+          served_model: "gemini-3.5-flash-lite",
+          latency_ms: 300,
+          retry_count: 0,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+  turn.stageTimings = [
+    {
+      stage: "interpreting",
+      message: "요청 의도와 조건을 파악하고 있어요.",
+      started_at_ms: 0,
+      duration_ms: 300,
+    },
+  ];
+
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "소요시간" }));
+
+  // "재시도 여부가 아예 표시되는지 확인이 안 된다"는 혼란을 없애기 위해, 재시도가
+  // 0이어도 "시도 1회"를 항상 보여준다 — 값이 있는지 없는지 자체가 의미 있는 정보다.
+  expect(screen.getByText("시도 1회")).toBeInTheDocument();
+});
+
+it("LLM 추출 탭에서 재시도가 있었던 호출에 안내 문구를 보여준다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "generate_compare_summary",
+          attempted_models: ["gemini-3.5-flash"],
+          served_model: "gemini-3.5-flash",
+          latency_ms: 13200,
+          retry_count: 1,
+        },
+        {
+          operation: "classify_intent",
+          attempted_models: ["gemini-3.5-flash-lite"],
+          served_model: "gemini-3.5-flash-lite",
+          latency_ms: 300,
+          retry_count: 0,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "LLM 추출" }));
+
+  // retry_count=1(재시도 있었음) — 경고색 안내 문구.
+  expect(
+    screen.getByText(/시도 2회 끝에 성공 — 소요 시간에 재시도 대기가 포함돼 있어요\./),
+  ).toBeInTheDocument();
+  // retry_count=0(재시도 없었음)도 항상 표시하되, 문구와 색이 다르다.
+  expect(screen.getByText("시도 1회로 끝났어요 — 재시도 없음.")).toBeInTheDocument();
+});

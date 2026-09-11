@@ -12,23 +12,41 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.auth.jwks import is_configured as auth_is_configured
+from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
+from app.observability.langfuse_tracing import (
+    incoming_trace_context,
+    validate_langfuse_config,
+)
+from app.observability.langfuse_tracing import (
+    shutdown as shutdown_langfuse,
+)
 from app.providers.factory import validate_provider_config
+from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.agent import router as agent_router
 from app.routes.chat import router as chat_router
 from app.routes.dev import router as dev_router
+from app.routes.favorites import router as favorites_router
+from app.routes.feedback import router as feedback_router
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
+from app.routes.photo_similar import router as photo_similar_router
+from app.routes.place_search import router as place_search_router
+from app.routes.preferences import router as preferences_router
 from app.routes.recommendations import router as recommendations_router
 from app.routes.state import router as state_router
+from app.routes.trace import router as trace_router
+from app.routes.transcribe import router as transcribe_router
 from app.services.runtime.llm_execution import get_llm_execution_metadata
 
 # uvicorn이 핸들러를 붙여둔 logger를 그대로 쓴다 — 앱 전용 logger를 만들면 별도
@@ -85,6 +103,8 @@ def _log_provider_modes() -> None:
         "weather": settings.resolved_weather_provider,
         "concentration": settings.resolved_concentration_provider,
         "holiday": settings.resolved_holiday_provider,
+        # 공통 PROVIDER_MODE를 상속하지 않아 resolved_* 변형이 없다(config.py).
+        "travel_route": settings.travel_route_provider,
     }
     summary = ", ".join(f"{name}={mode}" for name, mode in modes.items())
     logger.info(
@@ -99,15 +119,58 @@ def _log_provider_modes() -> None:
         )
 
 
+def _log_auth_mode() -> None:
+    """신원 토큰을 검증할 수 있는 상태인지 부팅 시 남긴다 (D-062 Phase 2).
+
+    Provider 모드를 부팅에 남기는 것과 같은 이유다 — 설정이 빠지면 프론트가 보낸
+    토큰이 조용히 무시되고, 화면상으로는 아무 문제 없이 동작한다. 지금은 인증이
+    optional이라 부팅을 막지 않지만, Phase 4에서 필수화하면 여기가 부팅 실패가
+    되어야 한다.
+    """
+    if auth_is_configured():
+        logger.info("Auth: 신원 토큰 검증 활성 (issuer=%s)", auth_issuer())
+    else:
+        logger.warning(
+            "Auth: SUPABASE_URL이 없어 신원 토큰을 검증하지 않습니다. "
+            "프론트가 보낸 토큰은 무시됩니다(D-062 Phase 2)."
+        )
+
+
+def _warmup_taste_encoder() -> None:
+    """취향 임베딩 모델을 기동 시 미리 올린다.
+
+    적재는 프로세스마다 한 번씩 필요하고 실측 9.4초가 걸린다(2026-08-19).
+    여기서 안 올리면 그 시간을 첫 사용자가 그대로 기다린다.
+
+    적재를 기다리지 않는다. 동기로 부르면 부팅이 9.4초 늦어지고, 앱을 띄우는
+    테스트마다 그 비용을 문다. 서버가 먼저 뜨고 모델은 뒤따라 올라오며, 적재
+    중에 취향 요청이 오면 인코더 락에서 기다렸다가 처리된다.
+
+    실패해도 서버는 뜬다 — 모델이 없으면 취향 Feature만 빠지고 추천은
+    그대로 동작한다. 부팅을 막을 만한 오설정이 아니다.
+    """
+    if not settings.taste_evidence_enabled:
+        return
+    get_shared_encoder().warmup_in_background()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # uvicorn의 로깅 설정이 끝난 뒤여야 핸들러를 빌려올 수 있다.
     _configure_app_logging()
     # 오설정을 첫 요청의 익명 500이 아니라 부팅 실패로 드러낸다.
     validate_provider_config()
+    # 관측도 같은 이유로 부팅에서 검증한다 — 켠 줄 알았는데 아무것도 안 쌓이는
+    # 상태는 조용해서 며칠씩 간다. 꺼져 있으면(기본값) 즉시 반환한다.
+    validate_langfuse_config()
     _log_provider_modes()
+    _log_auth_mode()
     app.state.tour_category_registry = get_tour_category_registry()
+    _warmup_taste_encoder()
     yield
+    # 대기 중인 span을 내보내고 백그라운드 스레드를 정리한다. 관측이 꺼져 있으면
+    # 클라이언트 자체가 없어 아무 일도 하지 않는다.
+    shutdown_langfuse()
 
 
 def create_app() -> FastAPI:
@@ -115,10 +178,20 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=settings.resolved_cors_allow_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def join_incoming_trace(request: Request, call_next: Any) -> Any:
+        """평가 스크립트가 연 trace에 이 요청의 span을 이어 붙인다.
+
+        로컬에서 `traceparent` 헤더가 올 때만 동작한다(`incoming_trace_context`).
+        평소 요청에는 아무 영향이 없다 — 헤더가 없으면 그대로 통과한다.
+        """
+        with incoming_trace_context(request.headers):
+            return await call_next(request)
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -167,7 +240,14 @@ def create_app() -> FastAPI:
     app.include_router(recommendations_router, prefix="/api")
     app.include_router(agent_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
+    app.include_router(transcribe_router, prefix="/api")
+    app.include_router(photo_similar_router, prefix="/api")
+    app.include_router(place_search_router, prefix="/api")
     app.include_router(state_router, prefix="/api")
+    app.include_router(preferences_router, prefix="/api")
+    app.include_router(favorites_router, prefix="/api")
+    app.include_router(feedback_router, prefix="/api")
+    app.include_router(trace_router, prefix="/api")
     # 개발자 Ops 패널은 DB 쓰기까지 하는 엔드포인트를 갖는다. 설정 플래그로
     # 막는 대신 로컬이 아니면 라우트를 아예 등록하지 않아 존재 자체를 없앤다.
     if settings.app_env == "local":

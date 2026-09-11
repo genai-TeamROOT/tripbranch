@@ -10,8 +10,19 @@ from datetime import timedelta
 
 import pytest
 
+from app.auth.principal import Principal
+from app.state import saved_schedules
 from app.state import service as svc
-from app.state.schema import now_kst
+from app.state.errors import SessionOwnershipError
+from app.state.schema import (
+    MAX_RECENT_TURNS,
+    MAX_TURN_ASSISTANT_MESSAGE_CHARS,
+    MAX_TURN_USER_INPUT_CHARS,
+    ConversationTurn,
+    PendingInfoContext,
+    SituationState,
+    now_kst,
+)
 from app.state.store import InMemoryStateStore
 
 
@@ -20,11 +31,11 @@ def store() -> InMemoryStateStore:
     return InMemoryStateStore()
 
 
-def apply(store, **kwargs) -> svc.StateApplyResponse:
+def apply(store, *, principal=None, **kwargs) -> svc.StateApplyResponse:
     """조건 적용 호출. 테스트 편의용 헬퍼."""
     kwargs.setdefault("intent", "RECOMMEND")
     kwargs.setdefault("confirmed", True)
-    return svc.apply(svc.StateApplyRequest(**kwargs), store=store)
+    return svc.apply(svc.StateApplyRequest(**kwargs), store=store, principal=principal)
 
 
 def record(store, session_id: str, run_id: str, places: list[tuple[str, int]]):
@@ -241,6 +252,113 @@ class TestConfirmed:
     def test_confirmed_False여도_세션은_생성된다(self, store):
         r = apply(store, session_id=None, confirmed=False, operations=[])
         assert r.session_created is True
+
+
+class TestApplyUserId:
+    """TP-101 3단계, D-063 — apply()가 세션 확보 직후 신원을 연결한다.
+
+    confirmed=False 조기 반환 경로와 본 경로 둘 다에서 저장되는지 확인한다
+    (service.py의 "1-1) 신원 연결" 주석이 가리키는 두 저장 지점).
+    """
+
+    def test_principal이_없으면_user_id가_비어있다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        assert store.get_state(r.session_id).user_id is None
+
+    def test_빈_세션에_principal이_있으면_user_id가_채워진다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        r = apply(store, session_id=None, operations=[], principal=principal)
+        assert store.get_state(r.session_id).user_id == "user-1"
+
+    def test_이미_있는_user_id는_덮어쓰지_않는다(self, store):
+        principal = Principal(user_id="user-원래주인", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=principal)
+
+        # 같은 사람이 다시 요청해도(예: is_anonymous만 바뀌는 정식 로그인 전환)
+        # user_id는 그대로 유지된다 — 소유권 대조(D-073)를 통과한 뒤의 attach_user_id
+        # 동작만 확인한다. 다른 사람의 거부는 TestSessionOwnership에서 검증한다.
+        apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            principal=Principal(user_id="user-원래주인", is_anonymous=False),
+        )
+
+        assert store.get_state(first.session_id).user_id == "user-원래주인"
+
+    def test_confirmed_False_경로에서도_user_id가_저장된다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        r = apply(
+            store, session_id=None, confirmed=False, operations=[], principal=principal
+        )
+        assert store.get_state(r.session_id).user_id == "user-1"
+
+
+class TestSessionOwnership:
+    """D-063 결정 2 후속(D-073) — session_id만으로 남의 세션에 접근하지 못하게 막는다.
+
+    apply()는 세션 확보 직후, get_session_context()/delete_session()은
+    조회·삭제 직전에 각각 session.verify_ownership()을 호출한다.
+    """
+
+    def test_같은_user_id는_통과한다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=principal)
+
+        r = apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            principal=principal,
+        )
+
+        assert r.session_id == first.session_id
+
+    def test_다른_user_id는_apply에서_거부된다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            apply(store, session_id=first.session_id, operations=[], principal=stranger)
+
+    def test_principal이_없으면_기존_게스트_흐름대로_통과한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        r = apply(store, session_id=first.session_id, operations=[], principal=None)
+
+        assert r.session_id == first.session_id
+
+    def test_user_id가_비어있는_세션은_통과한다(self, store):
+        """아직 아무도 신원을 붙이지 않은 세션 — 거부 대상이 아니라
+        attach_user_id()가 채울 대상이다."""
+        first = apply(store, session_id=None, operations=[], principal=None)
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        r = apply(store, session_id=first.session_id, operations=[], principal=principal)
+
+        assert r.session_id == first.session_id
+        assert store.get_state(first.session_id).user_id == "user-1"
+
+    def test_get_session_context도_다른_user_id는_거부한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            svc.get_session_context(first.session_id, store=store, principal=stranger)
+
+    def test_delete_session도_다른_user_id는_거부한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            svc.delete_session(first.session_id, store=store, principal=stranger)
+
+        # 거부됐으니 세션은 그대로 남아 있어야 한다.
+        assert store.get_state(first.session_id) is not None
 
 
 class TestResetInApply:
@@ -537,6 +655,160 @@ class TestRecordRecommendation:
         assert item.environment_type == "indoor"
 
 
+# ================================================================ TP-82
+
+class TestRecordClosedExclusions:
+    """영업 종료 후보가 노출 이력 없이 매 회차 재수집되던 문제(TP-82) 검증.
+
+    D의 하드 필터가 걸러낸 place_id를 recommended/rejected와 별도로 기록해도,
+    다음 회차 excluded_place_ids에는 셋 다 합쳐져야 한다(get_exclusion_place_ids
+    변경).
+    """
+
+    def test_기록_건수를_반환한다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        res = svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A", "B"]
+            ),
+            store=store,
+        )
+
+        assert res.recorded == 2
+
+    def test_빈_목록도_오류가_아니다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        res = svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=[]
+            ),
+            store=store,
+        )
+        assert res.recorded == 0
+
+    def test_기록한_장소가_다음_회차_제외_목록에_들어간다(self, store):
+        first = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=first.session_id, run_id=first.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        second = apply(store, session_id=first.session_id, operations=[])
+        assert "A" in second.excluded_place_ids
+
+    def test_노출_이력과_구분해서_저장된다(self, store):
+        """closed_excluded는 recommended와 다른 리스트다 — 섞이면 "노출했다"로
+        잘못 취급되어 COMPARE의 "첫 번째"가 실제로 안 보여준 장소를 가리키게
+        된다."""
+        r = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        history = store.get_history(r.session_id)
+        assert history is not None
+        assert [item.place_id for item in history.closed_excluded] == ["A"]
+        assert history.recommended == []
+
+    def test_recommended_초기화_시_함께_비워진다(self, store):
+        """clear_recommended()(history reset)는 closed_excluded도 함께 비운다 —
+        폐점 여부는 시각에 따라 바뀌는 사실이라 새 검색 컨텍스트까지 영구히
+        제외할 근거가 아니다."""
+        first = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=first.session_id, run_id=first.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        reset = apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            reset_scope="history",
+        )
+
+        assert "A" not in reset.excluded_place_ids
+
+
+class TestRecordHistoryUserId:
+    """TP-101 3단계, D-063 — recommendation_histories.user_id도 AgentState와
+    같은 규칙(채우되 덮어쓰지 않음)으로 record_recommendation/
+    record_closed_exclusions/apply()의 rejected_places 경로 세 곳 모두에서
+    연결되는지 확인한다."""
+
+    def test_record_recommendation이_user_id를_채운다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[svc.RecommendedPlace(place_id="A", rank=1)],
+            ),
+            store=store,
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_record_closed_exclusions이_user_id를_채운다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A"]
+            ),
+            store=store,
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_apply의_rejected_places_경로도_user_id를_채운다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        r = apply(
+            store,
+            session_id=None,
+            operations=[],
+            rejected_places=[{"place_id": "A"}],
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_이미_있는_history_user_id는_덮어쓰지_않는다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[svc.RecommendedPlace(place_id="A", rank=1)],
+            ),
+            store=store,
+            principal=Principal(user_id="user-원래주인", is_anonymous=True),
+        )
+
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["B"]
+            ),
+            store=store,
+            principal=Principal(user_id="user-다른사람", is_anonymous=True),
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-원래주인"
+
+
 # ================================================================ 세션 삭제
 
 class TestDeleteSession:
@@ -558,6 +830,41 @@ class TestDeleteSession:
 
         assert res.session_id == "sess_없음"
         assert res.deleted is False
+
+    def test_대화를_지워도_저장한_일정은_남는다(self, store):
+        """저장한 일정은 계정에 딸려 있어 대화 삭제로 사라지지 않는다. (TP-233)
+
+        `delete_session()`이 지우는 목록에 saved_schedules가 **없다는 것으로만**
+        성립하는 규칙이라, 부재를 그대로 두면 누가 거기 한 줄을 더해도 아무
+        테스트도 안 깨진다. 여기서 명시적으로 잠근다.
+
+        보관함(saved_places)은 반대다 — 대화에 딸려 있어 함께 사라진다. 둘을
+        같은 테스트에서 보는 이유가 그것이다. 무엇이 남고 무엇이 사라지는지가
+        이 저장소의 설계 자체다.
+        """
+        user_id = "3f1a9c04-0000-4000-8000-000000000001"
+        principal = Principal(user_id=user_id, is_anonymous=False)
+        first = apply(store, session_id=None, operations=[], principal=principal)
+        sid = first.session_id
+        saved_schedules.save(
+            store,
+            user_id,
+            title="종로 반나절",
+            payload={"items": [], "total_duration_min": 0},
+            session_id=sid,
+            run_id=first.run_id,
+        )
+
+        res = svc.delete_session(sid, store=store, principal=principal)
+
+        assert res.deleted is True
+        # 대조군 — 대화에 딸린 것은 실제로 사라졌다.
+        assert store.get_state(sid) is None
+        assert store.get_history(sid) is None
+        # 사람에 딸린 것은 남는다.
+        remaining = saved_schedules.list_for_user(store, user_id)
+        assert len(remaining) == 1
+        assert remaining[0].title == "종로 반나절"
 
 
 # ================================================================ 6.5
@@ -660,6 +967,99 @@ class TestUpdateApiContext:
 
         assert r.api_context.gps_expired is True
         assert r.api_context.weather_expired is True
+
+    # ---------------------------------------------------- PR #188
+
+    def test_기존_세션은_재확인_시각이_null이다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        assert r.api_context.gps_location_confirmed_at is None
+
+    def test_재확인_시각을_명시적으로_전달하면_저장된다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at == confirmed_at
+
+    def test_갱신한_좌표는_이번_응답에만_있고_저장되지_않는다(self, store):
+        """예전에는 위치와 재확인 시각이 세션에 남아 다음 호출까지 이어졌다.
+
+        서버가 사용자 좌표를 저장하지 않게 되면서(state/store.py::for_persistence)
+        갱신 결과는 그 호출의 응답에만 보이고 세션에는 남지 않는다. 두 시각을 혼용하지
+        않는다는 원래 구분은 그대로다 — 다만 어느 쪽도 저장되지 않는다.
+        """
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        first = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+        second = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id, gps_location="37.6,127.0"
+            ),
+            store=store,
+        )
+
+        # 그 호출의 응답에는 방금 넣은 값이 보인다.
+        assert first is not None
+        assert first.api_context.gps_location == "37.5665,126.9780"
+        assert first.api_context.gps_location_confirmed_at == confirmed_at
+
+        # 다음 호출은 앞의 값을 물려받지 않는다 — 세션에 남지 않았기 때문이다.
+        assert second is not None
+        assert second.api_context.gps_location == "37.6,127.0"
+        assert second.api_context.gps_location_confirmed_at is None
+        assert store.get_state(r.session_id).api_context.gps_location is None
+
+    def test_재확인_시각을_생략하면_현재시각으로_채워진다(self, store):
+        """gps_location_updated_at과 동일한 관례 — 필드는 전달했지만 값을
+        안 채우면(None) now로 채운다."""
+        r = apply(store, session_id=None, operations=[])
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=None,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at is not None
+
+    def test_세션을_다시_읽으면_좌표가_없다(self, store):
+        """되읽는 경로는 저장된 것만 본다 — 좌표는 저장하지 않으므로 비어 있다."""
+        r = apply(store, session_id=None, operations=[])
+
+        svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=now_kst(),
+            ),
+            store=store,
+        )
+        ctx = svc.get_session_context(r.session_id, store=store)
+
+        assert ctx.api_context.gps_location is None
+        assert ctx.api_context.gps_location_confirmed_at is None
+        assert ctx.api_context.gps_expired is True
 
 
 # ================================================================ 다중 턴
@@ -796,3 +1196,320 @@ def test_set_pending_clarification_returns_none_for_missing_session() -> None:
     )
 
     assert result is None
+
+
+def _place_ambiguous_context() -> PendingInfoContext:
+    return PendingInfoContext(
+        question_type="parking",
+        place_context="explicit",
+        specific_question="주차장 정보",
+        visit_time=None,
+    )
+
+
+def test_set_pending_info_context_stores_and_exposes_context() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert result.pending_info_context == _place_ambiguous_context()
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_info_context == _place_ambiguous_context()
+
+
+def test_set_pending_info_context_clears_with_none() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(session_id=session_id, context=None), store=store
+    )
+
+    assert svc.get_session_context(session_id, store=store).pending_info_context is None
+
+
+def test_set_pending_info_context_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(session_id="sess_missing", context=None), store=store
+    )
+
+    assert result is None
+
+
+def test_set_pending_clarification_keeps_pending_info_context_for_place_ambiguous() -> None:
+    """code가 place_ambiguous 그대로면 저장해둔 원래 질문을 건드리지 않는다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="place_ambiguous"),
+        store=store,
+    )
+
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_info_context == _place_ambiguous_context()
+
+
+def test_set_pending_clarification_clears_pending_info_context_when_code_changes() -> None:
+    """다른 되묻기 코드로 바뀌거나 지워지면 pending_info_context도 같이 지워진다
+    — place_ambiguous일 때만 의미가 있는 값이라 따로 안 챙기면 다음 턴에
+    엉뚱한 질문(주차 등)으로 새는 걸 막는다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="location_required"),
+        store=store,
+    )
+
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_clarification == "location_required"
+    assert context.pending_info_context is None
+
+
+# ---------------------------------------------------------------- 대화층 1단계
+
+
+def test_append_conversation_turn_stores_and_exposes_turn() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="다리를 다쳤어", intent="GENERAL"),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert [turn.user_input for turn in result.recent_turns] == ["다리를 다쳤어"]
+    context = svc.get_session_context(session_id, store=store)
+    assert [turn.user_input for turn in context.recent_turns] == ["다리를 다쳤어"]
+
+
+def test_append_conversation_turn_keeps_only_the_most_recent_turns() -> None:
+    """상한을 넘으면 오래된 것부터 버린다 — 자르는 책임은 B 한 곳에만 있다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    for index in range(MAX_RECENT_TURNS + 3):
+        svc.append_conversation_turn(
+            svc.AppendConversationTurnRequest(
+                session_id=session_id,
+                turn=ConversationTurn(user_input=f"발화 {index}"),
+            ),
+            store=store,
+        )
+
+    turns = svc.get_session_context(session_id, store=store).recent_turns
+    assert len(turns) == MAX_RECENT_TURNS
+    # 오래된 것이 앞. 마지막 MAX_RECENT_TURNS개만 남아야 한다.
+    assert [turn.user_input for turn in turns] == [
+        f"발화 {index}" for index in range(3, MAX_RECENT_TURNS + 3)
+    ]
+
+
+def test_append_conversation_turn_truncates_long_user_input() -> None:
+    """원문 상한은 노출 범위와 프롬프트 길이를 함께 묶는 장치다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="가" * (MAX_TURN_USER_INPUT_CHARS + 50)),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert len(result.recent_turns[0].user_input) == MAX_TURN_USER_INPUT_CHARS
+
+
+def test_append_conversation_turn_truncates_long_assistant_message() -> None:
+    """어시스턴트 답변도 사용자 원문과 같은 자리에서 같은 규칙으로 자른다.
+
+    한쪽만 자르면 프롬프트 길이 상한이 조용히 어긋난다 — 둘 다 프롬프트에 실린다.
+    """
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(
+                user_input="사람 많아?",
+                assistant_message="나" * (MAX_TURN_ASSISTANT_MESSAGE_CHARS + 50),
+            ),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    stored = result.recent_turns[0]
+    assert len(stored.assistant_message or "") == MAX_TURN_ASSISTANT_MESSAGE_CHARS
+    # 사용자 원문은 상한 아래라 그대로 남는다.
+    assert stored.user_input == "사람 많아?"
+
+
+def test_append_conversation_turn_keeps_assistant_message_absent_for_old_sessions() -> None:
+    """답변을 안 넘긴 턴(과거 세션 등)은 None으로 남아야 한다 — 빈 문자열로 채우면
+    "답이 없었다"와 "답을 안 저장했다"가 섞인다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="안국역 혼잡해?", intent="INFO"),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert result.recent_turns[0].assistant_message is None
+
+
+def test_append_conversation_turn_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id="sess_missing",
+            turn=ConversationTurn(user_input="안녕"),
+        ),
+        store=store,
+    )
+
+    assert result is None
+
+
+def test_set_situation_state_stores_and_clears() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    situation = SituationState(
+        current_situation="fatigue",
+        recent_constraints=["minimize_walking"],
+        rejected_actions=["recommend_nearby_rest_place"],
+    )
+
+    svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id=session_id, state=situation), store=store
+    )
+    assert svc.get_session_context(session_id, store=store).situation_state == situation
+
+    svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id=session_id, state=None), store=store
+    )
+    assert svc.get_session_context(session_id, store=store).situation_state is None
+
+
+def test_set_situation_state_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id="sess_missing", state=None), store=store
+    )
+
+    assert result is None
+
+
+def test_conversation_memory_defaults_are_empty_for_new_session() -> None:
+    """기존 세션은 컬럼이 없던 시절 값이라 빈 값으로 읽혀야 한다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    context = svc.get_session_context(session_id, store=store)
+
+    assert context.recent_turns == []
+    assert context.situation_state is None
+
+
+# ---------------------------------------------------- ensure_session (계약 5.2절)
+
+
+class Test세션_확보:
+    """조건 병합을 타지 않는 턴이 세션을 얻는 경로.
+
+    apply()는 A의 해석 결과를 받아야 해서, 병합할 조건이 없는 턴(사진 검색)은
+    부를 수가 없다. 그런 턴도 대화로는 한 턴이라 세션이 있어야 기록이 남는다.
+    """
+
+    def test_세션이_없으면_새로_만든다(self, store) -> None:
+        response = svc.ensure_session(svc.EnsureSessionRequest(), store=store)
+
+        assert response.created is True
+        assert store.get_state(response.session_id) is not None
+
+    def test_있는_세션은_그대로_쓴다(self, store) -> None:
+        first = svc.ensure_session(svc.EnsureSessionRequest(), store=store)
+
+        second = svc.ensure_session(
+            svc.EnsureSessionRequest(session_id=first.session_id), store=store
+        )
+
+        assert second.created is False
+        assert second.session_id == first.session_id
+
+    def test_제목은_비어_있을_때만_채운다(self, store) -> None:
+        """사용자가 사이드바에서 바꾼 이름을 뒤 턴이 뺏어가면 안 된다."""
+        first = svc.ensure_session(
+            svc.EnsureSessionRequest(title="성수동 사진으로 찾은 곳"), store=store
+        )
+        svc.ensure_session(
+            svc.EnsureSessionRequest(session_id=first.session_id, title="다른 이름"),
+            store=store,
+        )
+
+        assert store.get_state(first.session_id).title == "성수동 사진으로 찾은 곳"
+
+    def test_신원을_연결한다(self, store) -> None:
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        response = svc.ensure_session(
+            svc.EnsureSessionRequest(), principal=principal, store=store
+        )
+
+        assert store.get_state(response.session_id).user_id == "user-1"
+
+    def test_남의_세션은_거부한다(self, store) -> None:
+        """session_id만 알면 남의 대화에 기록을 붙일 수 있으면 안 된다(D-073)."""
+        owner = Principal(user_id="user-원래주인", is_anonymous=False)
+        mine = svc.ensure_session(
+            svc.EnsureSessionRequest(), principal=owner, store=store
+        )
+
+        with pytest.raises(SessionOwnershipError):
+            svc.ensure_session(
+                svc.EnsureSessionRequest(session_id=mine.session_id),
+                principal=Principal(user_id="user-남", is_anonymous=False),
+                store=store,
+            )

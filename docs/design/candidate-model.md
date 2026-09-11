@@ -96,7 +96,7 @@ interface PlaceCandidate {
 ```typescript
 type OperatingStatus =
   | "open"      // 현재 영업 중 (남은 시간 계산 가능)
-  | "closed"    // 현재 영업 종료 또는 정기 휴무
+  | "closed"    // 현재 영업 종료 또는 정기 휴무 (= 운영종료)
   | "unknown";  // 운영시간 확인 불가
 ```
 
@@ -105,6 +105,20 @@ type OperatingStatus =
 | `open` | 정상 추천 후보 |
 | `closed` | Hard Filter에서 제외 |
 | `unknown` | 별도 그룹으로 분리하여 안내 |
+
+> **[2026-08-13 Superseded]** Scoring 계층(`ScoringCandidate.operating_hours:
+> OperatingHours`)에서는 "현재 영업 종료"와 "정기 휴무"를 이 표처럼 `closed`
+> 하나로 뭉개지 않는다. `OperatingHours.is_regular_closure: bool`로 정기
+> 휴무 여부를 별도로 표시하고, 실제 개장~마감 시각은 그대로 보존한다 —
+> 예전에는 운영종료를 알리려고 시각 자체를 `00:00~00:00`으로 지웠으나, 그
+> 표식이 표시할 시간까지 함께 지워버려 추천 카드에 "00:00~00:00"이 그대로
+> 노출되는 문제가 있었다. 또한 `closed`는 더 이상 무조건 Hard Filter 제외가
+> 아니다 — 검색 결과가 운영종료 후보뿐이라 0건으로 응답한 턴에서 사용자가
+> "운영 중이 아닌 곳도 볼게요" 되묻기를 선택하면(`no_data_closed`,
+> [clarification-options.md](./clarification-options.md)) `ignore_operating_hours=True`로
+> 운영종료 후보도 채점에 포함한다. 최신 판정 규칙은
+> [recommendation-scoring.md §3](./recommendation-scoring.md#3-제외-규칙-하드-필터)이
+> 소유한다.
 
 ---
 
@@ -191,8 +205,8 @@ type EnvironmentType =
 > 정규화한 뒤 기준 시각(`now`)과 비교해 계산합니다. 현재 기본 가중치는 날씨
 > 0.40 / 남은 운영시간 0.40 / 거리 0.20이며, 날씨·남은 운영시간은 후보마다
 > 독립적으로 결측될 수 있어 결측된 Feature(들)만 나머지에 비례 재분배합니다.
-> 폐점 여부(운영 유무) 자체는 가중치가 아니라 `now`/`OperatingHours` 비교로
-> 판정하는 최종 하드 필터입니다.
+> 운영종료 여부(운영 유무) 자체는 가중치가 아니라 `now`/`OperatingHours` 비교로
+> 판정하는 최종 하드 필터입니다(`ignore_operating_hours=True`면 예외 — §4 참고).
 
 ```
 정상 (날씨 있음):

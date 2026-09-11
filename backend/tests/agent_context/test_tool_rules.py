@@ -95,3 +95,25 @@ def test_initial_plan_never_fetches_concentration() -> None:
     )
 
     assert not plan.requires(ContextTool.GET_CONCENTRATION)
+
+
+def test_places_only_plan_drops_location_weather_and_holidays() -> None:
+    """보충 조회는 장소만 받는다.
+
+    위치·날씨·공휴일을 계산해도 A가 버린다(보충 배치에서는 places만 합치고 나머지는
+    첫 배치 값을 쓴다). 계산하지 않는 것뿐이므로 결과는 달라지지 않는다.
+    """
+
+    plan = build_tool_execution_plan(UserConditions(), places_only=True)
+
+    assert plan.tools == frozenset({ContextTool.SEARCH_PLACES})
+
+
+def test_places_only_ignores_weather_conditions() -> None:
+    """날씨를 조회해야 할 조건이어도 보충에서는 부르지 않는다."""
+
+    plan = build_tool_execution_plan(
+        UserConditions(weather_intent="NO_MENTION"), places_only=True
+    )
+
+    assert ContextTool.GET_WEATHER not in plan.tools

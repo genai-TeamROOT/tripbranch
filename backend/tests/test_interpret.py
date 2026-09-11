@@ -92,6 +92,25 @@ def test_interpret_tc08_modify_change_condition() -> None:
     assert body["modify"]["changed_fields"] == ["budget"]
 
 
+def test_interpret_explicit_new_place_search_overrides_modify_history() -> None:
+    """이전 추천이 있어도 새 장소 유형을 명시한 검색은 새 추천으로 처리한다."""
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret",
+        json={
+            "user_input": "사진 이쁘게 나오는 안국역 카페 알려줘",
+            "has_previous_recommendation": True,
+            "shown_place_count": 3,
+            "current_conditions": {"search_center": "경복궁", "place_tags": ["박물관"]},
+        },
+    )
+
+    body = response.json()["output"]
+    assert body["intent"] == "RECOMMEND"
+    assert body["recommend"]["conditions"]["place_tags"] == ["카페"]
+
+
 def test_interpret_modify_without_current_conditions_needs_clarification() -> None:
     """current_conditions 없이 MODIFY로 판정될 상황이면 LLM 호출 없이 단락 처리."""
     client = TestClient(app)

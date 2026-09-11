@@ -2,7 +2,7 @@
 
 ## 1. 요구 환경
 
-- Node.js 20 이상 (`package.json`의 `engines` 기준)
+- Node.js 24 이상 (`.nvmrc`, `package.json`의 `engines` 기준)
 - Python 3.11 이상 (`backend/pyproject.toml` 기준)
 - npm
 - macOS/Linux 명령을 기준으로 작성; Windows는 가상환경 활성화 명령이 다름
@@ -35,6 +35,21 @@ Windows PowerShell 가상환경 활성화:
 backend\.venv\Scripts\Activate.ps1
 ```
 
+### 의존성이 바뀐 뒤
+
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받으면 백엔드 패키지를 다시 설치합니다.
+가상환경은 커밋되지 않으므로 `git pull`만으로는 새 패키지가 들어오지 않습니다.
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+설치를 건너뛰면 테스트가 실패하는 것이 아니라 수집 단계에서 `ModuleNotFoundError`로
+멈춥니다. 변경한 코드와 무관한 파일까지 한꺼번에 죽어 원인이 자기 변경처럼 보이므로,
+여러 테스트 파일이 갑자기 수집 실패하면 이 절차를 먼저 확인합니다.
+
 ## 3. 환경변수
 
 ### Backend
@@ -52,8 +67,13 @@ backend\.venv\Scripts\Activate.ps1
 | `CONCENTRATION_PROVIDER` | 빈 값 | Concentration 개별 Override |
 | `HOLIDAY_PROVIDER` | 빈 값 | Holiday 개별 Override |
 | `LLM_PROVIDER` | 빈 값 | Fake/Real LLM 개별 Override |
-| `PLACE_DETAILS_SOURCE` | `tour_api` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`) |
-| `LLM_MODEL_NAME` | `gemini-2.5-flash` | Real Gemini 모델명 |
+| `PLACE_DETAILS_SOURCE` | `supabase` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`). 추천은 후보 전량의 상세를 받으므로 `tour_api`면 후보 1곳당 호출 2회가 나간다 |
+| `LLM_FAST_MODEL_NAME` | `gemini-3.5-flash-lite` | 짧은 구조화 판단(분류·조건 추출)용 1순위 모델 |
+| `LLM_FAST_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash` | 위 모델 실패 시 폴백(콤마 구분) |
+| `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 사용자 문장·일정 생성용 1순위 모델 |
+| `LLM_GENERATION_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash-lite` | 위 모델 실패 시 폴백(콤마 구분) |
+| `GEMINI_AUDIO_MODEL_NAME` | 빈 값 | 음성→텍스트 전용 모델. 비우면 `LLM_FAST_MODEL_NAME`을 쓴다 |
+| ~~`LLM_MODEL_NAME`~~ / ~~`LLM_FALLBACK_MODEL_NAMES`~~ | — | **폐지됐다.** 남아 있으면 부팅에서 막는다(D-042) — 역할별 위 네 개로 대체 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |
 | `NAVER_MAP_CLIENT_SECRET` | 빈 값 | Real Geocoding |
 | `NAVER_LOCAL_SEARCH_CLIENT_ID` | 빈 값 | Real Naver Local Search API Key ID |
@@ -61,13 +81,13 @@ backend\.venv\Scripts\Activate.ps1
 | `WEATHER_API_KEY` | 빈 값 | Real Weather |
 | `TOUR_API_SERVICE_KEY` | 빈 값 | Place, Concentration, Holiday |
 | `LLM_API_KEY` | 빈 값 | Real Gemini |
-| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
-| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
+| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소. `PLACE_DETAILS_SOURCE` 기본값이 `supabase`라 real 모드에서는 필수 |
+| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소. `PLACE_DETAILS_SOURCE` 기본값이 `supabase`라 real 모드에서는 필수 |
 | `STATE_STORE_BACKEND` | `memory` | Package B State(세션·이력·트레이스) 저장소 (`memory`/`supabase`) |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider(TourAPI/Naver/Supabase 등, LLM 제외) timeout |
 | `LLM_API_TIMEOUT_SECONDS` | 빈 값(EXTERNAL_API_TIMEOUT_SECONDS로 폴백) | Gemini 전용 timeout — Tool/DB와 분리(2026-08-11, EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 대응으로 올리면 TourAPI/Naver/Supabase까지 같이 오래 기다리는 문제로 분리) |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
-| `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
+| `RECOMMENDATION_CANDIDATE_LIMIT` | `30` | 거리순으로 상세조회·평가할 후보 수 (상한 30). `PLACE_DETAILS_SOURCE=tour_api`에서는 10을 넘기면 부팅이 막힌다 — 후보 1곳당 TourAPI 호출 2회라 일일 한도가 금방 소진된다 |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | Gemini 호출에만 적용(재시도 루프 소비). 그 외 Real Provider는 이 값을 안 쓴다 |
 | `FAKE_WEATHER_SKY_CODE` | `4` | Fake Weather의 기상청 SKY 코드 (`1` 맑음/`3` 구름많음/`4` 흐림) |
 | `FAKE_WEATHER_PRECIPITATION_TYPE` | `0` | Fake Weather의 기상청 PTY 코드 (`0` 없음/`1` 비/`2` 비눈/`3` 눈) |

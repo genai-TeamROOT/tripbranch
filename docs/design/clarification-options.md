@@ -3,8 +3,13 @@
 **관련 인텐트:** SCHEDULE(INT-07), MODIFY(INT-03), COMPARE(INT-04), RECOMMEND(INT-01) — 여러
 Intent를 가로지르는 공용 되묻기(clarification) 메커니즘이라 특정 INT 번호를 붙이지 않는다.
 
-**상태:** PR 1 구현 완료(2026-08-12) — 인프라(옵션 스키마, `clarification_choice` 해소 경로) +
-케이스 1(SCHEDULE-06 모호 MODIFY). 백엔드 `pytest`/`ruff`, 프론트 `tsc`/`eslint`/`vitest` 전부 통과.
+**상태:** PR 1~4 구현 완료(2026-08-12) — 인프라 + 케이스 1(SCHEDULE-06 모호 MODIFY,
+PR1) · A2(`location_required`, PR2) · 케이스 3(`compare_single_shown`, PR3) · 케이스 4/5
+(`schedule_bare_restart`/`bare_restart_active`/`schedule_bare_restart_completed`, PR4).
+이어서 2026-08-13 실사용 피드백으로 `no_data_closed`/`no_data_empty`/`no_data_exhausted`/
+`schedule_no_candidates` 4개 코드가 추가됐다(§4.2) — 결과 0건 상황을 원인별로 세분화한
+되묻기로, 이 문서의 PR 1~4 phasing 밖에서 추가됐다. 백엔드 `pytest`/`ruff`, 프론트
+`tsc`/`eslint`/`vitest` 전부 통과.
 
 **PR 1 범위 조정 — A1 제외**: 구현 중 확인해보니 `location_ambiguous`(동명이인 장소 후보)는
 `ResolveLocationTool`이 실제로는 후보 이름 목록을 반환하지 않고(`_error_result(code="no_data",
@@ -130,6 +135,24 @@ if request.clarification_choice is not None:
 
 어느 Intent로 분류되든 결과가 같으므로 되묻기가 필요 없다. **신규 작업 불필요.**
 
+### 4.2 2026-08-13 추가 — 결과 0건 원인별 되묻기
+
+실사용 피드백으로 "조건에 맞는 곳이 없어요"류 되묻기가 원인과 무관하게 뭉뚱그려져
+있어 사용자가 뭘 바꿔야 할지 알기 어렵다는 문제가 드러났다. 결과 0건의 원인을
+아래 4가지로 나눠 각각 다른 되묻기를 띄운다. 코드는 [agent_runtime.py](../../backend/app/services/runtime/agent_runtime.py)에
+있다.
+
+| code | 원인 | 감지 위치 | 선택지 | 비고 |
+|---|---|---|---|---|
+| `no_data_closed` | 검색된 후보가 있지만 전부 **운영종료**라 하드 필터에서 제외됨(`ScoringResult.excluded_closed_place_ids`, [recommendation-scoring.md §7](./recommendation-scoring.md#7-출력-구조)) | `_respond_no_data_closed()` | "운영 중이 아닌 곳도 볼게요"(`show_closed`) 1개 — 선택 시 조건은 그대로 두고 `ignore_operating_hours=True`로 재조회([recommendation-scoring.md §3](./recommendation-scoring.md#3-제외-규칙-하드-필터)) | RECOMMEND/MODIFY/SCHEDULE 공통 사용 — SCHEDULE도 원인이 운영종료뿐이면 이 되묻기를 먼저 띄워 무한 되묻기를 막는다 |
+| `no_data_empty` | TourAPI 자체가 0건(카테고리 불일치 원인1 / 반경이 좁음 원인3 — 신호가 같아 구분 불가) | `no_data_empty` 분기 | "검색 범위 넓히기"(`widen_radius`, `max_travel_time`을 상한까지 올림) / "다른 종류도 보기"(`widen_category`, `place_types`/`place_tags` 비움) | |
+| `no_data_exhausted` | 후보는 있었지만 이전 노출/거절로 전부 소진됨(원인2 — `provider_metadata.status=="success"`로 원인1/3과 구분) | `no_data_exhausted` 분기 | "다른 종류도 보기" / "검색 범위 넓혀서 보기" / "다른 지역에서 찾기" / "날씨 상관없이 보기" / "새로운 조건 직접 말할게요"(자유 입력 유도) | 선택지 5개로 가장 많음 — 제외 이력 자체를 다시 보여주는 선택지는 B(세션 상태) 리셋이 필요해 제외 |
+| `schedule_no_candidates` | SCHEDULE 편성용 후보가 부족해 일정을 만들지 못함 | SCHEDULE 편성 실패 분기 | "다른 지역에서 찾기" / "다른 종류의 장소도 포함해서 찾기" | 선택 시 조건 병합 후 intent를 SCHEDULE로 되돌려(`force_schedule=True`) 편성을 재시도 |
+
+`no_data_empty`/`no_data_exhausted`의 원인1·2·3 구분은 [agent_runtime.py](../../backend/app/services/runtime/agent_runtime.py)의
+`_NO_DATA_RESOLVABLE_INTENTS` 주석에 상세 근거가 있다. 이 4개 코드는 §10의
+PR 1~4 phasing이 끝난 뒤 별도로 추가됐다.
+
 ## 5. 케이스 1 상세 (실사용 버그 수정, 최우선)
 
 REJECT_ALL/REJECT_SPECIFIC은 무조건 재라우팅을 유지하고, CHANGE_CONDITION일 때만 모호성 체크를
@@ -247,12 +270,16 @@ def _compose_condition_phrase(conditions: UserConditions) -> str:
 - **PR 1**(완료): 인프라(옵션 스키마 + `clarification_choice` 해소 경로) + **케이스 1**
   (SCHEDULE-06 모호 MODIFY) — 실사용 버그 수정, 최우선. 원래 계획은 인프라 스모크 테스트로
   A1을 같이 넣는 것이었으나, 0절에 적은 이유로 A1을 빼고 실사용 버그 수정을 바로 합쳤다.
-- **PR 2**: **A2**(`location_required` 종로구 대표 스팟 버튼).
-- **PR 3**: **케이스 3**(노출 1개 COMPARE/RECOMMEND 흔들림).
-- **PR 4**: **케이스 4 + 5**("처음부터 다시" 양쪽 상태) — `orchestrator.py` 선제 차단이라는 새
-  위치와 조건-요약 함수가 필요해 가장 나중.
+- **PR 2**(완료): **A2**(`location_required` 종로구 대표 스팟 버튼).
+- **PR 3**(완료): **케이스 3**(노출 1개 COMPARE/RECOMMEND 흔들림, `compare_single_shown`).
+- **PR 4**(완료): **케이스 4 + 5**("처음부터 다시" 양쪽 상태, `schedule_bare_restart`/
+  `bare_restart_active`/`schedule_bare_restart_completed`) — `orchestrator.py` 선제 차단이라는
+  새 위치와 조건-요약 함수가 필요해 가장 나중이었다.
+- **PR 5**(완료, 2026-08-13): §4.2의 `no_data_closed`/`no_data_empty`/`no_data_exhausted`/
+  `schedule_no_candidates` — PR 1~4 마무리 후 실사용 피드백으로 추가된, 결과 0건 원인별
+  되묻기. 이 phasing 계획을 세울 당시엔 없던 범위라 PR 1~4와 별도로 번호를 매긴다.
 - **A1**(동명이인 후보 버튼)은 Tool 계층이 후보 이름을 노출하도록 먼저 손봐야 해서 phasing에서
-  뺐다 — 필요성이 재확인되면 별도 PR로 설계한다.
+  뺐다 — 필요성이 재확인되면 별도 PR로 설계한다. 아직 미착수.
 
 ## 11. 범위 밖
 

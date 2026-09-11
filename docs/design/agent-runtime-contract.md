@@ -190,6 +190,8 @@ def to_agent_context_request(
     request_id: str,
     conditions: UserConditions,
     gps_location: str | None = None,
+    excluded_place_ids: list[str] | None = None,
+    resolved_search_center: Coordinates | None = None,
 ) -> AgentContextRequest
 ```
 
@@ -197,6 +199,11 @@ def to_agent_context_request(
 타입)를 C의 `AgentContextRequest`(`app.agent_context.schemas`, Literal 타입)로 변환한다.
 필드 14개가 이름·값 동일해서 `model_dump()` → `model_validate()` 왕복으로 충분하다.
 `request_id`는 `app.state.session.new_trace_id()`로 호출마다 새로 생성한다.
+`resolved_search_center`는 **보충 조회에서만** 채운다. 첫 조회가 확정한 기준점 좌표를
+넘기면 C가 위치 해석·날씨·공휴일을 건너뛰고 장소만 다시 준다. 그 셋은 보충 배치에서
+`_merge_recommendation_context_places()`가 버리는 값이라, 계산하지 않는 것뿐이고 동작은
+달라지지 않는다(보충 1회 외부 호출 7건 → 2건).
+
 `gps_location`은 이번 요청의 유효한 `device_location`을 우선하고, 없으면 B에 저장된
 만료되지 않은 GPS를 사용한다. 변환 경계에서 `"위도,경도"` 문자열을 C 계약의
 `Coordinates` 객체로 바꾸며, 형식 또는 범위를 벗어난 값은 `None`으로 낮춘다.
