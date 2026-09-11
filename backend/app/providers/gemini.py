@@ -494,19 +494,41 @@ class RealGeminiProvider:
         user_input: str,
         *,
         history: Sequence[ConversationTurnView] | None = None,
+        retry_models: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
         # thinking_budget=0 — classify_intent()와 같은 이유로 실측 확인
         # (평균 3122ms→1745ms, 1.8배, search_center 추출 정확도 4/4로 동일 유지).
-        result = await self._call_structured(
-            instruction,
-            user_input,
-            LLMOutput,
-            operation="extract_recommend_conditions",
-            thinking_budget=0,
-            model_names=self._fast_model_names,
-            history=history,
-        )
+        #
+        # TP-266: 재시도 호출은 operation 이름을 달리 남긴다. 요청 단위 호출
+        # 이력(llm_execution)에서 "이 턴이 다시 뽑았는가"를 세는 자리가 이것뿐이다
+        # — 같은 이름으로 남기면 _call_structured()의 스키마 보정 재시도와
+        # 구분되지 않는다.
+        #
+        # **두 갈래를 펼쳐 쓰는 이유가 있다.** operation을 조건식으로 접으면
+        # tests/test_prompt_operation_slots.py의 소스 스캐너(`operation="..."`
+        # 리터럴을 훑는다)가 두 이름을 다 놓친다. 그러면 새 operation이 프롬프트
+        # 슬롯 없이 기록돼도 아무도 모른다 — 그 테스트가 막으려는 것이 이것이다.
+        if retry_models:
+            result = await self._call_structured(
+                instruction,
+                user_input,
+                LLMOutput,
+                operation="extract_recommend_conditions_retry",
+                thinking_budget=0,
+                model_names=retry_models,
+                history=history,
+            )
+        else:
+            result = await self._call_structured(
+                instruction,
+                user_input,
+                LLMOutput,
+                operation="extract_recommend_conditions",
+                thinking_budget=0,
+                model_names=self._fast_model_names,
+                history=history,
+            )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_modify_conditions(

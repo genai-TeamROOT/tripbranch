@@ -54,6 +54,10 @@ INTENT_SLOTS: dict[Intent, tuple[str, ...]] = {
 OPERATION_SLOTS: dict[str, str] = {
     "classify_intent": "router.classify",
     "extract_recommend_conditions": "recommend.extract",
+    # TP-266: 조건이 빈손이라 다시 뽑는 호출. 프롬프트는 같으므로 슬롯도 같다
+    # (generate_/stream_recommendation_summary가 같은 선례다). 별도 operation으로
+    # 두는 것은 지연·비용·빈도를 따로 보기 위해서다.
+    "extract_recommend_conditions_retry": "recommend.extract",
     "extract_modify_conditions": "modify.extract",
     "extract_info_query": "info.extract",
     "extract_compare_request": "compare.extract",

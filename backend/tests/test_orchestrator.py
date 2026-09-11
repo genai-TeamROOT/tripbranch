@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.config import settings
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider
 from app.schemas import (
@@ -26,6 +27,7 @@ from app.schemas import (
     PlaceContext,
     PlaceTag,
     QuestionType,
+    RecommendPayload,
     Severity,
     UserConditions,
 )
@@ -388,3 +390,170 @@ async def test_direct_request_out_of_scope_still_rejects() -> None:
 
     assert output.intent is Intent.OUT_OF_SCOPE
     assert output.out_of_scope is not None
+
+
+# --- TP-266: 조건 페이로드가 빈손으로 온 턴은 한 번 다시 뽑는다 ------------------
+#
+# 이 여섯은 "정상 시드로 도는가"가 아니라 **재시도 분기를 지우면 깨지는 입력**으로
+# 짰다(함정 25). 1번은 첫 호출이 빈손이어야만 의미가 있고, 3번은 반대로 재시도가
+# 항상 도는 것을 잡는 대조군이다.
+
+
+class _EmptyThenFilledLLM(FakeLLMProvider):
+    """첫 조건 추출은 빈손, 두 번째부터는 조건을 실어 오는 provider.
+
+    실측에서 관측된 모양 그대로다 — `gemini-3.5-flash-lite`가 같은 발화에
+    `recommend`를 통째로 비워 보내는 회차가 있었고, 같은 프롬프트를 폴백 모델로
+    돌리면 채워져 왔다(2026-09-08).
+    """
+
+    def __init__(self, *, always_empty: bool = False) -> None:
+        super().__init__()
+        self.always_empty = always_empty
+        self.calls: list[dict] = []
+
+    async def classify_intent(self, user_input, **kwargs):
+        return provider_result(
+            IntentClassificationResult(
+                intent=Intent.RECOMMEND,
+                interaction_mode=InteractionMode.DIRECT_REQUEST,
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
+
+    async def extract_recommend_conditions(self, user_input, **kwargs):
+        self.calls.append(kwargs)
+        first = len(self.calls) == 1
+        if first or self.always_empty:
+            return provider_result(
+                LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE),
+                source=ProviderSource.FAKE_LLM,
+            )
+        return provider_result(
+            LLMOutput(
+                intent=Intent.RECOMMEND,
+                status=OutputStatus.COMPLETE,
+                recommend=RecommendPayload(
+                    conditions=UserConditions(search_center="경복궁", time_available=300)
+                ),
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
+
+
+@pytest.mark.asyncio
+async def test_empty_condition_payload_is_extracted_again() -> None:
+    """빈손이면 다시 뽑고, 그 결과의 조건이 실제로 실려 나가야 한다.
+
+    재시도 분기를 지우면 `output.recommend`가 None이라 이 단정이 깨진다.
+    """
+    llm = _EmptyThenFilledLLM()
+    request = InterpretRequest(user_input="경복궁 근처에서 5시간 코스 짜줘")
+
+    output = await build_interpretation(request, llm)
+
+    assert len(llm.calls) == 2
+    assert output.recommend is not None
+    assert output.recommend.conditions.search_center == "경복궁"
+    assert output.recommend.conditions.time_available == 300
+
+
+@pytest.mark.asyncio
+async def test_retry_uses_the_configured_fast_fallback_models() -> None:
+    """재시도 모델을 새로 정하지 않고 `llm_fast_fallback_model_names`를 따른다.
+
+    1순위는 방금 빈손을 낸 모델이므로 빼고 2순위부터 넘긴다. 이 단정이 깨지면
+    같은 모델로 다시 물어 값만 두 번 내는 상태다.
+    """
+    llm = _EmptyThenFilledLLM()
+
+    await build_interpretation(InterpretRequest(user_input="경복궁 코스 짜줘"), llm)
+
+    assert "retry_models" not in llm.calls[0]
+    assert llm.calls[1]["retry_models"] == settings.resolved_llm_fast_models[1:]
+    assert settings.resolved_llm_fast_models[0] not in llm.calls[1]["retry_models"]
+
+
+@pytest.mark.asyncio
+async def test_filled_payload_is_not_extracted_twice() -> None:
+    """처음부터 조건이 실려 오면 다시 뽑지 않는다 — 대조군.
+
+    이것이 없으면 "항상 두 번 부른다"로 바꿔도 위 두 테스트가 통과한다. 그러면
+    모든 턴이 값을 두 배로 낸다.
+    """
+    llm = _EmptyThenFilledLLM()
+    llm.calls.append({})  # 첫 호출을 이미 쓴 것으로 만들어 곧바로 채워 오게 한다
+
+    await build_interpretation(InterpretRequest(user_input="경복궁 코스 짜줘"), llm)
+
+    assert len(llm.calls) == 2  # 미리 넣은 1건 + 실제 호출 1건
+
+
+@pytest.mark.asyncio
+async def test_retry_happens_only_once() -> None:
+    """두 번째도 빈손이면 그대로 진행한다 — 발화당 호출이 무한히 늘지 않는다."""
+    llm = _EmptyThenFilledLLM(always_empty=True)
+
+    output = await build_interpretation(InterpretRequest(user_input="경복궁 코스 짜줘"), llm)
+
+    assert len(llm.calls) == 2
+    assert output.recommend is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_keeps_its_intent_after_the_retry() -> None:
+    """SCHEDULE도 같은 재시도를 타되 intent 바꿔치기가 유지돼야 한다.
+
+    재시도 결과를 그대로 돌려주면서 `model_copy(intent=SCHEDULE)`를 빠뜨리면
+    SCHEDULE 발화가 RECOMMEND로 처리된다.
+    """
+    llm = _EmptyThenFilledLLM()
+    with patch.object(
+        llm,
+        "classify_intent",
+        AsyncMock(
+            return_value=provider_result(
+                IntentClassificationResult(
+                    intent=Intent.SCHEDULE,
+                    interaction_mode=InteractionMode.DIRECT_REQUEST,
+                ),
+                source=ProviderSource.FAKE_LLM,
+            )
+        ),
+    ):
+        output = await build_interpretation(
+            InterpretRequest(user_input="경복궁 코스 짜줘"), llm
+        )
+
+    assert len(llm.calls) == 2
+    assert output.intent is Intent.SCHEDULE
+    assert output.recommend is not None
+
+
+@pytest.mark.asyncio
+async def test_intents_that_carry_no_conditions_never_retry() -> None:
+    """INFO처럼 조건을 나르지 않는 턴은 `recommend`가 None인 것이 정상이다.
+
+    여기서 재시도가 돌면 INFO·GENERAL·COMPARE 턴마다 쓸데없는 호출이 하나씩 붙는다.
+    """
+    llm = _EmptyThenFilledLLM()
+    with patch.object(
+        llm,
+        "classify_intent",
+        AsyncMock(
+            return_value=provider_result(
+                IntentClassificationResult(
+                    intent=Intent.INFO,
+                    interaction_mode=InteractionMode.DIRECT_REQUEST,
+                ),
+                source=ProviderSource.FAKE_LLM,
+            )
+        ),
+    ):
+        output = await build_interpretation(
+            InterpretRequest(user_input="창덕궁 사람 많아?"), llm
+        )
+
+    assert llm.calls == []
+    assert output.intent is Intent.INFO
+
