@@ -91,7 +91,10 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
   useEffect(() => {
     let active = true;
-    void loadChatSessions().then((entries) => {
+    /* 신원을 함께 넘긴다 — 담아 둔 목록이 다른 신원 것이면 캐시가 알아서 버리고
+       다시 받아온다. 넘기지 않으면 게스트로 처음 들어와 받은 빈 목록이 로그인
+       뒤에도 그대로 나온다(state/chatSessions.ts의 cachedUserId 주석). */
+    void loadChatSessions(session?.user?.id ?? null).then((entries) => {
       if (active) setHistory(entries);
     });
     return () => {

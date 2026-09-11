@@ -36,6 +36,22 @@ function toHistoryEntry(session: ChatSessionSummary): ChatHistoryEntry {
 }
 
 let cached: Promise<ChatHistoryEntry[]> | null = null;
+/*
+ * 담아 둔 목록이 **누구 것인지**. 이것 없이 목록만 들고 있으면 신원이 바뀌어도
+ * 앞 신원의 목록이 그대로 나간다.
+ *
+ * 실제로 그랬다. 폰으로 처음 들어오면 게스트 신원이 발급되고(RequireUser) 그
+ * 계정의 대화는 0건이라 빈 목록이 여기 담긴다. 그 뒤 로그인해도 담긴 것이 있으니
+ * 그대로 돌려주어, 대화가 41건인 계정으로 들어왔는데도 사이드바가 비어 있었다.
+ * 새로고침해야 보였다.
+ *
+ * 로그아웃 정리(localUserData의 clearLocalUserData)에 로그인 경로를 더하는 길도
+ * 있었지만, 그러면 "계정에서 받아오는 목록을 새로 만들 때마다 비우기 목록에도
+ * 넣기"를 사람이 기억해야 한다 — 그 당부가 그 파일 주석에 이미 적혀 있었는데도
+ * 로그인 경로가 빠져 있었다. 캐시가 자기 주인을 알고 있으면 호출부는 신원만
+ * 넘기면 된다.
+ */
+let cachedUserId: string | null = null;
 
 async function load(): Promise<ChatHistoryEntry[]> {
   const response = await fetchChatSessions();
@@ -43,14 +59,21 @@ async function load(): Promise<ChatHistoryEntry[]> {
 }
 
 /**
- * 대화 목록. 페이지 로드당 한 번만 실제로 요청한다.
+ * 대화 목록. **같은 신원이면** 페이지 로드당 한 번만 실제로 요청한다.
+ *
+ * userId는 지금 로그인한 신원(`session?.user?.id`)이다. 담아 둔 것과 다르면
+ * 버리고 서버에서 새로 받아온다 — 캐시에만 있는 값이 아니라 서버 응답을 잠깐
+ * 재사용하는 것이므로, 처음 보는 신원이면 그냥 한 번 더 받아오면 된다.
  *
  * 실패는 던지지 않고 빈 목록으로 돌려준다 — 토큰이 없거나(401) 서버에 못 닿아도
  * 사이드바의 나머지 기능은 계속 써야 한다. 화면에는 "아직 대화 기록이 없어요"가
  * 뜬다.
  */
-export function loadChatSessions(): Promise<ChatHistoryEntry[]> {
-  cached ??= load().catch(() => []);
+export function loadChatSessions(userId: string | null): Promise<ChatHistoryEntry[]> {
+  if (!cached || cachedUserId !== userId) {
+    cachedUserId = userId;
+    cached = load().catch(() => []);
+  }
   return cached;
 }
 
@@ -80,5 +103,6 @@ export function refreshChatSessions(): Promise<ChatHistoryEntry[]> {
 /** 테스트가 페이지 로드 경계를 흉내 낼 수 있게 캐시를 비운다. */
 export function resetChatSessionsCache(): void {
   cached = null;
+  cachedUserId = null;
   inflight = null;
 }

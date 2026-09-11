@@ -23,7 +23,8 @@ export function useSavedSchedules(): SavedScheduleEntry[] | null {
 
   useEffect(() => {
     let active = true;
-    void loadSavedSchedules().then((loaded) => {
+    /* 신원을 함께 넘기는 이유는 SideDrawerContent의 대화 목록과 같다. */
+    void loadSavedSchedules(session?.user?.id ?? null).then((loaded) => {
       if (active) setEntries(loaded);
     });
     /* 일정을 저장하면 목록이 바로 바뀐다. TripContext 상태를 볼 수 없는 이유는

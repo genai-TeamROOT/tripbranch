@@ -318,3 +318,30 @@ test("달력에서 날짜를 고르면 그 날 저장한 일정만 남는다", a
 
   vi.useRealTimers();
 });
+
+/*
+ * 대화 목록과 같은 사고가 여기에도 있었다. 게스트로 처음 들어와 받은 목록이
+ * 신원이 바뀐 뒤에도 그대로 나와, 로그인해도 새로고침해야 자기 일정이 보였다
+ * (state/savedSchedules.ts의 cachedUserId).
+ */
+test("로그인해서 신원이 바뀌면 그 계정의 저장 일정으로 갈아탄다", async () => {
+  server.schedules = [{ ...SEED[0], title: "게스트가 저장한 일정" }];
+  renderList();
+  await screen.findByText("게스트가 저장한 일정");
+
+  server.schedules = [{ ...SEED[1], title: "로그인한 계정의 일정" }];
+  act(() => {
+    setMockSession({
+      ...GUEST_SESSION,
+      user: {
+        ...GUEST_SESSION.user,
+        id: "00000000-0000-0000-0000-000000000002",
+        is_anonymous: false,
+        email: "trip@example.com",
+      },
+    } as typeof GUEST_SESSION);
+  });
+
+  await screen.findByText("로그인한 계정의 일정");
+  expect(screen.queryByText("게스트가 저장한 일정")).not.toBeInTheDocument();
+});

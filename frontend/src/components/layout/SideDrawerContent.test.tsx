@@ -635,6 +635,47 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
 });
 
 /*
+ * 폰으로 처음 들어오면 게스트 신원이 발급되고(RequireUser) 그 계정의 대화는
+ * 0건이다. 그 뒤 로그인하면 그 계정의 대화가 보여야 하는데, 목록 캐시가 게스트일
+ * 때 받은 빈 목록을 신원이 바뀐 뒤에도 그대로 돌려주어 **새로고침해야만** 보였다
+ * (state/chatSessions.ts의 cachedUserId).
+ */
+test("게스트로 들어와 로그인하면 새로고침 없이 그 계정의 대화가 뜬다", async () => {
+  server.sessions = [];
+  render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+  await waitFor(() =>
+    expect(within(sidebar()).getByText("아직 대화 기록이 없어요")).toBeInTheDocument(),
+  );
+
+  server.sessions = [
+    {
+      session_id: "chat-9",
+      title: "로그인한 계정의 대화",
+      location: null,
+      last_active_at: "2026-09-10T09:00:00+09:00",
+    },
+  ];
+  /* 로그인은 **uid가 다른** 신원으로 갈아타는 것이다 — 게스트가 가입해 승계되는
+     경로(updateUser)는 uid가 그대로라 목록을 다시 받아올 이유가 없다. */
+  act(() => {
+    setMockSession({
+      ...GUEST_SESSION,
+      user: {
+        ...GUEST_SESSION.user,
+        id: "00000000-0000-0000-0000-000000000002",
+        is_anonymous: false,
+        email: "trip@example.com",
+      },
+    } as typeof GUEST_SESSION);
+  });
+
+  await waitFor(() =>
+    expect(within(sidebar()).getByText("로그인한 계정의 대화")).toBeInTheDocument(),
+  );
+});
+
+/*
  * 답변을 기다리는 중에 다른 대화를 열면, 오던 답변이 **그 대화에** 붙는 버그가
  * 있었다. 요청은 앞 대화의 것이라 서버에는 앞 대화로 저장되는데 화면만 다른
  * 대화에 나타난다 — 사용자는 하지도 않은 질문의 답을 보게 된다.

@@ -45,6 +45,9 @@ function toEntry(schedule: SavedScheduleSummary): SavedScheduleEntry {
 }
 
 let cached: Promise<SavedScheduleEntry[]> | null = null;
+/* 담아 둔 목록이 누구 것인지. 신원이 바뀌면 버리고 다시 받아오기 위한 값이다 —
+   왜 필요한지는 chatSessions.ts의 같은 이름 주석에 적었다. */
+let cachedUserId: string | null = null;
 
 async function load(): Promise<SavedScheduleEntry[]> {
   const response = await fetchSavedSchedules();
@@ -52,13 +55,19 @@ async function load(): Promise<SavedScheduleEntry[]> {
 }
 
 /**
- * 저장한 일정 목록. 페이지 로드당 한 번만 실제로 요청한다.
+ * 저장한 일정 목록. **같은 신원이면** 페이지 로드당 한 번만 실제로 요청한다.
+ *
+ * userId는 지금 로그인한 신원(`session?.user?.id`)이다. 담아 둔 것과 다르면
+ * 서버에서 새로 받아온다(loadChatSessions와 같다).
  *
  * 실패는 던지지 않고 빈 목록으로 돌려준다 — 토큰이 없거나(401) 서버에 못 닿아도
  * 사이드바의 나머지 기능은 계속 써야 한다(loadChatSessions와 같은 판단).
  */
-export function loadSavedSchedules(): Promise<SavedScheduleEntry[]> {
-  cached ??= load().catch(() => []);
+export function loadSavedSchedules(userId: string | null): Promise<SavedScheduleEntry[]> {
+  if (!cached || cachedUserId !== userId) {
+    cachedUserId = userId;
+    cached = load().catch(() => []);
+  }
   return cached;
 }
 
@@ -108,6 +117,7 @@ export function refreshSavedSchedules(): Promise<SavedScheduleEntry[]> {
 /** 테스트가 페이지 로드 경계를 흉내 낼 수 있게 캐시를 비운다. */
 export function resetSavedSchedulesCache(): void {
   cached = null;
+  cachedUserId = null;
   inflight = null;
   listeners.clear();
 }
