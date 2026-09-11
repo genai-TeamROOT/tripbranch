@@ -249,7 +249,17 @@ def _barrier_free_fields(embedded: object) -> dict[str, str | None]:
 def _map_place_locations(
     rows: list[object], *, fallback_title: str
 ) -> tuple[StoredPlaceLocation, ...]:
-    """places 조회 행을 StoredPlaceLocation으로 옮긴다. 좌표 없는 행은 버린다."""
+    """places 조회 행을 StoredPlaceLocation으로 옮긴다.
+
+    좌표가 없거나 서울 언저리 밖인 행은 버린다. **원본 데이터에 깨진 좌표가 실재한다** —
+    활성 8,007곳 중 12건이고 그중 10건이 (19.69, 117.99)라는 같은 값이다(남중국해).
+    구 단위 후보 조회는 이미 같은 검사를 하는데(_map_district_place_row) 이름 조회에는
+    없어서, "계남근린공원"처럼 깨진 행과 정상 행이 함께 있는 이름이 "2건이니 애매하다"로
+    판정됐다. 두 행의 주소가 같아 자치구를 붙여도 선택지가 하나로 합쳐지고, 눌러도
+    제자리였다(2026-09-11).
+
+    한 건 때문에 이름 해석을 통째로 실패시키지는 않는다 — 그 행만 버리고 나머지로 간다.
+    """
     locations: list[StoredPlaceLocation] = []
     for raw in rows:
         if not isinstance(raw, Mapping) or not raw.get("content_id"):
@@ -258,6 +268,8 @@ def _map_place_locations(
             latitude = float(raw["latitude"])
             longitude = float(raw["longitude"])
         except (KeyError, TypeError, ValueError):
+            continue
+        if not is_plausible_seoul_coordinate(latitude, longitude):
             continue
         # places ↔ place_concentration_mappings는 1:1(FK가 PK)이라 PostgREST가 단일
         # 객체로 내려준다. 관계 형태가 바뀌어 배열로 올 경우도 함께 받는다.
