@@ -11,8 +11,34 @@ import { expect, test } from "vitest";
 import {
   buildLocationChipModel,
   MAX_CHIP_NAME_LENGTH,
+  readSubstitutedOrigin,
   truncateName,
 } from "./locationChip";
+import type { AgentResponse, LocationDebug } from "../types";
+
+/* 실행 기록 한 건만 들고 있는 응답. 칩이 보는 것은 route_origin 하나뿐이라 나머지는
+   채우지 않는다. */
+function responseWithRouteOrigin(routeOrigin: LocationDebug | null): AgentResponse {
+  return {
+    tool_executions: [
+      {
+        request_id: "req-1",
+        status: "success",
+        latency_ms: 10,
+        providers: [],
+        context_items: [],
+        rule_versions: {},
+        resolved_location_name: null,
+        resolved_location_address: null,
+        route_origin: routeOrigin,
+        error_code: null,
+        clarification_code: null,
+        is_proxy: null,
+        candidate_status_counts: {},
+      },
+    ],
+  } as unknown as AgentResponse;
+}
 
 test("출발지를 정하지 않으면 기기 좌표에서 출발한다고 말한다", () => {
   /* 출발지가 "없는" 상태는 없다 — 안 정했으면 기기 좌표가 출발지다. */
@@ -132,4 +158,89 @@ test("사용자가 이름으로 정한 자리는 좌표가 없어도 대기 상�
     isDeviceLocation: false,
     isDeviceLocationPending: false,
   });
+});
+
+/*
+ * 사용자 위치를 모르는 턴은 서버가 검색지에서 거리를 잰다. 그때 칩이 "현재 위치"라고
+ * 하면 카드의 거리가 사용자가 있는 곳에서 잰 값으로 읽힌다.
+ */
+test("검색지로 대체된 턴이면 출발지 자리에 그 검색지를 쓴다", () => {
+  const substituted = readSubstitutedOrigin(
+    responseWithRouteOrigin({
+      name: "광화문역",
+      source: "search_center",
+      latitude: 37.5,
+      longitude: 127,
+    }),
+  );
+
+  const model = buildLocationChipModel(
+    { origin: null, center: "광화문역" },
+    null,
+    false,
+    substituted,
+  );
+
+  /* 출발지와 검색 기준이 같은 이름이 되므로 한 칸으로 접힌다. */
+  expect(model).toMatchObject({
+    kind: "single",
+    name: "광화문역",
+    isDeviceLocation: false,
+    /* 기기 좌표를 쓰는 자리가 아니므로 기다리는 표시도 붙지 않는다. */
+    isDeviceLocationPending: false,
+  });
+});
+
+/*
+ * "광화문역에서 10분"처럼 발화가 출발점을 확정한 턴도 검색지에서 거리를 재지만,
+ * 그건 사용자가 그렇게 말한 것이라 화면이 바뀔 이유가 없다.
+ */
+test("발화가 출발점을 확정한 턴은 대체로 치지 않는다", () => {
+  const substituted = readSubstitutedOrigin(
+    responseWithRouteOrigin({
+      name: "광화문역",
+      source: "travel_origin_override",
+      latitude: 37.5,
+      longitude: 127,
+    }),
+  );
+
+  expect(substituted).toBeNull();
+});
+
+/*
+ * 첫 발화 전에는 판정할 턴이 없다. 여기서 접어버리면 GPS가 멀쩡한 기기에서도 처음엔
+ * 한 칸으로 보이다가 첫 답변 뒤에 두 칸으로 바뀐다.
+ */
+test("아직 한 턴도 없으면 지금까지와 같은 모양이다", () => {
+  expect(readSubstitutedOrigin(null)).toBeNull();
+  expect(readSubstitutedOrigin(responseWithRouteOrigin(null))).toBeNull();
+
+  const model = buildLocationChipModel({ origin: null, center: "광화문역" }, null, true, null);
+
+  expect(model).toMatchObject({ kind: "pair", origin: "현재 위치", center: "광화문역" });
+});
+
+/*
+ * 좌표만 알고 부를 이름이 없는 지점도 있다. 이름이 없다고 "대체가 없었다"로 읽으면
+ * 칩이 다시 "현재 위치"를 말하게 된다.
+ */
+test("대체된 지점의 이름을 못 받으면 검색 기준 이름을 그 자리에 쓴다", () => {
+  const substituted = readSubstitutedOrigin(
+    responseWithRouteOrigin({
+      name: null,
+      source: "search_center",
+      latitude: 37.5,
+      longitude: 127,
+    }),
+  );
+
+  const model = buildLocationChipModel(
+    { origin: null, center: "광화문역" },
+    null,
+    false,
+    substituted,
+  );
+
+  expect(model).toMatchObject({ kind: "single", name: "광화문역" });
 });

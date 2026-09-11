@@ -1461,3 +1461,123 @@ async def test_후보_이름이_없으면_되묻기_후보도_비운다() -> Non
 
     assert result.error is not None
     assert "candidate_names" not in result.error.details
+
+
+def _stored(title: str, *, content_id: str, address: str, lat: float, lon: float):
+    return StoredPlaceLocation(
+        content_id=content_id,
+        title=title,
+        address=address,
+        latitude=lat,
+        longitude=lon,
+        district_code=None,
+        concentration_name=title,
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_place_stored_twice_does_not_ask_again() -> None:
+    """같은 장소가 분류만 달리해 두 번 적재된 경우는 되묻지 않는다.
+
+    TourAPI가 "오설록 티하우스 북촌점"을 음식점과 쇼핑으로 각각 준다. 좌표는 8m 차이다.
+    그런 행이 둘이라고 되물으면 선택지가 같은 이름 둘이라 화면에는 하나로 보이고, 눌러도
+    같은 조회가 다시 돌아 빠져나갈 수 없다(2026-09-11 실측).
+    """
+
+    repository = MemoryPlaceLocationRepository(
+        (
+            _stored("오설록 티하우스 북촌점", content_id="3446417",
+                    address="서울특별시 종로구 북촌로 45", lat=37.581067, lon=126.984587),
+            _stored("오설록 티하우스 북촌점", content_id="4012699",
+                    address="서울특별시 종로구 북촌로 45", lat=37.580999, lon=126.984601),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), repository
+    ).execute(ResolveLocationQuery("오설록 티하우스 북촌점"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "오설록 티하우스 북촌점"
+
+
+@pytest.mark.asyncio
+async def test_same_name_far_apart_still_asks_with_the_district() -> None:
+    """이름이 같아도 멀리 떨어져 있으면 서로 다른 가게다.
+
+    "전주식당"이 종로구와 중구에 1.7km 떨어져 있다. 이때는 되묻는 것이 맞지만, 이름만
+    실으면 두 버튼이 같은 글자라 고를 수가 없다 — 자치구를 붙여 구분한다.
+    """
+
+    repository = MemoryPlaceLocationRepository(
+        (
+            _stored("전주식당", content_id="1", address="서울특별시 종로구 수표로20길 16-17",
+                    lat=37.5698, lon=126.9911),
+            _stored("전주식당", content_id="2", address="서울특별시 중구 남대문시장길 18-7",
+                    lat=37.5598, lon=126.9770),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), repository
+    ).execute(ResolveLocationQuery("전주식당"))
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    names = result.error.details["candidate_names"]
+    assert "전주식당 (종로구)" in names
+    assert "전주식당 (중구)" in names
+
+
+@pytest.mark.asyncio
+async def test_picked_district_label_resolves_to_that_row() -> None:
+    """되묻기 버튼을 누르면 그 구의 행으로 풀린다.
+
+    버튼 라벨이 그대로 다음 턴의 검색어가 된다. 붙여 둔 자치구를 다시 갈라 읽지 않으면
+    "전주식당 (종로구)"이라는 이름을 저장소에서 못 찾아 해소가 실패한다.
+    """
+
+    repository = MemoryPlaceLocationRepository(
+        (
+            _stored("전주식당", content_id="1", address="서울특별시 종로구 수표로20길 16-17",
+                    lat=37.5698, lon=126.9911),
+            _stored("전주식당", content_id="2", address="서울특별시 중구 남대문시장길 18-7",
+                    lat=37.5598, lon=126.9770),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), repository
+    ).execute(ResolveLocationQuery("전주식당 (중구)"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    # 이름은 원래대로 돌려준다 — 라벨은 고르기 위한 표기이지 장소 이름이 아니다.
+    assert result.location.resolved_name == "전주식당"
+    assert result.location.latitude == pytest.approx(37.5598)
+    # 저장소에는 붙인 표기 없이 조회한다.
+    assert repository.calls == ["전주식당"]
+
+
+@pytest.mark.asyncio
+async def test_parenthesis_in_the_place_name_is_not_treated_as_a_district() -> None:
+    """상호에 들어간 괄호는 자르지 않는다.
+
+    "광장(전통)시장"에서 괄호를 자르면 "광장"이 되어 다른 곳을 찾는다. 괄호 안이
+    자치구로 끝날 때만 힌트로 읽는다.
+    """
+
+    repository = MemoryPlaceLocationRepository(
+        (
+            _stored("광장(전통)시장", content_id="1", address="서울특별시 종로구 창경궁로 88",
+                    lat=37.5701, lon=126.9997),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), repository
+    ).execute(ResolveLocationQuery("광장(전통)시장"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert repository.calls == ["광장(전통)시장"]

@@ -1407,3 +1407,45 @@ async def test_다른_구에서_비활성이던_장소도_되살린다() -> None
     # places_detail_error_matches_status를 어긴다.
     assert row["detail_fetch_status"] == "pending"
     assert row["detail_error_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_drops_broken_coordinates() -> None:
+    """서울 언저리 밖으로 찍힌 행은 버리고 나머지로 간다.
+
+    원본 데이터에 깨진 좌표가 실재한다 — 활성 8,007곳 중 12건이고 그중 10건이
+    (19.69, 117.99)라는 같은 값이다(남중국해, 2026-09-11 확인). "계남근린공원"은 깨진 행과
+    정상 행이 함께 있어 "2건이니 애매하다"로 판정됐고, 두 행의 주소가 같아 자치구를 붙여도
+    선택지가 하나로 합쳐져 눌러도 제자리였다.
+
+    한 건 때문에 이름 해석을 통째로 실패시키지는 않는다. 구 단위 후보 조회가 같은 이유로
+    같은 검사를 한다(_map_district_place_row).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "2611568",
+                    "title": "계남근린공원",
+                    "address": "서울특별시 양천구 중앙로17길 21 (신정동)",
+                    "latitude": 19.69442748,
+                    "longitude": 117.9925662504,
+                },
+                {
+                    "content_id": "3428372",
+                    "title": "계남근린공원",
+                    "address": "서울특별시 양천구 중앙로17길 21 (신정동)",
+                    "latitude": 37.5098751207,
+                    "longitude": 126.8550905317,
+                },
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("계남근린공원")
+
+    assert len(locations) == 1
+    assert locations[0].content_id == "3428372"
