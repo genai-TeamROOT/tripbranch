@@ -39,7 +39,7 @@ import { useLocationSettings } from "../hooks/useLocationSettings";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
-import { buildLocationChipModel } from "../utils/locationChip";
+import { buildLocationChipModel, readSubstitutedOrigin } from "../utils/locationChip";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 import {
@@ -431,6 +431,10 @@ export function ChatPage() {
     locationSettings,
     state.interpreted_conditions?.location_query ?? null,
     Boolean(state.device_location),
+    /* 직전 턴이 사용자 위치를 몰라 검색지에서 거리를 쟀으면 칩도 그렇게 말한다
+       (utils/locationChip.ts). 그런 턴이 아니거나 아직 한 턴도 없으면 null이라
+       지금까지와 같은 모양이다. */
+    readSubstitutedOrigin(state.auditTurns.at(-1)?.response),
   );
 
   return (
