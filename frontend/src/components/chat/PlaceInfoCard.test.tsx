@@ -838,7 +838,7 @@ describe("후기 답변의 출처", () => {
   it("근거가 된 후기를 인용으로 보여주고 원문 링크를 건다", () => {
     renderWithTrip(<PlaceInfoCard card={reviewCard} />);
 
-    expect(screen.getByText("이 답변의 근거")).toBeInTheDocument();
+    expect(screen.getByText("물어보신 내용과 관련된 경복궁 후기예요")).toBeInTheDocument();
     expect(
       screen.getByText(/야간개장 때 조명이 들어오니 낮과는 또 다른 분위기였어요/),
     ).toBeInTheDocument();
@@ -859,6 +859,6 @@ describe("후기 답변의 출처", () => {
   it("근거가 없으면 구획째 그리지 않는다", () => {
     renderWithTrip(<PlaceInfoCard card={{ ...reviewCard, review_sources: [] }} />);
 
-    expect(screen.queryByText("이 답변의 근거")).not.toBeInTheDocument();
+    expect(screen.queryByText(/후기예요/)).not.toBeInTheDocument();
   });
 });

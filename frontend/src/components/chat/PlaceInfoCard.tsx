@@ -564,13 +564,32 @@ function reviewSourceLabel(sourceType: string | null | undefined, isEn: boolean)
  * 나타난 특징"과 같은 인용 모양을 쓴다 — 같은 성격의 값이 두 자리에서 다르게
  * 보이면 사용자가 다른 것으로 읽는다.
  */
-function ReviewSourceList({ sources, isEn }: { sources: ReviewSource[]; isEn: boolean }) {
+function ReviewSourceList({
+  sources,
+  placeName,
+  isEn,
+}: {
+  sources: ReviewSource[];
+  placeName: string | null;
+  isEn: boolean;
+}) {
   if (sources.length === 0) return null;
+  /*
+   * 장소 이름만 쓰고 질문 내용은 넣지 않는다. 질문 원문(specific_question)은
+   * 키워드가 아니라 문장이고 형태도 제각각이라("창경궁 야간관람 어때?" / "아이와
+   * 가기 좋대?") 그대로 붙이면 "…어때? 관련 후기예요"가 된다. 키워드만 뽑는 것도
+   * "뭐가 맛있대?"류에서 건질 말이 없어 문구가 더 어색해진다.
+   */
+  const heading = placeName
+    ? isEn
+      ? `${placeName} reviews related to your question`
+      : `물어보신 내용과 관련된 ${placeName} 후기예요`
+    : isEn
+      ? "Reviews related to your question"
+      : "물어보신 내용과 관련된 후기예요";
   return (
     <section className="border-t border-border px-4 py-3">
-      <p className="text-[11px] font-semibold text-muted">
-        {isEn ? "Where this comes from" : "이 답변의 근거"}
-      </p>
+      <p className="text-[11px] font-semibold text-muted">{heading}</p>
       <ul className="mt-2 grid gap-2">
         {sources.map((source, index) => (
           <li
@@ -687,7 +706,11 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </dl>
       ) : null}
 
-      <ReviewSourceList sources={card.review_sources ?? []} isEn={isEn} />
+      <ReviewSourceList
+        sources={card.review_sources ?? []}
+        placeName={card.place_name ?? null}
+        isEn={isEn}
+      />
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />
       <SeoulRealtimeSummarySection card={card} />
