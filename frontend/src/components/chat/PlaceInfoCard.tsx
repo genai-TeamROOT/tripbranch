@@ -6,7 +6,11 @@
  */
 
 import { Fragment, useState } from "react";
-import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import type {
+  InfoPlaceCard as InfoPlaceCardData,
+  RealtimeInfoDetailItem,
+  ReviewSource,
+} from "../../types";
 import { useTripState } from "../../state/TripContext";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
 import { openNaverMapSearch } from "../../utils/naverDirections";
@@ -543,6 +547,46 @@ function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
   );
 }
 
+const REVIEW_SOURCE_LABELS: Record<string, { ko: string; en: string }> = {
+  naver_post: { ko: "블로그 후기", en: "Blog post" },
+  google_review: { ko: "구글 리뷰", en: "Google review" },
+};
+
+function reviewSourceLabel(sourceType: string | null | undefined, isEn: boolean) {
+  const label = REVIEW_SOURCE_LABELS[sourceType ?? ""];
+  if (label) return isEn ? label.en : label.ko;
+  return isEn ? "Review" : "후기";
+}
+
+/*
+ * 후기로 답한 턴에만 그린다. 답변 문장은 링크를 말하지 않기로 했고(그래야 답이
+ * 읽기 쉽다), 대신 어디서 나온 말인지 확인할 자리를 여기 둔다. 링크가 없는 근거는
+ * 백엔드가 아예 보내지 않으므로 목록이 비면 구획째 숨긴다.
+ */
+function ReviewSourceList({ sources, isEn }: { sources: ReviewSource[]; isEn: boolean }) {
+  if (sources.length === 0) return null;
+  return (
+    <section className="border-t border-border px-4 py-3">
+      <p className="text-[11px] font-semibold text-muted">{isEn ? "Sources" : "출처"}</p>
+      <ul className="mt-1.5 grid gap-1">
+        {sources.map((source) => (
+          <li key={source.url}>
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-xs font-semibold text-brand hover:underline"
+            >
+              {reviewSourceLabel(source.source_type, isEn)}
+              {source.published_at ? ` · ${source.published_at.slice(0, 10)}` : ""}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
   const { language, device_location } = useTripState();
@@ -628,6 +672,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </dl>
       ) : null}
 
+      <ReviewSourceList sources={card.review_sources ?? []} isEn={isEn} />
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />
       <SeoulRealtimeSummarySection card={card} />

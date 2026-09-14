@@ -27,6 +27,7 @@ from app.schemas import (
     PopulationForecastBar,
     QuestionType,
     RealtimeInfoDetailItem,
+    ReviewSource,
     RoadIncidentCategoryCount,
     SeoulRealtimePaymentCategory,
     SeoulRealtimeSummary,
@@ -36,6 +37,10 @@ from app.services.runtime.info_display import (
     format_parking_for_display,
     parse_citydata_timestamp,
 )
+
+# 답변 아래 보여줄 출처 링크 수. 근거는 최대 여덟 건까지 검토하지만 화면에 줄줄이
+# 걸면 답변보다 링크가 길어진다.
+REVIEW_SOURCE_LIMIT = 3
 
 # 서울시 원문 그대로의 인구 혼잡도 단계 — 값이 늘어나지 않는 한 이 4단계다
 # (프론트 CONGESTION_HEIGHT와 순서를 맞춘다).
@@ -342,7 +347,34 @@ def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:
         seating=card.seating,
         stroller_rental=card.stroller_rental,
         guide_dog=card.guide_dog,
+        review_sources=_to_review_sources(result),
     )
+
+
+def _to_review_sources(result: PlaceInfoResult) -> list[ReviewSource]:
+    """답변 근거가 된 글의 링크를 같은 글당 한 번씩만 남긴다.
+
+    한 글에서 여러 문장이 뽑히는 일은 검색 단계에서 이미 막혀 있지만, 초기 적재분은
+    `document_id`가 없어 같은 URL이 두 번 올 여지가 있다. 링크가 없는 근거는 담지
+    않는다 — 근거로는 썼어도 걸 곳이 없다.
+    """
+    sources: list[ReviewSource] = []
+    seen: set[str] = set()
+    for item in result.review_evidence:
+        url = (item.source_url or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        sources.append(
+            ReviewSource(
+                url=url,
+                source_type=item.source_type,
+                published_at=item.published_at,
+            )
+        )
+        if len(sources) >= REVIEW_SOURCE_LIMIT:
+            break
+    return sources
 
 
 def _to_concentration_card(result: ConcentrationInfoResult) -> InfoPlaceCard | None:

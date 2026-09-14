@@ -813,3 +813,36 @@ describe("근처 공중화장실 카드", () => {
     expect(openNaverMapSearch).toHaveBeenCalledWith("서울특별시 종로구 인사동길 44");
   });
 });
+
+describe("후기 답변의 출처", () => {
+  const reviewCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "review_opinion",
+    answer_fields: {},
+    review_sources: [
+      { url: "https://blog.naver.com/a/1", source_type: "naver_post", published_at: "2026-05-01" },
+      { url: "https://maps.google.com/r/2", source_type: "google_review", published_at: null },
+    ],
+  };
+
+  it("근거가 된 글을 출처 링크로 보여준다", () => {
+    renderWithTrip(<PlaceInfoCard card={reviewCard} />);
+
+    expect(screen.getByText("출처")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /블로그 후기/ })).toHaveAttribute(
+      "href",
+      "https://blog.naver.com/a/1",
+    );
+    // 날짜가 없는 출처는 라벨만 보여준다.
+    expect(screen.getByRole("link", { name: "구글 리뷰" })).toHaveAttribute(
+      "href",
+      "https://maps.google.com/r/2",
+    );
+  });
+
+  it("출처가 없으면 구획째 그리지 않는다", () => {
+    renderWithTrip(<PlaceInfoCard card={{ ...reviewCard, review_sources: [] }} />);
+
+    expect(screen.queryByText("출처")).not.toBeInTheDocument();
+  });
+});

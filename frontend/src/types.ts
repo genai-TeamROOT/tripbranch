@@ -304,6 +304,13 @@ export interface PreferenceEvidenceQuote {
   source_url?: string | null;
 }
 
+/** 후기 답변의 근거가 된 글 하나로 가는 링크. */
+export interface ReviewSource {
+  url: string;
+  source_type?: string | null;
+  published_at?: string | null;
+}
+
 export interface PlacePreferenceInsight {
   code: string;
   label: string;
@@ -360,6 +367,11 @@ export interface InfoPlaceCard {
   stroller_rental?: string | null;
   guide_dog?: string | null;
   preference_insights?: PlacePreferenceInsight[];
+  /**
+   * 후기로 답한 턴에서 그 답의 근거가 된 글. 답변 본문은 링크를 말하지 않고 이
+   * 목록으로 "출처"를 그린다. 링크가 없는 근거는 백엔드가 담지 않는다.
+   */
+  review_sources?: ReviewSource[];
   population_current_level?: string | null;
   population_current_message?: string | null;
   population_observed_at?: string | null;

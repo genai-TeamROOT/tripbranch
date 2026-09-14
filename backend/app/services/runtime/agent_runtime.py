@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import Any, TypeAlias, TypeVar, get_type_hints
+from typing import Any, Literal, TypeAlias, TypeVar, get_type_hints
 
 from app.agent_context.schemas import (
     Coordinates,
@@ -2402,6 +2402,66 @@ def _describe_realtime_attempt(response: InfoContextResponse, area_name: str) ->
     return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
 
 
+async def _filter_review_evidence(
+    info_response: InfoContextResponse,
+    *,
+    info_request: InfoContextRequest,
+    llm: LLMProvider,
+) -> InfoContextResponse:
+    """후기 후보 중 그 장소 이야기이면서 질문에 답이 되는 것만 남긴다.
+
+    **C가 아니라 여기서 한다.** C는 Tool·저장소 계층이라 생성 모델을 부르지 않고,
+    선별 결과가 답변과 화면의 출처 둘 다를 정하므로 두 소비자보다 앞에 있어야 한다.
+
+    **유사도로는 대신할 수 없다.** 검색이 찾아온 문장에는 근처 가게 후기가 섞여
+    있는데(`docs/근거-장소연결-오염-점검-20260914.md`: 경복궁은 근거의 약 2/3),
+    실측에서 답할 수 있는 질문과 없는 질문의 유사도가 겹쳐 컷으로 갈리지 않았다.
+
+    선별이 실패하면 근거를 버린다. 못 찾았다고 말하는 편이, 검토되지 않은 남
+    이야기로 답을 만드는 것보다 낫다.
+    """
+    result = info_response.result
+    if (
+        not isinstance(result, PlaceInfoResult)
+        or result.question_type != "review_opinion"
+        or not result.review_evidence
+    ):
+        return info_response
+
+    place_name = result.resolved_place_name or result.requested_place_name or ""
+    try:
+        selection = await llm.filter_review_evidence(
+            place_name=place_name,
+            specific_question=info_request.specific_question or "",
+            snippets=[item.text for item in result.review_evidence],
+        )
+        kept_indexes = selection.data
+    except Exception:
+        logger.exception("후기 근거 선별 실패 — 근거 없이 답한다")
+        kept_indexes = ()
+
+    kept = tuple(
+        result.review_evidence[index - 1]
+        for index in kept_indexes
+        if 1 <= index <= len(result.review_evidence)
+    )
+    status: Literal["success", "no_data"] = "success" if kept else "no_data"
+    logger.info(
+        "후기 근거 선별: 장소=%s 후보=%d건 → 채택=%d건",
+        place_name,
+        len(result.review_evidence),
+        len(kept),
+    )
+    return info_response.model_copy(
+        update={
+            "status": status,
+            "result": result.model_copy(
+                update={"review_evidence": kept, "status": status}
+            ),
+        }
+    )
+
+
 async def _fetch_realtime_info_agentic(
     info_request: InfoContextRequest,
     *,
@@ -3615,6 +3675,9 @@ async def _run_agent_flow(
             )
         else:
             info_response = await tool_provider.fetch_info_context(info_request)
+        info_response = await _filter_review_evidence(
+            info_response, info_request=info_request, llm=llm
+        )
         info_execution = build_info_concentration_execution_debug(
             info_response,
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
@@ -3692,7 +3755,12 @@ async def _run_agent_flow(
             stream_recommendation_summary
             and isinstance(info_response.result, PlaceInfoResult)
             and info_response.result.status == "success"
-            and bool(info_response.result.fields)
+            # 후기 답변은 fields가 비어 있고 근거만 있다 — 여기 빠뜨리면 SSE가
+            # 델타 채널을 열지 않아 고정 문구만 나간다.
+            and (
+                bool(info_response.result.fields)
+                or bool(info_response.result.review_evidence)
+            )
             and not requests_walking_time
         )
         if stream_info_message:

@@ -65,6 +65,7 @@ from app.agent_context.info_schemas import (
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
     RealtimePopulationInfoResult,
+    ReviewEvidenceItem,
     RoadIncidentCategoryCountInfo,
     SeoulRealtimeSummaryInfo,
 )
@@ -114,6 +115,7 @@ from app.domain.models import (
     RealtimePopulationResult,
     RealtimeSubwayArrival,
 )
+from app.domain.review_evidence import usable_snippets
 from app.errors import AppError
 from app.geo import haversine_km
 from app.place_search_policy import (
@@ -124,6 +126,7 @@ from app.place_search_policy import (
 )
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
 from app.providers.festival import FestivalEvent
+from app.providers.place_evidence import PlaceEvidenceProvider
 from app.public_toilet_hours import describe_open_hours
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
@@ -198,6 +201,18 @@ _COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
 
 # INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
 INFO_EVENT_RESULT_LIMIT = 5
+
+# 후기 질의가 장소 한 곳에서 받아 올 근거 수. RPC가 글 단위로 중복을 제거한 뒤
+# 상한을 적용하므로 서로 다른 글 여덟 개에서 한 문장씩 온다(실측: 장소당 서로 다른
+# 글 29~31개). 이 여덟 개를 선별 단계가 읽고 고른다.
+REVIEW_EVIDENCE_MATCH_COUNT = 8
+
+# 검색 단계 유사도 컷. **답할 수 있는 질문인지를 여기서 가르지 않는다.**
+# 실측(2026-09-14, 질문 24개)에서 답 가능/불가의 유사도 분포가 0.45~0.70에서 겹쳐
+# 어떤 값을 잡아도 한쪽을 잃는다 — "북촌한옥마을 뭐가 맛있대?"는 답이 없는데 근처
+# 만둣국집 후기가 0.683이었고, "경복궁 아이와 가기 좋대?"는 0.453이었다. 그래서
+# 낮게 잡아 후보를 넉넉히 넘기고 판정은 선별 단계에 맡긴다.
+REVIEW_EVIDENCE_MIN_SIMILARITY = 0.25
 _CURRENT_ACTIVITY_MARKERS = ("지금", "현재", "오늘")
 _COMMERCIAL_CATEGORY_MARKERS = ("카페", "커피", "제과", "패스트푸드")
 _REALTIME_CITYDATA_QUESTION_TYPES = {
@@ -270,6 +285,10 @@ class ContextTools:
     # 상세 카드에 여러 장을 싣기 위한 사진 목록 저장소. 없으면 대표 이미지
     # 한 장만 나가고 나머지 경로는 그대로다.
     place_photos: PlacePhotoRepository | None = None
+    # 후기로 답하는 INFO 질의(question_type=review_opinion) 전용 벡터 검색.
+    # 없으면 그 질문도 기존 상세 조회로 답한다 — 기능이 꺼진 환경에서 "못 찾았어요"로
+    # 퇴보시키지 않는다.
+    place_evidence: PlaceEvidenceProvider | None = None
 
 
 class ContextService:
@@ -879,6 +898,14 @@ class ContextService:
 
         if request.question_type == "parking" and parking_district is not None:
             return await self._fetch_realtime_public_parking_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
+
+        if request.question_type == "review_opinion":
+            return await self._fetch_place_review_info(
                 request,
                 place_name=place_name,
                 resolved_location=resolved_location,
@@ -2173,6 +2200,66 @@ class ContextService:
 
         return _info_no_data_response(request, *provider_metadata, *attempted_metadata)
 
+    async def _fetch_place_review_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """후기를 묻는 INFO 질의를 블로그·리뷰 문장 검색으로 처리한다.
+
+        여기서는 **후보만 모은다.** 어느 문장이 실제로 그 장소 이야기이고 질문에
+        답이 되는지는 A가 LLM으로 판정한다 — C는 Tool과 저장소만 다루는 계층이라
+        생성 모델을 부르지 않는다.
+
+        저장소에서 해석되지 않은 장소는 `place_id`가 없다(네이버 지역검색·지오코딩
+        경로). 그런 장소는 임베딩도 없으므로 조회하지 않고 빈손으로 끝낸다.
+        """
+        evidence_provider = self._tools.place_evidence
+        place_id = resolved_location.place_id
+        if evidence_provider is None or not place_id:
+            return await self._fetch_place_detail_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+
+        query = request.specific_question or place_name
+        result = await evidence_provider.search_one_place(
+            query,
+            place_id,
+            match_count=REVIEW_EVIDENCE_MATCH_COUNT,
+            min_similarity=REVIEW_EVIDENCE_MIN_SIMILARITY,
+        )
+        match = result.data
+        snippets = (
+            usable_snippets(match.snippets, limit=REVIEW_EVIDENCE_MATCH_COUNT)
+            if match
+            else ()
+        )
+        return _place_review_response(
+            request,
+            requested_place_name=place_name,
+            resolved_place_name=resolved_location.resolved_name,
+            place_id=place_id,
+            destination_coordinates=_to_info_destination_coordinates(resolved_location),
+            evidence=tuple(
+                ReviewEvidenceItem(
+                    text=snippet.source_text.strip(),
+                    source_url=snippet.source_url,
+                    source_type=snippet.source_type,
+                    published_at=(
+                        snippet.published_at.isoformat() if snippet.published_at else None
+                    ),
+                )
+                for snippet in snippets
+            ),
+            provider_metadata=(location_metadata, (result.metadata,)),
+        )
+
     async def _fetch_place_detail_info(
         self,
         request: InfoContextRequest,
@@ -3305,6 +3392,42 @@ def _to_event_items(
         )
         for event, distance, direct in scored[:INFO_EVENT_RESULT_LIMIT]
     ]
+
+
+def _place_review_response(
+    request: InfoContextRequest,
+    *,
+    requested_place_name: str,
+    resolved_place_name: str,
+    place_id: str | None,
+    destination_coordinates: Coordinates | None,
+    evidence: tuple[ReviewEvidenceItem, ...],
+    provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
+) -> InfoContextResponse:
+    """후기 질의 응답. status를 `fields`가 아니라 근거 유무로 정한다.
+
+    `_place_info_response`의 규칙(fields가 비면 no_data)을 그대로 쓸 수 없다 — 이
+    경로는 TourAPI 필드를 아예 조회하지 않아 fields가 항상 비기 때문이다. 대신
+    후보 근거가 하나도 없으면 no_data다. 근거가 있어도 A의 선별에서 전부 떨어질 수
+    있고, 그때 A가 no_data로 되돌린다.
+    """
+
+    status: Literal["success", "no_data"] = "success" if evidence else "no_data"
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status=status,
+        result=PlaceInfoResult(
+            status=status,
+            question_type=request.question_type,
+            requested_place_name=requested_place_name,
+            resolved_place_name=resolved_place_name,
+            place_id=place_id,
+            destination_coordinates=destination_coordinates,
+            fields={},
+            review_evidence=evidence,
+        ),
+        metadata=_info_response_metadata(*provider_metadata),
+    )
 
 
 def _place_info_response(

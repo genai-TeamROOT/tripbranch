@@ -2283,6 +2283,8 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         source_url=str(item["source_url"]) if item.get("source_url") else None,
         similarity=float(item["similarity"]),
         published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
+        source_type=str(item["source_type"]) if item.get("source_type") else None,
+        document_id=str(item["document_id"]) if item.get("document_id") else None,
     )
 
 
