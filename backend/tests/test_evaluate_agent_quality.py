@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+import csv
+import json
+from enum import Enum
+
+import pytest
+
+from app.schemas import (
+    CompareCriteria,
+    GeneralTopic,
+    InteractionMode,
+    ModifyType,
+    OutOfScopeCategory,
+    QuestionType,
+    SituationKind,
+    UserConditions,
+)
 from scripts.evaluate_agent_quality import (
+    DATASET_PATHS,
     CaseResult,
     EvaluationCase,
     build_summary,
@@ -42,7 +59,7 @@ def _result(
 
 
 def test_example_goldsets_have_requested_split_counts() -> None:
-    assert len(load_cases("dev")) == 64
+    assert len(load_cases("dev")) == 84
     assert len(load_cases("final")) == 15
 
 
@@ -66,6 +83,65 @@ def test_dev_goldset_keeps_five_turns_per_intent() -> None:
     assert counts, "dev 골드셋이 비어 있다"
     thin = {intent: n for intent, n in counts.items() if n < 5}
     assert not thin, f"턴이 5건 미만인 인텐트가 있다: {thin}"
+
+
+def _dev_subtype_values() -> dict[str, set[str]]:
+    """dev 골드셋의 `expected_turn_subtypes`에 등장한 값을 축별로 모은다.
+
+    `load_cases()`가 아니라 CSV를 직접 읽는다 — `EvaluationCase`는 아직 이 칸을
+    담지 않는다(채점에 연결하지 않았다).
+    """
+
+    seen: dict[str, set[str]] = {}
+    with DATASET_PATHS["dev"].open(encoding="utf-8-sig", newline="") as stream:
+        for row in csv.DictReader(stream):
+            for subtype in json.loads(row["expected_turn_subtypes"]):
+                for axis, value in subtype.items():
+                    seen.setdefault(axis, set()).add(value)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("axis", "enum_type"),
+    [
+        ("question_type", QuestionType),
+        ("topic", GeneralTopic),
+        ("category", OutOfScopeCategory),
+        ("modify_type", ModifyType),
+        ("criteria", CompareCriteria),
+        ("situation_kind", SituationKind),
+        ("interaction_mode", InteractionMode),
+    ],
+)
+def test_dev_goldset_covers_every_subtype_value(axis: str, enum_type: type[Enum]) -> None:
+    """서브타입 축의 모든 값이 dev 골드셋에 최소 1건씩 있어야 한다.
+
+    이 축들은 점수가 아니라 **커버리지 체크리스트**로 읽는다(README 참고) —
+    값 하나가 빠졌다는 것은 "그 유형을 다루는지 아무도 안 본다"는 뜻이다.
+    실제로 `review_opinion`은 develop에서 새 유형이 들어온 뒤에도 한동안
+    골드셋에 없었다(2026-09-14에 메웠다). **새 열거값을 추가하면 이 테스트가
+    먼저 깨져서 골드셋에 케이스를 넣게 만든다** — 그것이 이 테스트의 목적이다.
+    """
+
+    missing = {member.value for member in enum_type} - _dev_subtype_values().get(axis, set())
+    assert not missing, f"{axis} 축에서 골드셋이 안 덮는 값: {sorted(missing)}"
+
+
+def test_dev_goldset_covers_every_condition_field() -> None:
+    """`UserConditions`의 모든 필드가 최소 한 케이스에서 기대값으로 검증돼야 한다.
+
+    안 덮인 필드는 추출이 통째로 망가져도 `condition_field_accuracy`가 안 움직인다.
+    `taste_query`가 그런 자리였다 — 규칙이 세 번 뒤집혔는데(extract.md 2.2.0 →
+    2.3.0 → 2.4.0) 골드셋은 한 번도 보지 않았다.
+    """
+
+    seen = {
+        field
+        for case in load_cases("dev")
+        for field in case.expected_final_conditions
+    }
+    missing = set(UserConditions.model_fields) - seen
+    assert not missing, f"골드셋이 검증하지 않는 조건 필드: {sorted(missing)}"
 
 
 def test_dataset_digest_is_stable_for_same_goldset() -> None:
