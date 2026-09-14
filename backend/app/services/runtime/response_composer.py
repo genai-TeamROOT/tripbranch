@@ -642,15 +642,24 @@ def compose_place_info_message(
             walking_route=walking_route,
             origin_available=walking_origin_available,
         )
-    if result.status == "no_data":
-        if result.question_type == "review_opinion":
-            # 후기 경로는 "정보가 없다"가 아니라 "후기에서 확인하지 못했다"로 말한다.
-            # 근거를 못 찾은 것과 그 장소에 그런 점이 없는 것은 다르고, 실제로
-            # 근처 가게 이야기만 걸려서 전부 걸러진 경우가 많다.
+    if result.question_type == "review_opinion":
+        # 이 경로의 답은 LLM이 후기를 요약해 만든다. 여기까지 온 것은 스트리밍을
+        # 쓰지 않는 호출이거나 그 생성이 실패한 경우다 — 고정 문구로는 요약을
+        # 대신할 수 없으므로, 근거를 찾았는지만 사실대로 말하고 출처로 넘긴다.
+        if result.status == "no_data" or not result.review_evidence:
+            # "정보가 없다"가 아니라 "후기에서 확인하지 못했다"로 말한다. 근거를
+            # 못 찾은 것과 그 장소에 그런 점이 없는 것은 다르고, 실제로 근처 가게
+            # 이야기만 걸려서 전부 걸러진 경우가 많다.
             return (
                 f"{place_label}에 대해 물어보신 내용은 후기에서 확인하지 못했어요. "
                 "다른 점이 궁금하시면 말씀해 주세요."
             )
+        return (
+            f"{place_label}에 대한 후기를 찾았는데 지금은 정리해 드리기 어려워요. "
+            "아래 출처에서 직접 확인해 보실 수 있어요."
+        )
+
+    if result.status == "no_data":
         type_label = _INFO_QUESTION_TYPE_LABELS.get(result.question_type, "그 질문")
         return f"{place_label}의 {type_label} 정보는 확인할 수 없어요."
 
