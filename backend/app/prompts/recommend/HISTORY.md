@@ -4,11 +4,60 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.8.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
+| recommend.extract | 2.9.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
 | recommend.summary | 1.3.0 | summary_instruction.md | persona |
 | recommend.place_reason | 1.0.0 | place_reason_instruction.md | — |
 
 ## Draft
+
+- 2026-09-14(recommend.extract v2.9.0): **일정 발화에서 조건이 통째로 사라지던 것을
+  막았습니다.** `gemini-3.5-flash-lite`·`gemini-3.1-flash-lite`가 "경복궁 코스 짜줘"
+  같은 발화에서 조건을 하나도 안 돌려주던 문제입니다.
+
+  **원인은 지명 규칙이 아니라 출력 계약이었습니다.** 9/08~09/09 실험은 이 실패를
+  "위치 표현" 그룹의 문제로 읽었는데, 그때 쓴 러너가 **"페이로드가 통째로 없다"와
+  "페이로드는 있는데 칸이 비었다"를 구분하지 못했습니다**(`3.1-lite_결과.md` §3이
+  그 한계를 스스로 적어뒀습니다). 러너에 그 구분을 넣고 다시 재니 **두 모델
+  12케이스 24개 조합에서 실패 11건이 전부 `recommend: null`, 통과 13건이 전부
+  정상 페이로드로 갈렸습니다 — 예외가 하나도 없습니다.**
+
+  즉 모델은 일정 발화를 받으면 `intent`를 SCHEDULE로 고르고 그 순간 조건을 통째로
+  비웁니다. 그럴 만합니다 — **SCHEDULE은 전용 추출 슬롯이 없어 이 프롬프트를 그대로
+  빌려 쓰는데**(`orchestrator.py` `_extract_for_intent()`), 정작 프롬프트 174줄
+  어디에도 "코스"·"일정 짜줘"가 없고 첫 문장은 `intent="RECOMMEND"`로 내라고만
+  합니다. `flash`는 이 어긋남을 알아서 넘기고 lite는 못 넘깁니다.
+
+  **고친 것은 두 줄기입니다.** 맨 앞에 **출력 계약** 블록을 신설했습니다.
+  (1) `intent`는 일정 요청이어도 항상 RECOMMEND이고 어느 쪽인지는 앞 단계가 이미
+  판정해 뒀다는 것, (2) `recommend.conditions`는 읽어낸 조건이 하나도 없어도 전부
+  null인 `UserConditions`로 **반드시** 채운다는 것. (2)는 원래 있던 문장인데
+  **맨 마지막 줄**에 있었습니다 — lite 계열이 긴 지시의 끝쪽 제약을 흘리는 자리라,
+  같은 내용을 앞으로 옮긴 것이 변경의 절반입니다.
+
+  **지명 규칙(`location_rules.md`)은 건드리지 않았습니다.** 측정이 그 자리를
+  지목하지 않았습니다. 이동수단 규칙도 그대로입니다.
+
+  실측(2026-09-14, 12케이스 × 3회 × 2모델 × 전후 = **144호출**,
+  `test_results/prompt_extract_fix_2026-09-14/`):
+
+  | 모델 | 기대 불일치 | 흔들림 |
+  | --- | --- | --- |
+  | `gemini-3.5-flash-lite` | **7/12 → 0/12** | **4/12 → 0/12** |
+  | `gemini-3.1-flash-lite` | **4/12 → 0/12** | 0/12 → 0/12 |
+
+  0단계가 "확률이 개입하지 않는 자리라 조사·시연에 쓰라"고 지목했던 고정 실패
+  2건(`경복궁 코스 짜줘`·`경복궁 일정 짜줘`)이 두 모델 모두 3/3 통과로 바뀐 것이
+  가장 강한 증거입니다. 회귀 대조군 4건은 전후 모두 통과했습니다.
+
+  **아직 판정하지 않은 것 둘.** 지연이 늘어 보이지만(3.5-lite 1,473→1,568ms)
+  **수정 전 실패 호출은 빈 페이로드를 내느라 빨랐던 것**이라 전 수치가 정상 추출의
+  지연이 아닙니다. 그리고 3.1-lite 수정 후 실행에서 처음으로 **자동 캐싱이
+  42% 적중**했는데 3.5-lite는 여전히 0입니다. 둘 다 12건으로 단정하지 않고
+  전체 재측정에서 봅니다.
+
+  **이것은 FAST를 lite로 내려도 된다는 결론이 아닙니다.** SCHEDULE 조건 추출
+  12건만 잰 것이고, FAST 스위치는 8개 호출부를 한꺼번에 정합니다. 다음은
+  18건 전체와 골드셋을 2.9.0에서 재측정하면서 `flash`도 함께 재는 일입니다.
 
 - 2026-09-09(recommend.place_reason v1.0.0): **장소 상세 카드의 "AI가 추천하는 이유"에
   LLM 문장 1~2개를 붙입니다.** 지금까지 그 자리는 `_recommendation_reason()`이 만드는
