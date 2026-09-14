@@ -42,8 +42,30 @@ def _result(
 
 
 def test_example_goldsets_have_requested_split_counts() -> None:
-    assert len(load_cases("dev")) == 35
+    assert len(load_cases("dev")) == 64
     assert len(load_cases("final")) == 15
+
+
+def test_dev_goldset_keeps_five_turns_per_intent() -> None:
+    """인텐트마다 턴 5건이 바닥이다.
+
+    `macro_f1`은 **인텐트별 F1의 평균**이라(`build_summary`) 어떤 인텐트의 턴이
+    1건이면 그 한 건이 뒤집힐 때 해당 클래스 F1이 1.0에서 0으로 떨어지고 Macro F1이
+    1/7만큼 움직인다. 그 상태로 모델을 견주면 모델 차이가 아니라 동전 던지기를 잰다.
+
+    위 건수 단언과 달리 이것은 **골드셋이 커져도 계속 유효한 불변식**이다. 케이스를
+    덜어낼 때 COMPARE·GENERAL·OUT_OF_SCOPE가 조용히 1건으로 돌아가는 것을 막는다
+    (2026-09-14 보강 전 실제로 그 상태였다 — 셋 다 1건).
+    """
+
+    counts: dict[str, int] = {}
+    for case in load_cases("dev"):
+        for intent in case.expected_turn_intents:
+            counts[intent] = counts.get(intent, 0) + 1
+
+    assert counts, "dev 골드셋이 비어 있다"
+    thin = {intent: n for intent, n in counts.items() if n < 5}
+    assert not thin, f"턴이 5건 미만인 인텐트가 있다: {thin}"
 
 
 def test_dataset_digest_is_stable_for_same_goldset() -> None:
