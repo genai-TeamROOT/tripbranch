@@ -92,6 +92,8 @@ export interface PreferenceTagSummary {
   code: string;
   label: string;
   mention_count: number;
+  /** 이번 발화의 취향과 실제 장소 태그가 일치할 때만 true. */
+  is_query_match?: boolean;
 }
 
 /*

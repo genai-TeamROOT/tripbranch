@@ -75,10 +75,10 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   // 실시간 도시데이터 INFO는 이미 지역 단위 상세·지도 링크를 응답에 실었다.
   // 관광 PlaceDetails를 다시 조회하면 이 값을 덮어써 모달의 실시간 근거가 사라진다.
   if (card?.realtime_map_url || (card?.realtime_detail_items?.length ?? 0) > 0) return false;
-  // review_opinion은 C가 상세를 함께 실어 보내지만, 그 조회가 실패해도 답변은
-  // 나간다(근거는 후기이지 상세가 아니다). 그때 여기서 한 번 더 채워 모달이
-  // 이름만 있는 빈 카드로 열리지 않게 한다.
-  if (card?.question_type === "review_opinion") return !card.overview && !card.thumbnail_url;
+  // 후기 답변 카드는 추천 카드와 같은 상세를 보여준다(사용자 결정, 2026-09-14).
+  // C가 사진·개요를 이미 실어 보내지만 취향 태그·대표 후기(preference_insights)는
+  // place-details 응답에만 있어서, 그 절을 띄우려면 여기서 한 번 더 조회해야 한다.
+  if (card?.question_type === "review_opinion") return true;
   return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 
@@ -1540,6 +1540,9 @@ export function RecommendationDetailPreviewModal({
     }
   }
   const isEn = language === "en";
+  // 후기로 답한 턴에서 연 카드. 추천 카드와 같은 상세를 보여주되, 추천 순위를
+  // 말하는 문장(item.recommendation_reason)은 없으므로 제목만 후기 쪽으로 바꾼다.
+  const isReviewCard = card?.question_type === "review_opinion";
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
@@ -1685,14 +1688,18 @@ export function RecommendationDetailPreviewModal({
     const loadAiReason = (resolved: InfoPlaceCard | null) => {
       // 빈 문자열로 확정한다 — "받았는데 없다"와 "아직 모른다"를 가르는 값이다.
       // 부를 수 없는 경로에서 null로 두면 자리표시자가 영원히 남는다.
-      if (!item || !resolved?.place_id) {
+      //
+      // 후기 답변 카드는 item이 없어도 부른다 — 그 카드를 연 사람은 방금 후기를
+      // 물어본 사람이라, 후기에서 드러난 성격을 말하는 이 문장이 가장 읽힐 자리다.
+      const wantsReason = Boolean(item) || card?.question_type === "review_opinion";
+      if (!wantsReason || !resolved?.place_id) {
         setAiReason("");
         return;
       }
       void fetchPlaceAiReason({
         place_id: resolved.place_id,
-        place_name: resolved.place_name ?? item.name,
-        category_label: item.category_label ?? item.category,
+        place_name: resolved.place_name ?? item?.name ?? placeName ?? "",
+        category_label: item?.category_label ?? item?.category,
       })
         .then((response) => {
           if (!cancelled) setAiReason(response.ai_reason ?? "");
@@ -1914,7 +1921,7 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {item?.recommendation_reason && (
+          {(item?.recommendation_reason || (isReviewCard && aiReason !== "")) && (
             /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 문장은 추천 카드가
                이미 들고 온 값이라(item) 상세 응답을 기다리지 않는다 — 위에 두면
                표가 스켈레톤인 동안 읽을 것이 있고, 이 장소가 왜 떴는지를 운영시간
@@ -1928,10 +1935,18 @@ export function RecommendationDetailPreviewModal({
               <div className="flex items-center gap-1.5">
                 <Sparkles size={14} className="text-brand" />
                 <p className="text-xs font-bold text-brand">
-                  {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
+                  {isReviewCard && !item?.recommendation_reason
+                    ? isEn
+                      ? "What visitors say"
+                      : "후기에서 드러난 이곳의 성격"
+                    : isEn
+                      ? "Why AI recommends this"
+                      : "AI가 추천하는 이유"}
                 </p>
               </div>
-              <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+              {item?.recommendation_reason && (
+                <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+              )}
               {/* 두 번째 줄은 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
                   위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
                   말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
