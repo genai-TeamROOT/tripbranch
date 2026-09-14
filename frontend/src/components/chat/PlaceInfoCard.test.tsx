@@ -820,29 +820,45 @@ describe("후기 답변의 출처", () => {
     question_type: "review_opinion",
     answer_fields: {},
     review_sources: [
-      { url: "https://blog.naver.com/a/1", source_type: "naver_post", published_at: "2026-05-01" },
-      { url: "https://maps.google.com/r/2", source_type: "google_review", published_at: null },
+      {
+        text: "야간개장 때 조명이 들어오니 낮과는 또 다른 분위기였어요",
+        url: "https://blog.naver.com/a/1",
+        source_type: "naver_post",
+        published_at: "2026-05-01",
+      },
+      {
+        text: "걷는 구간이 길어 편한 신발을 권해요",
+        url: null,
+        source_type: "google_review",
+        published_at: null,
+      },
     ],
   };
 
-  it("근거가 된 글을 출처 링크로 보여준다", () => {
+  it("근거가 된 후기를 인용으로 보여주고 원문 링크를 건다", () => {
     renderWithTrip(<PlaceInfoCard card={reviewCard} />);
 
-    expect(screen.getByText("출처")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /블로그 후기/ })).toHaveAttribute(
+    expect(screen.getByText("이 답변의 근거")).toBeInTheDocument();
+    expect(
+      screen.getByText(/야간개장 때 조명이 들어오니 낮과는 또 다른 분위기였어요/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /네이버 블로그/ })).toHaveAttribute(
       "href",
       "https://blog.naver.com/a/1",
     );
-    // 날짜가 없는 출처는 라벨만 보여준다.
-    expect(screen.getByRole("link", { name: "구글 리뷰" })).toHaveAttribute(
-      "href",
-      "https://maps.google.com/r/2",
-    );
   });
 
-  it("출처가 없으면 구획째 그리지 않는다", () => {
+  it("링크가 없는 후기도 인용은 남기되 링크를 만들지 않는다", () => {
+    renderWithTrip(<PlaceInfoCard card={reviewCard} />);
+
+    expect(screen.getByText(/걷는 구간이 길어 편한 신발을 권해요/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Google 리뷰/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Google 리뷰/)).toBeInTheDocument();
+  });
+
+  it("근거가 없으면 구획째 그리지 않는다", () => {
     renderWithTrip(<PlaceInfoCard card={{ ...reviewCard, review_sources: [] }} />);
 
-    expect(screen.queryByText("출처")).not.toBeInTheDocument();
+    expect(screen.queryByText("이 답변의 근거")).not.toBeInTheDocument();
   });
 });

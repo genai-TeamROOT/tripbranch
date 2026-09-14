@@ -2227,12 +2227,18 @@ class ContextService:
                 location_metadata=location_metadata,
             )
 
+        # 근거 검색과 장소 상세를 **함께** 부른다. 후기 답변도 다른 INFO 답변과 같은
+        # 상세 카드(사진·개요·운영시간)를 달고 나가야 하는데, 순서대로 부르면 두
+        # 왕복이 그대로 더해진다. 상세 조회가 실패해도 답변은 근거만으로 나간다.
         query = request.specific_question or place_name
-        result = await evidence_provider.search_one_place(
-            query,
-            place_id,
-            match_count=REVIEW_EVIDENCE_MATCH_COUNT,
-            min_similarity=REVIEW_EVIDENCE_MIN_SIMILARITY,
+        result, detail_result = await asyncio.gather(
+            evidence_provider.search_one_place(
+                query,
+                place_id,
+                match_count=REVIEW_EVIDENCE_MATCH_COUNT,
+                min_similarity=REVIEW_EVIDENCE_MIN_SIMILARITY,
+            ),
+            self._place_detail_for_card(resolved_location),
         )
         match = result.data
         snippets = (
@@ -2240,10 +2246,21 @@ class ContextService:
             if match
             else ()
         )
+        place_card = None
+        detail_metadata: tuple[ProviderMetadata, ...] = ()
+        if detail_result is not None:
+            details, detail_metadata = detail_result
+            place_card = _to_place_card(
+                details,
+                place_id,
+                photos=await self._fetch_place_photos(details.content_id or place_id),
+            )
         return _place_review_response(
             request,
             requested_place_name=place_name,
-            resolved_place_name=resolved_location.resolved_name,
+            resolved_place_name=(
+                place_card.place_name if place_card else resolved_location.resolved_name
+            ),
             place_id=place_id,
             destination_coordinates=_to_info_destination_coordinates(resolved_location),
             evidence=tuple(
@@ -2257,8 +2274,31 @@ class ContextService:
                 )
                 for snippet in snippets
             ),
-            provider_metadata=(location_metadata, (result.metadata,)),
+            place_card=place_card,
+            provider_metadata=(location_metadata, (result.metadata,), detail_metadata),
         )
+
+    async def _place_detail_for_card(
+        self, resolved_location: ResolvedLocation
+    ) -> tuple[PlaceDetails, tuple[ProviderMetadata, ...]] | None:
+        """후기 답변에 붙일 상세 카드용 조회. 실패는 None으로 삼킨다.
+
+        답의 근거는 후기이지 이 값이 아니다 — 상세가 없다고 답변을 막으면, 카드를
+        꾸미려다 답할 수 있는 질문을 못 답하게 된다.
+        """
+        tool = self._tools.place_detail
+        if tool is None:
+            return None
+        try:
+            detail_result = await tool.execute(
+                PlaceDetailQuery(place_name=resolved_location.resolved_name)
+            )
+        except Exception:
+            logger.warning("후기 답변의 상세 카드 조회 실패(답변은 그대로 나간다)", exc_info=True)
+            return None
+        if detail_result.status is not ToolStatus.SUCCESS or detail_result.details is None:
+            return None
+        return detail_result.details, detail_result.provider_metadata
 
     async def _fetch_place_detail_info(
         self,
@@ -3402,6 +3442,7 @@ def _place_review_response(
     place_id: str | None,
     destination_coordinates: Coordinates | None,
     evidence: tuple[ReviewEvidenceItem, ...],
+    place_card: PlaceCard | None = None,
     provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
 ) -> InfoContextResponse:
     """후기 질의 응답. status를 `fields`가 아니라 근거 유무로 정한다.
@@ -3425,6 +3466,7 @@ def _place_review_response(
             destination_coordinates=destination_coordinates,
             fields={},
             review_evidence=evidence,
+            place_card=place_card,
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )

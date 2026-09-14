@@ -215,20 +215,25 @@ def test_review_sources_dedupe_and_cap() -> None:
     sources = _to_review_sources(result)
 
     assert [source.url for source in sources] == ["https://b/1", "https://b/2", "https://b/3"]
+    # 화면이 인용으로 그리므로 문장도 함께 실려야 한다.
+    assert [source.text for source in sources] == ["a", "c", "d"]
 
 
-def test_review_sources_skip_evidence_without_link() -> None:
-    """링크가 없는 근거는 근거로는 써도 출처로 걸 곳이 없다."""
+def test_review_sources_keep_evidence_without_link() -> None:
+    """링크가 없어도 인용은 근거다 — 링크는 더 읽고 싶을 때 쓰는 것이다."""
     result = PlaceInfoResult(
         status="success",
         question_type="review_opinion",
         review_evidence=(
-            ReviewEvidenceItem(text="a", source_url=None),
-            ReviewEvidenceItem(text="b", source_url="   "),
+            ReviewEvidenceItem(text="아이랑 가기 좋았어요", source_url=None),
+            ReviewEvidenceItem(text="주차가 넉넉했어요", source_url="   "),
         ),
     )
 
-    assert _to_review_sources(result) == []
+    sources = _to_review_sources(result)
+
+    assert [source.text for source in sources] == ["아이랑 가기 좋았어요", "주차가 넉넉했어요"]
+    assert [source.url for source in sources] == [None, None]
 
 
 def test_question_type_enum_has_review_opinion() -> None:

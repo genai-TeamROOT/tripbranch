@@ -352,22 +352,27 @@ def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:
 
 
 def _to_review_sources(result: PlaceInfoResult) -> list[ReviewSource]:
-    """답변 근거가 된 글의 링크를 같은 글당 한 번씩만 남긴다.
+    """답변 근거가 된 문장을 같은 글당 한 번씩만 남긴다.
 
     한 글에서 여러 문장이 뽑히는 일은 검색 단계에서 이미 막혀 있지만, 초기 적재분은
-    `document_id`가 없어 같은 URL이 두 번 올 여지가 있다. 링크가 없는 근거는 담지
-    않는다 — 근거로는 썼어도 걸 곳이 없다.
+    `document_id`가 없어 같은 URL이 두 번 올 여지가 있다. **링크가 없어도 담는다** —
+    인용은 그 자체로 근거이고, 링크는 더 읽고 싶을 때 쓰는 것이다.
     """
     sources: list[ReviewSource] = []
     seen: set[str] = set()
     for item in result.review_evidence:
-        url = (item.source_url or "").strip()
-        if not url or url in seen:
+        text = item.text.strip()
+        if not text:
             continue
-        seen.add(url)
+        url = (item.source_url or "").strip()
+        if url:
+            if url in seen:
+                continue
+            seen.add(url)
         sources.append(
             ReviewSource(
-                url=url,
+                text=text,
+                url=url or None,
                 source_type=item.source_type,
                 published_at=item.published_at,
             )

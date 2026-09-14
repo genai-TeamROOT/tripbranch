@@ -304,9 +304,14 @@ export interface PreferenceEvidenceQuote {
   source_url?: string | null;
 }
 
-/** 후기 답변의 근거가 된 글 하나로 가는 링크. */
+/**
+ * 후기 답변의 근거가 된 문장 하나와 그 출처. 링크만 주면 사용자가 긴 블로그 글에서
+ * 해당 대목을 직접 찾아야 해서, 문장을 함께 받아 인용으로 보여준다.
+ * 초기 적재분 일부는 링크가 없어 `url`이 비는데, 그때는 인용만 그린다.
+ */
 export interface ReviewSource {
-  url: string;
+  text: string;
+  url?: string | null;
   source_type?: string | null;
   published_at?: string | null;
 }

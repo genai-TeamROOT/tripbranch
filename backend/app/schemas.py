@@ -1351,10 +1351,17 @@ class PlacePreferenceInsight(BaseModel):
 
 
 class ReviewSource(BaseModel):
-    """후기 답변의 근거가 된 글 하나로 가는 링크."""
+    """후기 답변의 근거가 된 문장 하나와 그 출처.
 
-    url: str
-    # 네이버 블로그인지 구글 리뷰인지. 화면이 "블로그 후기" 같은 라벨을 붙인다.
+    **문장을 함께 싣는다.** 링크만 주면 사용자가 "무슨 근거로 이렇게 답했나"를
+    확인하려고 블로그를 열어 긴 글에서 해당 대목을 직접 찾아야 한다. 답변 아래에
+    인용으로 보여주고, 링크는 더 읽고 싶을 때 쓴다.
+    """
+
+    text: str
+    # 원문 글 주소. 초기 적재분 일부는 링크가 없어 인용만 보여준다.
+    url: str | None = None
+    # 네이버 블로그인지 구글 리뷰인지. 화면이 "네이버 블로그" 같은 라벨을 붙인다.
     source_type: str | None = None
     published_at: str | None = None
 

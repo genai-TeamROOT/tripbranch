@@ -25,7 +25,7 @@ slots:
     evals: evals/README.md
   info.review_answer:
     description: 선별된 후기 문장만 근거로 전해 들은 말투의 2~4문장 답변을 만든다.
-    version: "1.0.0"
+    version: "1.1.0"
     template: review_answer_instruction.md
     bundle:
       - _shared/persona/trivi.md

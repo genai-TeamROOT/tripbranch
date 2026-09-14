@@ -75,6 +75,10 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   // 실시간 도시데이터 INFO는 이미 지역 단위 상세·지도 링크를 응답에 실었다.
   // 관광 PlaceDetails를 다시 조회하면 이 값을 덮어써 모달의 실시간 근거가 사라진다.
   if (card?.realtime_map_url || (card?.realtime_detail_items?.length ?? 0) > 0) return false;
+  // review_opinion은 C가 상세를 함께 실어 보내지만, 그 조회가 실패해도 답변은
+  // 나간다(근거는 후기이지 상세가 아니다). 그때 여기서 한 번 더 채워 모달이
+  // 이름만 있는 빈 카드로 열리지 않게 한다.
+  if (card?.question_type === "review_opinion") return !card.overview && !card.thumbnail_url;
   return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 

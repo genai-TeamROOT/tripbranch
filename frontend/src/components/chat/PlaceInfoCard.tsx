@@ -548,38 +548,53 @@ function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
 }
 
 const REVIEW_SOURCE_LABELS: Record<string, { ko: string; en: string }> = {
-  naver_post: { ko: "블로그 후기", en: "Blog post" },
-  google_review: { ko: "구글 리뷰", en: "Google review" },
+  naver_post: { ko: "네이버 블로그", en: "Naver blog" },
+  google_review: { ko: "Google 리뷰", en: "Google review" },
 };
 
 function reviewSourceLabel(sourceType: string | null | undefined, isEn: boolean) {
   const label = REVIEW_SOURCE_LABELS[sourceType ?? ""];
   if (label) return isEn ? label.en : label.ko;
-  return isEn ? "Review" : "후기";
+  return isEn ? "Visitor review" : "방문자 후기";
 }
 
 /*
- * 후기로 답한 턴에만 그린다. 답변 문장은 링크를 말하지 않기로 했고(그래야 답이
- * 읽기 쉽다), 대신 어디서 나온 말인지 확인할 자리를 여기 둔다. 링크가 없는 근거는
- * 백엔드가 아예 보내지 않으므로 목록이 비면 구획째 숨긴다.
+ * 후기로 답한 턴에만 그린다. 답변 문장은 링크도 인용도 말하지 않기로 했고(그래야
+ * 답이 읽기 쉽다), 그 근거를 여기서 인용으로 보여준다. 상세 모달의 "방문자 후기에
+ * 나타난 특징"과 같은 인용 모양을 쓴다 — 같은 성격의 값이 두 자리에서 다르게
+ * 보이면 사용자가 다른 것으로 읽는다.
  */
 function ReviewSourceList({ sources, isEn }: { sources: ReviewSource[]; isEn: boolean }) {
   if (sources.length === 0) return null;
   return (
     <section className="border-t border-border px-4 py-3">
-      <p className="text-[11px] font-semibold text-muted">{isEn ? "Sources" : "출처"}</p>
-      <ul className="mt-1.5 grid gap-1">
-        {sources.map((source) => (
-          <li key={source.url}>
-            <a
-              href={source.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-xs font-semibold text-brand hover:underline"
-            >
-              {reviewSourceLabel(source.source_type, isEn)}
+      <p className="text-[11px] font-semibold text-muted">
+        {isEn ? "Where this comes from" : "이 답변의 근거"}
+      </p>
+      <ul className="mt-2 grid gap-2">
+        {sources.map((source, index) => (
+          <li
+            key={source.url ?? `${index}-${source.text.slice(0, 12)}`}
+            className="rounded-xl bg-chip px-3 py-2.5"
+          >
+            <blockquote className="border-l-2 border-brand/40 pl-2.5 text-xs leading-5 text-ink">
+              {`“${source.text}”`}
+            </blockquote>
+            <div className="mt-1.5 pl-2.5 text-[11px] text-muted">
+              {source.url ? (
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-semibold text-brand hover:underline"
+                >
+                  {reviewSourceLabel(source.source_type, isEn)} ↗
+                </a>
+              ) : (
+                <span>{reviewSourceLabel(source.source_type, isEn)}</span>
+              )}
               {source.published_at ? ` · ${source.published_at.slice(0, 10)}` : ""}
-            </a>
+            </div>
           </li>
         ))}
       </ul>
