@@ -134,6 +134,9 @@ class PreferenceTagSummary(BaseModel):
     code: str
     label: str
     mention_count: int = Field(ge=0)
+    # 이번 발화에서 요청한 취향과 실제 장소 태그가 일치할 때만 true다.
+    # 없는 태그를 화면에 만들어내지 않고, 보유 태그의 정렬·강조에만 사용한다.
+    is_query_match: bool = False
 
 
 class RecommendationItem(BaseModel):

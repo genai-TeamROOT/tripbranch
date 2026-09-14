@@ -619,7 +619,9 @@ class SupabasePlaceRepository:
                     ),
                     "content_id": "in.(" + ",".join(chunk) + ")",
                     "order": "content_id.asc,display_rank.asc",
-                    "limit": str(len(chunk) * 5),
+                    # 요청 취향 태그가 기존 상위 5개 밖에 있을 수도 있다. 후보별
+                    # 전체 태그를 읽고 호출부에서 요청 태그 우선으로 다시 정렬한다.
+                    "limit": str(len(chunk) * 33),
                 },
             )
             payload = self._json(response)
@@ -632,7 +634,7 @@ class SupabasePlaceRepository:
                 if not content_id:
                     raise SupabaseRepositoryError("preference tag missing content_id")
                 grouped.setdefault(content_id, []).append(dict(row))
-        return {content_id: tuple(rows[:5]) for content_id, rows in grouped.items()}
+        return {content_id: tuple(rows) for content_id, rows in grouped.items()}
 
     async def search_place_evidence(
         self,
