@@ -1540,8 +1540,8 @@ export function RecommendationDetailPreviewModal({
     }
   }
   const isEn = language === "en";
-  // 후기로 답한 턴에서 연 카드. 추천 카드와 같은 상세를 보여주되, 추천 순위를
-  // 말하는 문장(item.recommendation_reason)은 없으므로 제목만 후기 쪽으로 바꾼다.
+  // 후기로 답한 턴에서 연 카드. 추천 카드와 같은 상세를 보여준다 — 추천 순위를
+  // 말하는 문장(item.recommendation_reason)이 없어도 AI 문장 절을 띄운다.
   const isReviewCard = card?.question_type === "review_opinion";
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
@@ -1935,13 +1935,7 @@ export function RecommendationDetailPreviewModal({
               <div className="flex items-center gap-1.5">
                 <Sparkles size={14} className="text-brand" />
                 <p className="text-xs font-bold text-brand">
-                  {isReviewCard && !item?.recommendation_reason
-                    ? isEn
-                      ? "What visitors say"
-                      : "후기에서 드러난 이곳의 성격"
-                    : isEn
-                      ? "Why AI recommends this"
-                      : "AI가 추천하는 이유"}
+                  {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
                 </p>
               </div>
               {item?.recommendation_reason && (
