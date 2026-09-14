@@ -100,6 +100,7 @@ type QuestionType =
   | "event"            // 현재 전시/행사
   | "location_info"    // 위치/찾아가는 법
   | "general_info"     // 기타 일반 정보
+  | "review_opinion"   // 후기·평판 (블로그·리뷰 근거로 답)
   | "concentration"    // 방문객 혼잡도 예측
   | "realtime_commercial" // 실시간 지역·업종 상권 활동
   | "realtime_parking"    // 실시간 주변 주차장
@@ -120,6 +121,7 @@ type QuestionType =
 | `event` | 현재 진행 중인 전시/행사/프로그램 | "지금 전시 뭐 해?", "행사 있어?" | searchFestival2 + detailCommon2 |
 | `location_info` | 위치, 주소, 찾아가는 방법 | "어디에 있어?", "주소가 뭐야?", "어떻게 가?" | detailCommon2 (addr1, mapx, mapy) |
 | `general_info` | 장소 개요, 특징, 일반 설명 | "어떤 곳이야?", "뭐 하는 곳이야?" | detailCommon2 (overview) |
+| `review_opinion` | 그 장소의 후기·평판. 관광 안내문에 없는 맛·분위기·카공·동반자 적합성 | "뭐가 맛있대?", "카공하기 좋대?", "아이와 가기 좋대?" | `place_embeddings` 벡터 검색 + LLM 근거 선별. 상세는 D-127 |
 | `concentration` | 특정 장소/지역의 방문객 혼잡도 예측 | "사람 많아?", "붐빌까?", "혼잡해?" | get_concentration (집중률 API). 상세는 [concentration-conditions.md §3](./concentration-conditions.md#3-info-확장--question_type-concentration) 참고 |
 | `realtime_commercial` | 특정 업종 주변의 현재 상권 활동과 인근 인구 혼잡도 예측 | "용리단길 카페 사람 많아?", "광장시장 한식 붐벼?" | 서울시 실시간 도시데이터(`citydata`). 개별 매장 정보가 아니라 가까운 서울시 제공 상권의 요청 업종 카드 소비 활동을 안내하고, 같은 지역의 향후 12시간 인구 혼잡도 예측을 함께 제공 |
 | `realtime_parking` | 주변 주차장의 현재 주차 대수·총면수 | "지금 경복궁 주변 주차 자리 있어?" | 서울시 `PRK_STTS`. 실시간 갱신 값이 없으면 총면수·유료 여부만 안내 |
@@ -422,7 +424,8 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 - 자정을 넘기는 운영시간
 - 개별 매장 단위 실시간 혼잡도 (카페·커피 업종은 `question_type=realtime_commercial`로 가까운 서울시 제공 상권의 지역·업종 활동을 안내할 수 있으나, 매장 자체의 인원·대기열은 제공하지 않음)
 - 예약 가능 여부
-- 리뷰/평점 정보
+- 평점 수치(별점 평균 등). 후기 **문장**을 근거로 한 답변은 `question_type=review_opinion`이
+  처리한다(D-127) — 점수를 집계해 보여주지 않을 뿐이다
 
 운영시간/휴무 데이터는 TourAPI 원본의 자유 서술 텍스트를 그대로 제공한다. 요일별 자동 파싱은 MVP에서 수행하지 않는다.
 

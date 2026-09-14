@@ -56,3 +56,27 @@ it("태그가 하나도 없으면 표 자체를 그리지 않는다", () => {
 
   expect(container).toBeEmptyDOMElement();
 });
+
+it("질문과 일치한 취향 태그만 강조한다", () => {
+  render(
+    <PreferenceTagSummaryTable
+      items={[{
+        place_id: "place-1",
+        name: "가족식당",
+        preference_tags: [
+          { code: "with_kids", label: "아이와 함께하기 좋은", mention_count: 5, is_query_match: true },
+          { code: "group_gathering", label: "모임하기 좋은", mention_count: 9 },
+        ],
+      }]}
+      language="ko"
+    />,
+  );
+
+  expect(screen.getByText("아이와 함께하기 좋은").closest("span")).toHaveAttribute(
+    "data-query-match",
+    "true",
+  );
+  expect(screen.getByText("모임하기 좋은").closest("span")).not.toHaveAttribute(
+    "data-query-match",
+  );
+});

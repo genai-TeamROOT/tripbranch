@@ -352,6 +352,27 @@ def build_info_answer_instruction(question_type: str) -> str:
     )
 
 
+def build_review_evidence_filter_instruction() -> str:
+    """후기 문장 중 쓸 수 있는 것만 번호로 고르게 하는 system instruction.
+
+    **페르소나를 꽂지 않는다.** 사용자에게 보이는 문장을 만드는 호출이 아니라
+    판정만 하는 호출이라 말투가 필요 없다 — `build_place_reason_instruction()`이
+    입력 토큰을 이유로 뺀 것과 같은 판단이다.
+    """
+
+    return render_text("info/review_evidence_filter.md")
+
+
+def build_review_answer_instruction() -> str:
+    """선별된 후기 문장만 근거로 답변을 만드는 system instruction."""
+
+    return render_text(
+        "info/review_answer_instruction.md",
+        chatbot_name=CHATBOT_NAME,
+        persona=load_text("_shared/persona/trivi.md"),
+    )
+
+
 def format_mode_judge_context(
     segments: Sequence[SegmentModeInput], context: ModeJudgmentContext
 ) -> str:

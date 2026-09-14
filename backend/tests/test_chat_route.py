@@ -197,6 +197,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "stroller_rental": None,
             "guide_dog": None,
             "preference_insights": [],
+            "review_sources": [],
             "population_current_level": None,
             "population_current_message": None,
             "population_observed_at": None,
