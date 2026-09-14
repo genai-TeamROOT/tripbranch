@@ -154,6 +154,13 @@ class Settings(BaseSettings):
     # 배포에서도 서버는 떠야 하므로 켜는 쪽을 명시적 선택으로 둔다.
     taste_evidence_enabled: bool = False
 
+    # 후기로 답하는 INFO 질의(question_type=review_opinion)의 스위치.
+    # `taste_evidence_enabled`와 따로 두는 이유는 두 기능이 같은 검색을 쓰지만
+    # 실패했을 때 사용자가 보는 것이 다르기 때문이다 — 추천은 취향 축이 빠진
+    # 순위가 나가고, 이쪽은 답변 자체가 "후기에서 확인하지 못했다"가 된다.
+    # 끄면 그 질문도 기존 상세 조회(관광 API 소개글)로 답한다.
+    review_answer_enabled: bool = True
+
     # 장소 사진 분위기 기능의 스위치. 축 점수 조회(발화 경로)와 사진 최근접
     # 검색(사진 경로)을 함께 켜고 끈다. 기본 off인 이유는 취향 쪽과 같다 —
     # 사진 경로가 SigLIP을 서버 프로세스에 상주시키기 때문이다.

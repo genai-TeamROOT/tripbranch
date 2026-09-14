@@ -6,7 +6,11 @@
  */
 
 import { Fragment, useState } from "react";
-import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import type {
+  InfoPlaceCard as InfoPlaceCardData,
+  RealtimeInfoDetailItem,
+  ReviewSource,
+} from "../../types";
 import { useTripState } from "../../state/TripContext";
 import { useNaverDirections } from "../../hooks/useNaverDirections";
 import { openNaverMapSearch } from "../../utils/naverDirections";
@@ -543,6 +547,80 @@ function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
   );
 }
 
+const REVIEW_SOURCE_LABELS: Record<string, { ko: string; en: string }> = {
+  naver_post: { ko: "네이버 블로그", en: "Naver blog" },
+  google_review: { ko: "Google 리뷰", en: "Google review" },
+};
+
+function reviewSourceLabel(sourceType: string | null | undefined, isEn: boolean) {
+  const label = REVIEW_SOURCE_LABELS[sourceType ?? ""];
+  if (label) return isEn ? label.en : label.ko;
+  return isEn ? "Visitor review" : "방문자 후기";
+}
+
+/*
+ * 후기로 답한 턴에만 그린다. 답변 문장은 링크도 인용도 말하지 않기로 했고(그래야
+ * 답이 읽기 쉽다), 그 근거를 여기서 인용으로 보여준다. 상세 모달의 "방문자 후기에
+ * 나타난 특징"과 같은 인용 모양을 쓴다 — 같은 성격의 값이 두 자리에서 다르게
+ * 보이면 사용자가 다른 것으로 읽는다.
+ */
+function ReviewSourceList({
+  sources,
+  placeName,
+  isEn,
+}: {
+  sources: ReviewSource[];
+  placeName: string | null;
+  isEn: boolean;
+}) {
+  if (sources.length === 0) return null;
+  /*
+   * 장소 이름만 쓰고 질문 내용은 넣지 않는다. 질문 원문(specific_question)은
+   * 키워드가 아니라 문장이고 형태도 제각각이라("창경궁 야간관람 어때?" / "아이와
+   * 가기 좋대?") 그대로 붙이면 "…어때? 관련 후기예요"가 된다. 키워드만 뽑는 것도
+   * "뭐가 맛있대?"류에서 건질 말이 없어 문구가 더 어색해진다.
+   */
+  const heading = placeName
+    ? isEn
+      ? `${placeName} reviews related to your question`
+      : `물어보신 내용과 관련된 ${placeName} 후기예요`
+    : isEn
+      ? "Reviews related to your question"
+      : "물어보신 내용과 관련된 후기예요";
+  return (
+    <section className="border-t border-border px-4 py-3">
+      <p className="text-[11px] font-semibold text-muted">{heading}</p>
+      <ul className="mt-2 grid gap-2">
+        {sources.map((source, index) => (
+          <li
+            key={source.url ?? `${index}-${source.text.slice(0, 12)}`}
+            className="rounded-xl bg-chip px-3 py-2.5"
+          >
+            <blockquote className="border-l-2 border-brand/40 pl-2.5 text-xs leading-5 text-ink">
+              {`“${source.text}”`}
+            </blockquote>
+            <div className="mt-1.5 pl-2.5 text-[11px] text-muted">
+              {source.url ? (
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-semibold text-brand hover:underline"
+                >
+                  {reviewSourceLabel(source.source_type, isEn)} ↗
+                </a>
+              ) : (
+                <span>{reviewSourceLabel(source.source_type, isEn)}</span>
+              )}
+              {source.published_at ? ` · ${source.published_at.slice(0, 10)}` : ""}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
   const { language, device_location } = useTripState();
@@ -628,6 +706,11 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </dl>
       ) : null}
 
+      <ReviewSourceList
+        sources={card.review_sources ?? []}
+        placeName={card.place_name ?? null}
+        isEn={isEn}
+      />
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />
       <SeoulRealtimeSummarySection card={card} />

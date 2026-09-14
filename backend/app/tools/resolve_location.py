@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import combinations
 
-from app.domain.models import GeocodeResult, LocalSearchPlace
+from app.domain.models import GeocodeResult, LocalSearchPlace, StoredPlaceLocation
 from app.errors import AppError
 from app.geo import haversine_km
 from app.providers.contracts import (
@@ -242,6 +242,79 @@ def _is_same_transit_place(places: tuple[LocalSearchPlace, ...]) -> bool:
         haversine_km(first.latitude, first.longitude, second.latitude, second.longitude)
         <= _SAME_PLACE_RADIUS_KM
         for first, second in combinations(located, 2)
+    )
+
+
+def _split_district_hint(name: str) -> tuple[str, str | None]:
+    """`"전주식당 (종로구)"`을 `("전주식당", "종로구")`로 가른다. 없으면 구는 None.
+
+    되묻기 버튼 라벨이 그대로 다음 턴의 검색어가 되기 때문에 필요하다. 이름이 같은 다른
+    가게를 가리려고 라벨에 구를 붙였는데(_stored_place_label), 그 문자열로 저장소를 찾으면
+    그런 이름이 없어 해소가 실패한다. 여기서 다시 갈라 이름으로 찾고 구로 고른다.
+
+    괄호 안이 자치구가 아니면 건드리지 않는다 — 상호 자체에 괄호가 들어간 이름
+    ("광장(전통)시장")을 잘라내면 안 된다.
+    """
+
+    if not name.endswith(")") or "(" not in name:
+        return name, None
+    head, _, tail = name.rpartition("(")
+    district = tail[:-1].strip()
+    if not district.endswith(("구", "군")) or len(district) < 2:
+        return name, None
+    return head.strip(), district
+
+
+def _stored_place_label(place: StoredPlaceLocation, *, add_address: bool) -> str:
+    """되묻기 버튼에 실을 이름. 필요하면 주소를 덧붙여 서로 구분되게 한다.
+
+    이름이 같은 서로 다른 가게가 실제로 있다 — "광양불고기"가 양천구와 송파구에, "전주식당"이
+    종로구와 중구에 있다(2026-09-11 저장소 전량 확인). 이름만 실으면 두 버튼이 같은 글자라
+    사용자가 고를 수가 없고, 어느 쪽을 눌러도 같은 이름으로 다시 조회돼 제자리로 돌아온다.
+
+    **자치구까지만 붙인다.** 전체 주소를 실으면 버튼이 길어져 읽기 나쁘고, 같은 이름이 한 구
+    안에 둘 있는 경우는 관측되지 않았다. 주소가 없거나 구를 못 찾으면 이름만 쓴다.
+
+    시·도 토큰은 건너뛴다. "서울특별시 양천구 ..."에서 앞부터 훑어 "시"로 끝나는 것을 집으면
+    둘 다 "(서울특별시)"가 되어 라벨이 여전히 같아진다 — 붙이는 뜻이 사라진다.
+    """
+
+    if not add_address or not place.address:
+        return place.title
+    district = next(
+        (
+            token
+            for token in place.address.split()
+            if token.endswith(("구", "군")) and len(token) > 1
+        ),
+        None,
+    )
+    return f"{place.title} ({district})" if district else place.title
+
+
+def _is_same_stored_place(places: tuple[StoredPlaceLocation, ...]) -> bool:
+    """이름이 같은 저장소 행들이 사실은 한 장소인가.
+
+    TourAPI가 같은 가게를 분류만 달리해 두 번 주는 일이 있다. "오설록 티하우스 북촌점"은
+    음식점(39)과 쇼핑(38)으로 각각 적재돼 있고 좌표는 8m 떨어져 있다. 그런 행이 둘이라고
+    "여러 장소 중 어느 곳"이라 되물으면, 선택지가 같은 이름 둘이라 화면에는 하나로 보이고
+    눌러도 같은 조회가 다시 돌아 영영 끝나지 않는다(2026-09-11 실측).
+
+    **이름이 같다고 다 한 장소는 아니다.** 저장소 전량을 재보니 같은 이름 29건 중 22건은
+    343m 안의 같은 곳이고, 7건은 진짜 다른 가게였다 — "광양불고기"가 양천구와 송파구에
+    23.7km 떨어져 있고, "전주식당"은 종로구와 중구에 1.7km 떨어져 있다. 그래서 이름이
+    아니라 거리로 가른다. 두 무리 사이가 343m와 1.7km로 넉넉히 벌어져 있다.
+
+    기준 거리는 역 후보를 묶을 때 쓰는 값과 같다(_SAME_PLACE_RADIUS_KM). 좌표가 없으면
+    거리를 확인할 수 없으므로 묶지 않는다 — 되묻는 편이 임의로 고르는 것보다 낫다.
+    """
+
+    if len(places) < 2:
+        return True
+    return all(
+        haversine_km(first.latitude, first.longitude, second.latitude, second.longitude)
+        <= _SAME_PLACE_RADIUS_KM
+        for first, second in combinations(places, 2)
     )
 
 
@@ -733,13 +806,22 @@ class ResolveLocationTool:
         """
         if self._place_repository is None:
             return None
+        # 되묻기 버튼으로 돌아온 이름은 "전주식당 (종로구)" 꼴이다. 이름으로 찾고 구로 고른다.
+        search_name, district_hint = _split_district_hint(lookup_name or requested_query)
         try:
-            matches = await self._place_repository.find_active_places_by_name(
-                lookup_name or requested_query
-            )
+            matches = await self._place_repository.find_active_places_by_name(search_name)
         except AppError:
             # 저장소 장애만으로 주소 기반 지오코딩까지 막지는 않는다.
             return None
+        if district_hint:
+            narrowed = tuple(
+                place
+                for place in matches
+                if place.address and district_hint in place.address
+            )
+            # 구로 좁혀 아무것도 안 남으면 좁히기 전으로 되돌린다 — 주소 표기가
+            # 달라졌을 때 답을 통째로 잃는 것보다 낫다.
+            matches = narrowed or matches
         if not matches:
             return None
         metadata = (
@@ -754,7 +836,10 @@ class ResolveLocationTool:
                 retrieved_at=datetime.now(UTC),
             ),
         )
-        if len(matches) > 1:
+        # 같은 장소가 분류만 달리해 두 번 적재된 경우는 되묻지 않는다(_is_same_stored_place).
+        # 그때 되물어 봐야 선택지가 같은 이름 둘이라 화면에는 하나로 보이고, 눌러도 같은
+        # 조회가 다시 돌아 빠져나갈 수 없다.
+        if len(matches) > 1 and not _is_same_stored_place(matches):
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
@@ -762,7 +847,10 @@ class ResolveLocationTool:
                 retryable=False,
                 details={
                     "reason": "ambiguous_location",
-                    "candidate_names": _join_candidate_names(place.title for place in matches),
+                    # 이름이 같은 다른 가게라 주소를 붙여 구분한다(_stored_place_label).
+                    "candidate_names": _join_candidate_names(
+                        _stored_place_label(place, add_address=True) for place in matches
+                    ),
                 },
                 provider_metadata=metadata,
             )

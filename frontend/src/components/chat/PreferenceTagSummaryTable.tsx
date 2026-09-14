@@ -74,7 +74,12 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
                     {item.preference_tags?.slice(0, 2).map((tag) => (
                       <span
                         key={tag.code}
-                        className="flex items-center gap-1 whitespace-nowrap rounded-full bg-sky-light px-2.5 py-1 text-[11px] font-semibold text-label"
+                        data-query-match={tag.is_query_match ? "true" : undefined}
+                        className={`flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                          tag.is_query_match
+                            ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/30"
+                            : "bg-sky-light text-label"
+                        }`}
                       >
                         {tag.label}
                         <span className="font-normal text-muted">({tag.mention_count})</span>

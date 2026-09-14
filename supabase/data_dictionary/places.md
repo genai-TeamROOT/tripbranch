@@ -8,7 +8,7 @@
 
 | 필드 | 타입 | NULL 허용 | 정의 | 값 예시 | 활용 예시 |
 | --- | --- | --- | --- | --- | --- |
-| `content_id` | text | 아니오 | TourAPI `contentid`. 이 저장소 전체에서 장소를 가리키는 기준 식별자이며 PK입니다. | `1013079` | `place_google_profiles`·`place_barrier_free`·`place_enrichments`를 조인하는 키로 씁니다. |
+| `content_id` | text | 아니오 | TourAPI `contentid`. 이 저장소 전체에서 장소를 가리키는 기준 식별자이며 PK입니다. | `1013079` | `place_barrier_free`·`place_enrichments`를 조인하는 키로 씁니다. |
 | `content_type_id` | text | 아니오 | TourAPI `contenttypeid`. 12 관광지, 14 문화시설, 15 축제공연행사, 25 여행코스, 28 레포츠, 32 숙박, 38 쇼핑, 39 음식점입니다. | `38` | 음식점만 골라 식사 후보를 만드는 등 1차 유형 필터에 씁니다. |
 | `title` | text | 아니오 | 장소명입니다. 공백만 있는 값은 제약으로 막습니다. | `숭례문(남대문) 수입상가` | 사용자 화면 표기와 외부 API 검색어의 원본으로 씁니다. |
 | `address` | text | 예 | TourAPI `addr1` 도로명 주소입니다. | `서울특별시 중구 남대문시장4길 21 (남창동)` | 길찾기 출발·도착지 문자열과 지역 확인에 씁니다. |
