@@ -18,12 +18,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.accounts.deletion import delete_account
 from app.auth.admin import AccountAdminError
 from app.auth.dependency import RequiredPrincipal
+from app.errors import AppError
 from app.state.errors import StateStoreError
 
 router = APIRouter(tags=["account"])
@@ -38,10 +39,14 @@ class DeleteAccountResponse(BaseModel):
 
 @router.delete("/account", response_model=DeleteAccountResponse)
 async def delete_my_account(principal: RequiredPrincipal) -> DeleteAccountResponse:
+    # **HTTPException이 아니라 AppError를 쓴다.** main.py의 HTTPException 핸들러는
+    # detail을 버리고 "요청 내용을 확인해주세요"로 덮어써서, 서버 쪽 실패(503)인데도
+    # 사용자 입력이 잘못된 것처럼 보인다. AppError만 message가 그대로 화면에 닿는다.
     if principal.is_anonymous:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="게스트는 탈퇴할 계정이 없어요.",
+        raise AppError(
+            code="account_deletion_not_applicable",
+            message="게스트는 탈퇴할 계정이 없어요.",
+            status_code=403,
         )
 
     try:
@@ -49,9 +54,11 @@ async def delete_my_account(principal: RequiredPrincipal) -> DeleteAccountRespon
     except (StateStoreError, AccountAdminError) as exc:
         # **원문을 그대로 내보내지 않는다.** 저장소 오류 문자열에 내부 경로가 섞인다.
         # 데이터를 먼저 지우는 순서라, 여기서 실패해도 계정은 살아 있어 다시 누르면 된다.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="탈퇴 처리를 마치지 못했어요. 잠시 후 다시 시도해주세요.",
+        raise AppError(
+            code="account_deletion_failed",
+            message="탈퇴 처리를 마치지 못했어요. 잠시 후 다시 시도해주세요.",
+            status_code=503,
+            retryable=True,
         ) from exc
 
     return DeleteAccountResponse(

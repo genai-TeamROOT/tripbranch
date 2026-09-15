@@ -96,6 +96,41 @@ def test_게스트는_탈퇴할_수_없다(signing_key, store, admin_log) -> Non
     assert admin_log == []
 
 
+# ---------------------------------------------------------------- 오류 문구
+
+
+# **HTTPException을 쓰면 여기서 깨진다.** main.py의 HTTPException 핸들러가 detail을
+# 버리고 "요청 내용을 확인해주세요"로 덮어써서, 서버가 실패한 503인데도 사용자 입력이
+# 잘못된 것처럼 읽힌다. 상태 코드만 보는 테스트로는 안 잡혀서 문구 자체를 고정한다.
+
+
+def test_게스트_거부_사유가_그대로_화면에_닿는다(signing_key, store, admin_log) -> None:
+    _seed(store, ME, "s-1", title="내 대화")
+
+    response = TestClient(app).delete(
+        "/api/account", headers=_headers(signing_key, ME, is_anonymous=True)
+    )
+
+    assert "게스트는 탈퇴할 계정이 없어요." in response.text
+    assert "요청 내용을 확인해주세요" not in response.text
+
+
+def test_실패_사유가_그대로_화면에_닿는다(signing_key, store, monkeypatch) -> None:
+    monkeypatch.setattr(
+        deletion,
+        "AccountAdminClient",
+        lambda *args, **kwargs: _FakeAdmin([], fail=True),
+    )
+    _seed(store, ME, "s-1", title="내 대화")
+
+    response = TestClient(app).delete(
+        "/api/account", headers=_headers(signing_key, ME)
+    )
+
+    assert "탈퇴 처리를 마치지 못했어요" in response.text
+    assert "요청 내용을 확인해주세요" not in response.text
+
+
 # ---------------------------------------------------------------- 가장 중요한 것
 
 
