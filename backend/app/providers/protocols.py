@@ -298,6 +298,32 @@ class LLMProvider(Protocol):
         """검증된 INFO 필드만 근거로 한 안내 답변을 텍스트 조각으로 전달한다."""
         ...
 
+    async def filter_review_evidence(
+        self,
+        *,
+        place_name: str,
+        specific_question: str,
+        snippets: Sequence[str],
+    ) -> ProviderResult[tuple[int, ...]]:
+        """후기 문장 중 답변 근거로 쓸 수 있는 것의 번호(1부터)를 고른다.
+
+        검색이 찾아온 문장에는 그 장소가 아니라 근처 가게 이야기가 섞여 있다
+        (`docs/근거-장소연결-오염-점검-20260914.md`). 유사도로는 갈리지 않아
+        판정을 여기서 한다. 빈 튜플이면 답변을 만들지 않는다는 뜻이다.
+        """
+        ...
+
+    def stream_review_answer(
+        self,
+        *,
+        place_name: str,
+        specific_question: str | None,
+        evidence: Sequence[str],
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> AsyncIterator[str]:
+        """선별된 후기 문장만 근거로 한 답변을 텍스트 조각으로 전달한다."""
+        ...
+
     async def generate_compare_summary(
         self,
         comparison: ComparisonResult,

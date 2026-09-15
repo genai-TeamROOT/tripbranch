@@ -134,6 +134,9 @@ class PreferenceTagSummary(BaseModel):
     code: str
     label: str
     mention_count: int = Field(ge=0)
+    # 이번 발화에서 요청한 취향과 실제 장소 태그가 일치할 때만 true다.
+    # 없는 태그를 화면에 만들어내지 않고, 보유 태그의 정렬·강조에만 사용한다.
+    is_query_match: bool = False
 
 
 class RecommendationItem(BaseModel):
@@ -575,6 +578,10 @@ class QuestionType(StrEnum):
     EVENT = "event"
     LOCATION_INFO = "location_info"
     GENERAL_INFO = "general_info"
+    # 후기·평판을 묻는 질문("뭐가 맛있대?", "카공하기 좋대?"). 관광 API에 없는 것을
+    # 묻기 때문에 place_embeddings의 블로그·리뷰 문장으로 답한다. 설비 자체를 묻는
+    # 질문은 전언 말투가 붙어도 FACILITY다 - 답하는 데이터가 다르다.
+    REVIEW_OPINION = "review_opinion"
     CONCENTRATION = "concentration"
     # 서울시 실시간 도시데이터의 지역·업종별 카드 소비 활동. 특정 매장 자체의
     # 혼잡도가 아니라, 매장 좌표와 가까운 제공 상권의 대체 정보다.
@@ -1346,6 +1353,22 @@ class PlacePreferenceInsight(BaseModel):
     evidence: list[PreferenceEvidenceQuote] = Field(default_factory=list)
 
 
+class ReviewSource(BaseModel):
+    """후기 답변의 근거가 된 문장 하나와 그 출처.
+
+    **문장을 함께 싣는다.** 링크만 주면 사용자가 "무슨 근거로 이렇게 답했나"를
+    확인하려고 블로그를 열어 긴 글에서 해당 대목을 직접 찾아야 한다. 답변 아래에
+    인용으로 보여주고, 링크는 더 읽고 싶을 때 쓴다.
+    """
+
+    text: str
+    # 원문 글 주소. 초기 적재분 일부는 링크가 없어 인용만 보여준다.
+    url: str | None = None
+    # 네이버 블로그인지 구글 리뷰인지. 화면이 "네이버 블로그" 같은 라벨을 붙인다.
+    source_type: str | None = None
+    published_at: str | None = None
+
+
 class InfoPlaceCard(BaseModel):
     """INFO 장소 상세 카드용 A의 최종 응답 모델.
 
@@ -1398,6 +1421,10 @@ class InfoPlaceCard(BaseModel):
     guide_dog: str | None = None
     # 후기에서 추출한 취향 태그·대표 근거. 상세 모달 요청에서만 채운다.
     preference_insights: list[PlacePreferenceInsight] = Field(default_factory=list)
+    # 후기로 답한 턴에서 그 답의 근거가 된 글. 답변 본문은 링크를 말하지 않고
+    # 화면이 이 목록으로 "출처"를 그린다. 링크가 없는 근거는 담지 않는다 —
+    # 걸 곳이 없으면 출처로 보여줄 것도 없다.
+    review_sources: list[ReviewSource] = Field(default_factory=list)
     population_current_level: str | None = None
     population_current_message: str | None = None
     population_observed_at: str | None = None

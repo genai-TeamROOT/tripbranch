@@ -33,11 +33,10 @@ async def test_find_preference_tags_groups_rows_in_display_order() -> None:
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        repository = SupabasePlaceRepository(
-            "https://example.supabase.co", "service-key", client
-        )
+        repository = SupabasePlaceRepository("https://example.supabase.co", "service-key", client)
         result = await repository.find_preference_tags(["126499"])
 
     assert seen[0].url.path.endswith("/rest/v1/place_preference_tags")
+    assert seen[0].url.params["limit"] == "33"
     assert [row["preference_code"] for row in result["126499"]] == ["nature", "walk"]
     assert result["126499"][0]["mention_count"] == 16

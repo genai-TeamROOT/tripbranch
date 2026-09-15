@@ -92,6 +92,8 @@ export interface PreferenceTagSummary {
   code: string;
   label: string;
   mention_count: number;
+  /** 이번 발화의 취향과 실제 장소 태그가 일치할 때만 true. */
+  is_query_match?: boolean;
 }
 
 /*
@@ -304,6 +306,18 @@ export interface PreferenceEvidenceQuote {
   source_url?: string | null;
 }
 
+/**
+ * 후기 답변의 근거가 된 문장 하나와 그 출처. 링크만 주면 사용자가 긴 블로그 글에서
+ * 해당 대목을 직접 찾아야 해서, 문장을 함께 받아 인용으로 보여준다.
+ * 초기 적재분 일부는 링크가 없어 `url`이 비는데, 그때는 인용만 그린다.
+ */
+export interface ReviewSource {
+  text: string;
+  url?: string | null;
+  source_type?: string | null;
+  published_at?: string | null;
+}
+
 export interface PlacePreferenceInsight {
   code: string;
   label: string;
@@ -360,6 +374,11 @@ export interface InfoPlaceCard {
   stroller_rental?: string | null;
   guide_dog?: string | null;
   preference_insights?: PlacePreferenceInsight[];
+  /**
+   * 후기로 답한 턴에서 그 답의 근거가 된 글. 답변 본문은 링크를 말하지 않고 이
+   * 목록으로 "출처"를 그린다. 링크가 없는 근거는 백엔드가 담지 않는다.
+   */
+  review_sources?: ReviewSource[];
   population_current_level?: string | null;
   population_current_message?: string | null;
   population_observed_at?: string | null;

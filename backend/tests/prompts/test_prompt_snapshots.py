@@ -92,6 +92,21 @@ def test_place_reason_snapshot() -> None:
     _assert_snapshot("place_reason", gemini_prompts.build_place_reason_instruction())
 
 
+def test_review_evidence_filter_snapshot() -> None:
+    """근거 선별은 판정만 하는 호출이라 페르소나도 인자도 없다."""
+
+    _assert_snapshot(
+        "review_evidence_filter",
+        gemini_prompts.build_review_evidence_filter_instruction(),
+    )
+
+
+def test_review_answer_snapshot() -> None:
+    _assert_snapshot(
+        "review_answer", gemini_prompts.build_review_answer_instruction()
+    )
+
+
 @pytest.mark.parametrize(("name", "criteria"), fixtures.COMPARE_SUMMARY_CRITERIA)
 def test_compare_summary_snapshot(name: str, criteria) -> None:
     _assert_snapshot(name, gemini_prompts.build_compare_summary_instruction(criteria))
