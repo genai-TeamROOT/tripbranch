@@ -143,7 +143,7 @@ export function NewPasswordPage() {
           </div>
           {/* 회원가입 화면과 같은 조건이다 — 한쪽만 적으면 두 화면이 다른 말을 한다. */}
           <p id="new-password-help" className="text-xs leading-relaxed text-muted">
-            8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요.
+            8자 이상으로 입력해주세요. 이미 유출된 비밀번호는 쓸 수 없어요.
           </p>
         </div>
 
