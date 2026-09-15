@@ -707,6 +707,13 @@ class PlaceEvidenceSnippet:
     source_url: str | None
     similarity: float
     published_at: datetime | None
+    # 무엇에서 나온 문장인가(naver_post / google_review / tour_overview). 후기로 답하는
+    # 경로가 관광 안내문(tour_overview)을 근거에서 빼는 데 쓴다 - 그건 이미 기존 INFO
+    # 경로가 쓰는 텍스트이고 출처로 걸 링크도 없다. 추천 채점은 이 값을 보지 않는다.
+    source_type: str | None = None
+    # 같은 글에서 나온 조각을 묶는 키. RPC가 글당 한 문장만 남기므로 서로 다른 글에서
+    # 왔는지 세는 데 쓴다.
+    document_id: str | None = None
 
 
 @dataclass(frozen=True)

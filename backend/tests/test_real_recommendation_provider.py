@@ -284,6 +284,103 @@ def _unavailable_concentration() -> CandidateEnrichmentResponse:
     )
 
 
+class _FakePreferenceTagRepository:
+    async def find_preference_tags(self, content_ids: list[str]):
+        return {
+            place_id: (
+                {
+                    "preference_code": "quiet",
+                    "preference_label": "조용히 쉬기 좋은",
+                    "display_rank": 1,
+                    "mention_count": 12,
+                },
+                {
+                    "preference_code": "date",
+                    "preference_label": "데이트하기 좋은",
+                    "display_rank": 2,
+                    "mention_count": 10,
+                },
+                {
+                    "preference_code": "cozy",
+                    "preference_label": "아늑하게 머물기 좋은",
+                    "display_rank": 3,
+                    "mention_count": 8,
+                },
+                {
+                    "preference_code": "good_value",
+                    "preference_label": "가성비가 좋은",
+                    "display_rank": 4,
+                    "mention_count": 7,
+                },
+                {
+                    "preference_code": "group_gathering",
+                    "preference_label": "모임하기 좋은",
+                    "display_rank": 5,
+                    "mention_count": 6,
+                },
+                {
+                    "preference_code": "with_kids",
+                    "preference_label": "아이와 함께하기 좋은",
+                    "display_rank": 6,
+                    "mention_count": 5,
+                },
+            )
+            for place_id in content_ids
+        }
+
+
+@pytest.mark.asyncio
+async def test_requested_companion_tag_moves_to_front_and_is_marked() -> None:
+    """상위 5개 밖의 요청 태그도 가져와 첫 칩으로 노출한다."""
+    provider = RealRecommendationProvider(
+        preference_tags=_FakePreferenceTagRepository(),  # type: ignore[arg-type]
+    )
+    result = await provider.recommend(
+        UserConditions(companion="child", taste_query="아이랑 가기 좋은"),
+        _context(place_ids=["a"]),
+        excluded_place_ids=[],
+    )
+
+    item = [*result.recommendations, *result.unverified_recommendations][0]
+    assert [tag.code for tag in item.preference_tags] == [
+        "with_kids",
+        "quiet",
+        "date",
+        "cozy",
+        "good_value",
+    ]
+    assert item.preference_tags[0].is_query_match is True
+    assert all(tag.is_query_match is False for tag in item.preference_tags[1:])
+
+
+@pytest.mark.asyncio
+async def test_missing_requested_tag_does_not_create_a_fake_tag() -> None:
+    class _WithoutKids(_FakePreferenceTagRepository):
+        async def find_preference_tags(self, content_ids: list[str]):
+            rows = await super().find_preference_tags(content_ids)
+            return {
+                place_id: tuple(row for row in values if row["preference_code"] != "with_kids")
+                for place_id, values in rows.items()
+            }
+
+    provider = RealRecommendationProvider(preference_tags=_WithoutKids())  # type: ignore[arg-type]
+    result = await provider.recommend(
+        UserConditions(companion="child", taste_query="아이와 가기 좋은"),
+        _context(place_ids=["a"]),
+        excluded_place_ids=[],
+    )
+
+    item = [*result.recommendations, *result.unverified_recommendations][0]
+    assert [tag.code for tag in item.preference_tags] == [
+        "quiet",
+        "date",
+        "cozy",
+        "good_value",
+        "group_gathering",
+    ]
+    assert all(tag.is_query_match is False for tag in item.preference_tags)
+
+
 @pytest.mark.asyncio
 async def test_rerank_with_concentration_passes_origin_name_from_context(
     monkeypatch: pytest.MonkeyPatch,
@@ -629,9 +726,7 @@ async def test_budget_speed_follows_the_radius_not_the_measured_mode(
     assert captured["travel_budget_speed_km_per_min"] == pytest.approx(20 / 60)
 
     captured = await _captured_call(monkeypatch, UserConditions())
-    assert captured["travel_budget_speed_km_per_min"] == pytest.approx(
-        WALKING_SPEED_KM_PER_MINUTE
-    )
+    assert captured["travel_budget_speed_km_per_min"] == pytest.approx(WALKING_SPEED_KM_PER_MINUTE)
 
 
 # --- 썸네일 병합(A가 C의 RecommendationCardTool을 빌려 D 결과에 붙인다) --------

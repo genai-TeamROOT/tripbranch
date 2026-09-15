@@ -52,6 +52,68 @@ logger = logging.getLogger(__name__)
 
 _RECOMMENDATION_LIMIT = 5
 
+_COMPANION_PREFERENCE_CODES = {
+    "solo": "alone",
+    "couple": "date",
+    "friend": "with_friends",
+    "parent": "with_parents",
+    "child": "with_kids",
+}
+
+# LLM이 만든 taste_query는 자연어이므로 DB 코드와 직접 비교할 수 없다. 공백·기호를
+# 없앤 뒤 대표 표현을 찾는다. 동행은 위 구조화 companion 값을 우선 사용한다.
+_REQUESTED_PREFERENCE_ALIASES: dict[str, tuple[str, ...]] = {
+    "date": ("데이트", "연인", "커플", "소개팅"),
+    "with_parents": ("부모님", "어르신", "엄마랑", "아빠랑", "효도"),
+    "with_friends": ("친구와", "친구랑", "친구들", "우정"),
+    "with_kids": ("아이와", "아이랑", "아이들", "아기와", "아기랑", "어린이", "키즈"),
+    "alone": ("혼자", "나홀로", "혼밥", "혼술", "혼카페"),
+    "photo_spot": ("사진찍", "포토존", "인생샷", "인생사진", "셀카"),
+    "good_view": ("전망", "경치", "풍경", "조망", "야경", "뷰좋"),
+    "healing": ("힐링", "휴식", "쉬기좋", "여유", "편안", "재충전"),
+    "quiet": ("조용", "한적", "고요", "차분", "붐비지", "북적이지"),
+    "experience": ("체험", "원데이", "클래스", "워크숍", "공방"),
+    "night_visit": ("야간", "밤에", "밤산책", "저녁데이트", "일몰", "노을"),
+    "indoor": ("실내", "비오는날", "비올때", "날씨상관", "우천"),
+    "walk": ("산책", "걷기", "둘레길", "트레킹", "거닐"),
+    "cozy": ("아늑", "포근", "아기자기", "정겨", "오붓"),
+    "unique": ("이색", "독특", "색다른", "유니크", "특이"),
+    "nature": ("자연", "숲", "녹지", "나무", "초록"),
+    "culture_art": ("문화예술", "전시", "미술", "공연", "박물관", "갤러리"),
+    "food_exploration": ("맛집투어", "먹거리", "디저트", "미식", "식도락"),
+    "conversation": ("대화하기", "수다떨", "이야기하기"),
+    "comfortable_seating": ("좌석편", "앉기편", "의자편"),
+    "trendy_hotspot": ("핫플", "인스타", "트렌디", "힙한"),
+    "group_gathering": ("모임하기", "단체모임", "회식", "단체로"),
+    "spacious": ("넓고쾌적", "넓은곳", "공간넓"),
+    "music_atmosphere": ("음악듣", "음악감상", "라이브음악", "LP음악"),
+    "good_value": ("가성비", "가격좋", "저렴"),
+    "study": ("카공", "공부하기", "스터디"),
+    "work": ("작업하기", "노트북하기", "업무하기"),
+    "private": ("프라이빗", "개인실", "룸있는", "독립공간"),
+    "seasonal_visit": ("봄에", "여름에", "가을에", "겨울에", "단풍", "벚꽃"),
+    "long_stay": ("오래머물", "장시간", "오래있"),
+    "reading": ("책읽", "독서하기"),
+    "picnic": ("피크닉", "돗자리", "도시락먹"),
+    "lively": ("활기찬", "신나는", "북적이는", "생동감"),
+}
+
+
+def _compact_preference_query(value: str | None) -> str:
+    return "".join(character for character in (value or "").lower() if character.isalnum())
+
+
+def _requested_preference_codes(conditions: UserConditions) -> tuple[str, ...]:
+    requested: list[str] = []
+    companion = str(conditions.companion.value) if conditions.companion is not None else ""
+    if code := _COMPANION_PREFERENCE_CODES.get(companion):
+        requested.append(code)
+    query = _compact_preference_query(conditions.taste_query)
+    for code, aliases in _REQUESTED_PREFERENCE_ALIASES.items():
+        if code not in requested and any(alias.lower() in query for alias in aliases):
+            requested.append(code)
+    return tuple(requested)
+
 
 # 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
 # place_tag도 place_type도 모르는 요청의 마지막 폴백 — 아예 안 붙이는 것보다는
@@ -157,9 +219,7 @@ def _enrich_taste_query(conditions: UserConditions) -> str:
     `test_results/taste_companion_cofill.csv`,
     `scripts/measure_taste_condition_dominance.py --scope companion`.
     """
-    usable_tags = [
-        tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS
-    ]
+    usable_tags = [tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS]
     if usable_tags:
         return f"{conditions.taste_query} {' '.join(usable_tags)}"
     type_labels = [
@@ -277,7 +337,7 @@ class RealRecommendationProvider:
                 conditions, prepared, saved_taste_query=saved_taste_query
             ),
         )
-        response = await self._with_preference_tags(response)
+        response = await self._with_preference_tags(response, conditions)
         return await self._with_thumbnails(response)
 
     async def _with_thumbnails(self, response: RecommendationResponse) -> RecommendationResponse:
@@ -333,7 +393,7 @@ class RealRecommendationProvider:
         )
 
     async def _with_preference_tags(
-        self, response: RecommendationResponse
+        self, response: RecommendationResponse, conditions: UserConditions
     ) -> RecommendationResponse:
         """추천 결과에 DB의 장소별 취향 태그를 붙인다. 실패해도 추천은 유지한다."""
         if self._preference_tags is None:
@@ -347,14 +407,26 @@ class RealRecommendationProvider:
             logger.exception("장소 취향 태그 조회 실패 — 태그 없이 추천한다")
             return response
 
+        requested_codes = _requested_preference_codes(conditions)
+        requested_rank = {code: index for index, code in enumerate(requested_codes)}
+
         def attach(item: RecommendationItem) -> RecommendationItem:
+            rows = list(tags_by_place.get(item.place_id, ()))
+            rows.sort(
+                key=lambda row: (
+                    0 if str(row.get("preference_code") or "") in requested_rank else 1,
+                    requested_rank.get(str(row.get("preference_code") or ""), 99),
+                    int(row.get("display_rank") or 999),
+                )
+            )
             summaries = [
                 PreferenceTagSummary(
                     code=str(row.get("preference_code") or ""),
                     label=str(row.get("preference_label") or ""),
                     mention_count=int(row.get("mention_count") or 0),
+                    is_query_match=str(row.get("preference_code") or "") in requested_rank,
                 )
-                for row in tags_by_place.get(item.place_id, ())
+                for row in rows[:5]
             ]
             return item.model_copy(update={"preference_tags": summaries})
 
@@ -394,10 +466,7 @@ class RealRecommendationProvider:
         if not query_source:
             return None
 
-        place_ids = [
-            item.candidate.place_id
-            for item in prepared.preparation.eligible_candidates
-        ]
+        place_ids = [item.candidate.place_id for item in prepared.preparation.eligible_candidates]
         if not place_ids:
             return None
 
@@ -409,9 +478,7 @@ class RealRecommendationProvider:
         # **발화가 앞이다.** 벡터 하나로 합쳐 검색하므로 순서가 점수를 가르지는
         # 않지만, 로그에 남는 질의를 읽을 때 사용자가 방금 한 말이 먼저 보인다.
         spoken_query = _enrich_taste_query(conditions) if conditions.taste_query else None
-        enriched_query = " ".join(
-            part for part in (spoken_query, saved_taste_query) if part
-        )
+        enriched_query = " ".join(part for part in (spoken_query, saved_taste_query) if part)
         try:
             result = await self._place_evidence.search(enriched_query, place_ids)
         except Exception:

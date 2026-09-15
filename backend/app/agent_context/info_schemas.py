@@ -36,6 +36,7 @@ InfoQuestionType = Literal[
     "event",
     "location_info",
     "general_info",
+    "review_opinion",
     "concentration",
     "realtime_commercial",
     "realtime_parking",
@@ -400,6 +401,19 @@ class PlaceCard(BaseModel):
     guide_dog: str | None = None
 
 
+class ReviewEvidenceItem(BaseModel):
+    """답변 근거로 쓰인 후기 문장 한 건.
+
+    `source_url`이 비는 경우가 있다(초기 적재분 일부). 링크가 없으면 화면이 출처
+    줄을 만들지 않는다 — 근거로는 쓰되 "출처 보기"를 걸 곳이 없을 뿐이다.
+    """
+
+    text: str
+    source_url: str | None = None
+    source_type: str | None = None
+    published_at: str | None = None
+
+
 class PlaceInfoResult(BaseModel):
     """C가 반환하는 장소 상세 조회 결과 한 건(concentration 외 question_type).
 
@@ -427,6 +441,10 @@ class PlaceInfoResult(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
     # 상세 조회를 하지 않는 경로(location_info 등)에서는 None이다.
     place_card: PlaceCard | None = None
+    # question_type이 review_opinion일 때만 채운다. 선별을 통과한 후기 문장이며,
+    # 답변 생성의 근거이자 화면에 붙는 출처의 원본이다. fields와 섞지 않는 이유는
+    # status 판정이 fields만 보기 때문이다 — 섞으면 관광 API 답변 프롬프트로 간다.
+    review_evidence: tuple[ReviewEvidenceItem, ...] = ()
     error: ContextError | None = None
 
 

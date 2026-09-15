@@ -77,6 +77,17 @@ class _PlaceReason(BaseModel):
     reason: str
 
 
+class _ReviewEvidenceSelection(BaseModel):
+    """filter_review_evidence() 전용 wire 모델.
+
+    `reason`은 사용자에게 보이지 않는다. 왜 그 문장을 골랐는지가 남아야 근거가
+    이상할 때 프롬프트를 고칠 수 있어서 받는다.
+    """
+
+    keep: list[int]
+    reason: str = ""
+
+
 class _ComparisonSummary(BaseModel):
     """generate_compare_summary() 전용 wire 모델.
 
@@ -985,6 +996,72 @@ class RealGeminiProvider:
             operation="stream_info_answer",
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
+            history=history,
+        ):
+            yield text
+
+    async def filter_review_evidence(
+        self,
+        *,
+        place_name: str,
+        specific_question: str,
+        snippets: Sequence[str],
+    ) -> ProviderResult[tuple[int, ...]]:
+        """후기 문장 중 그 장소 이야기이면서 질문에 답이 되는 것의 번호만 고른다.
+
+        **검색 유사도로는 이 판정을 대신할 수 없다.** 실측(2026-09-14, 질문 24개)에서
+        답할 수 있는 질문과 없는 질문의 유사도 분포가 0.45~0.70 구간에서 겹쳤다.
+        예를 들어 "북촌한옥마을 뭐가 맛있대?"는 답이 될 근거가 없는데도 근처 만둣국집
+        후기가 0.683으로 1위였다. 같은 문장을 이 판정에 넘기면 걸러진다.
+
+        번호는 1부터 센다 — 모델에게 0-based를 시키면 사람이 읽는 프롬프트와 어긋난다.
+        """
+        payload = {
+            "place_name": place_name,
+            "question": specific_question,
+            "evidence": "\n".join(
+                f"{index}. {text}" for index, text in enumerate(snippets, start=1)
+            ),
+        }
+        result = await self._call_structured(
+            gemini_prompts.build_review_evidence_filter_instruction(),
+            json.dumps(payload, ensure_ascii=False),
+            _ReviewEvidenceSelection,
+            operation="filter_review_evidence",
+            model_names=self._fast_model_names,
+            # 사실 판단만 하는 짧은 호출이라 추론이 만들 이득이 없다. 답변 생성 앞에
+            # 붙는 단계라 여기서 늘어난 시간이 사용자 체감에 그대로 더해진다.
+            thinking_budget=0,
+        )
+        kept = tuple(
+            index for index in result.keep if 1 <= index <= len(snippets)
+        )
+        return provider_result(kept, source=ProviderSource.GEMINI)
+
+    async def stream_review_answer(
+        self,
+        *,
+        place_name: str,
+        specific_question: str | None,
+        evidence: Sequence[str],
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> AsyncIterator[str]:
+        """선별된 후기 문장만 근거로 답변을 스트리밍한다.
+
+        `source_url`은 넘기지 않는다 — 답변은 링크를 말하지 않고 화면이 출처를 따로
+        보여준다(`generate_place_reason`과 같은 규칙).
+        """
+        payload = {
+            "place_name": place_name,
+            "specific_question": specific_question,
+            "review_evidence": list(evidence),
+        }
+        async for text in self._stream_text(
+            instruction=gemini_prompts.build_review_answer_instruction(),
+            user_input=json.dumps(payload, ensure_ascii=False),
+            operation="stream_review_answer",
+            model_names=self._generation_model_names,
             thinking_budget=0,
             history=history,
         ):

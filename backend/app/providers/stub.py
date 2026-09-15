@@ -1227,6 +1227,47 @@ class FakeLLMProvider:
         yield text[:midpoint]
         yield text[midpoint:]
 
+    async def filter_review_evidence(
+        self,
+        *,
+        place_name: str,
+        specific_question: str,
+        snippets: Sequence[str],
+    ) -> ProviderResult[tuple[int, ...]]:
+        """테스트용 근거 선별. 장소 이름이 들어 있는 문장만 남긴다.
+
+        실제 판정은 문장의 주어를 읽어야 하지만(Fake가 흉내 낼 수 없다), "무엇을
+        골랐는지에 따라 답변과 출처가 달라진다"는 계약은 이걸로도 확인된다.
+        장소 이름이 어디에도 없으면 앞의 두 건을 남겨 빈손 경로와 구분한다.
+        """
+        del specific_question
+        kept = tuple(
+            index
+            for index, text in enumerate(snippets, start=1)
+            if place_name in text
+        )
+        return provider_result(
+            kept or tuple(range(1, min(len(snippets), 2) + 1)),
+            source=ProviderSource.STUB,
+        )
+
+    async def stream_review_answer(
+        self,
+        *,
+        place_name: str,
+        specific_question: str | None,
+        evidence: Sequence[str],
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> AsyncIterator[str]:
+        """테스트용 후기 답변. 넘겨받은 근거 밖의 사실은 만들지 않는다."""
+
+        del specific_question, history
+        first = evidence[0] if evidence else ""
+        text = f"{place_name}은(는) 후기에서 이런 이야기가 있어요. {first}"
+        midpoint = max(1, len(text) // 2)
+        yield text[:midpoint]
+        yield text[midpoint:]
+
     async def generate_compare_summary(
         self,
         comparison: ComparisonResult,

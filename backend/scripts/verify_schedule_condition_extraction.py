@@ -96,6 +96,55 @@ CASES: tuple[tuple[str, str, str | None, int | str | None], ...] = (
 )
 
 
+# 프롬프트 수정의 전후를 재는 12건. 18건 전부를 매번 도는 것은 낭비다 —
+# 여섯 그룹 중 흔들림도 불일치도 없던 자리(`반나절 일정 짜줘`, `홍대입구에서
+# 인사동으로`, `광화문 오후 내내`, `광화문 두세 시간`, `5시간 코스 짜줘`,
+# `경복궁 근처 반나절 일정 짜줘`)는 어느 lite에서도 실패한 적이 없어 전후가
+# 같을 것이 뻔하고, 호출 수만 1.5배로 만든다.
+#
+# 고른 기준은 셋이다.
+#   ① 두 lite가 **3/3 고정으로** 실패한 2건 — 확률이 안 섞인 유일한 자리
+#   ② 한쪽 lite만 실패한 6건 — 개선이 어느 모델까지 닿는지 가른다
+#   ③ 두 lite가 다 맞히던 4건 — 고치다가 깨뜨리는 것을 잡는 대조군
+# ③이 없으면 "실패 4건이 0건 됐다"가 회귀를 숨긴다.
+EXTRACT_FIX_SUBSET: tuple[str, ...] = (
+    # ① 고정 실패 (3.5-lite·3.1-lite 모두 3/3)
+    "경복궁 코스 짜줘",
+    "경복궁 일정 짜줘",
+    # ② 한쪽만 실패
+    "경복궁 근처 일정 짜줘",  # 3.1-lite 흔들림
+    "토요일 오후 2시부터 5시간 코스 짜줘",  # 3.1-lite 실패
+    "광화문 4시간 일정 짜줘",  # 3.5-lite만
+    "광화문 하루 종일 일정 짜줘",  # 3.5-lite만
+    "경복궁 근처 3시간 코스 짜줘",  # 3.5-lite만
+    "광화문 반나절 일정 짜줘",  # 3.5-lite만
+    # ③ 회귀 대조군 (두 lite 모두 통과하던 자리)
+    "경복궁 근처 카페 추천해줘",
+    "종로에서 15분 이내 카페 추천해줘",
+    "북촌 반나절 코스",
+    "인사동 근처 5시간 코스",
+)
+
+
+def _select_cases(only: str | None, subset: str | None) -> tuple[tuple, ...]:
+    """돌릴 케이스를 고른다. 둘 다 없으면 18건 전부."""
+    if subset == "extract-fix":
+        wanted = set(EXTRACT_FIX_SUBSET)
+        chosen = tuple(c for c in CASES if c[1] in wanted)
+        missing = wanted - {c[1] for c in chosen}
+        if missing:
+            # 발화를 CASES에서 고쳐 놓고 이 목록을 안 고치면 조용히 적게 돈다.
+            raise SystemExit(f"CASES에 없는 발화가 부분집합에 있습니다: {sorted(missing)}")
+        return chosen
+    if only:
+        needles = [s.strip() for s in only.split(",") if s.strip()]
+        chosen = tuple(c for c in CASES if any(n in c[1] for n in needles))
+        if not chosen:
+            raise SystemExit(f"--only에 걸리는 발화가 없습니다: {needles}")
+        return chosen
+    return CASES
+
+
 def _served_model() -> str | None:
     """직전 호출에 실제로 답한 모델. 폴백으로 넘어갔는지 여기서 드러난다."""
     metadata = get_llm_execution_metadata()
@@ -131,8 +180,25 @@ def _tokens() -> dict[str, int]:
 
 async def _extract(
     provider: RealGeminiProvider, text: str
-) -> tuple[str | None, int | None, str | None, str | None, int, dict[str, int]]:
-    """(search_center, time_available, 응답 모델, 오류, ms, 토큰)을 반환한다."""
+) -> tuple[str | None, int | None, str, str | None, str | None, int, dict[str, int]]:
+    """(search_center, time_available, 페이로드 모양, 응답 모델, 오류, ms, 토큰).
+
+    **`모양`을 따로 내는 이유가 이 스크립트의 가장 큰 구멍이었다.** 이전 판은
+    `recommend`가 None이든, 페이로드는 왔는데 두 칸이 빈 것이든 똑같이
+    `null/null`로 찍었다. `3.1-lite_결과.md` §3도 "이 러너는 구분하지 못한다"고
+    적어뒀는데, 그 둘은 **고칠 방법이 정반대다** —
+
+      - 페이로드 없음: `extract.md`의 "반드시 recommend.conditions를 채우라"는
+        계약 위반이다. 오케스트레이터의 되뽑기(D-126/TP-266)가 이미 잡는 자리고,
+        지명 규칙을 아무리 손봐도 안 고쳐진다
+      - 페이로드 있음 + 칸이 빔: 진짜 추출 실패다. 프롬프트 규칙으로 닫는다
+
+    `intent`도 함께 남긴다. 추출 프롬프트는 `intent="RECOMMEND"`로 반환하라고
+    못 박는데 일정 발화에서 모델이 SCHEDULE을 고르면 `recommend`가 빈 채로 올 수
+    있다. 그 경우 원인이 지명이 아니라 **인텐트 자리**라는 뜻이다.
+
+    실 API 호출 수는 그대로다 — 이미 받아 온 응답에서 읽기만 한다.
+    """
     reset_llm_execution_metadata()
     started = time.perf_counter()
     try:
@@ -141,12 +207,19 @@ async def _extract(
         conditions = recommend.conditions if recommend else None
         search_center = conditions.search_center if conditions else None
         time_available = conditions.time_available if conditions else None
+        if recommend is None:
+            shape = f"페이로드없음({result.data.intent.value})"
+        elif conditions is None:
+            shape = f"조건없음({result.data.intent.value})"
+        else:
+            shape = f"정상({result.data.intent.value})"
         error = None
     except Exception as exc:  # noqa: BLE001 - 실 API 검증 스크립트
         search_center, time_available = None, None
+        shape = "예외"
         error = f"{type(exc).__name__}: {exc}"
     ms = round((time.perf_counter() - started) * 1000)
-    return search_center, time_available, _served_model(), error, ms, _tokens()
+    return search_center, time_available, shape, _served_model(), error, ms, _tokens()
 
 
 async def run(
@@ -154,6 +227,7 @@ async def run(
     repeat: int,
     delay: float,
     *,
+    cases: tuple[tuple, ...] = CASES,
     max_consecutive_errors: int = 3,
 ) -> list[dict[str, object]]:
     settings = Settings()
@@ -168,25 +242,29 @@ async def run(
         timeout_seconds=60.0,
     )
     chain = " → ".join(fast) if len(fast) > 1 else f"{fast[0]} (폴백 없음)"
-    print(f"모델 묶음: {chain} | 반복: {repeat}회 | 케이스: {len(CASES)}건")
+    print(f"모델 묶음: {chain} | 반복: {repeat}회 | 케이스: {len(cases)}건")
 
     rows: list[dict[str, object]] = []
     token_totals: dict[str, int] = {}
     # 연속 실패 중단. 설정 오류는 케이스마다 독립 사건이 아니라서, 끝까지 도는
     # 루프는 비용을 케이스 수만큼 곱한다(RULES 함정 46).
     consecutive_errors = 0
-    for group, text, expected_center, expected_time in CASES:
+    for group, text, expected_center, expected_time in cases:
         centers: list[str | None] = []
         times: list[int | None] = []
+        shapes: list[str] = []
         models: list[str | None] = []
         errors: list[str] = []
         latencies: list[int] = []
         for _ in range(repeat):
-            center, time_available, served, error, ms, toks = await _extract(provider, text)
+            center, time_available, shape, served, error, ms, toks = await _extract(
+                provider, text
+            )
             for key, value in toks.items():
                 token_totals[key] = token_totals.get(key, 0) + value
             centers.append(center)
             times.append(time_available)
+            shapes.append(shape)
             models.append(served)
             latencies.append(ms)
             if error:
@@ -210,6 +288,7 @@ async def run(
                 "기대_time": expected_time,
                 "centers": centers,
                 "times": times,
+                "모양": shapes,
                 "models": models,
                 "오류": errors,
                 "ms_평균": round(sum(latencies) / len(latencies)),
@@ -275,12 +354,14 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
     mismatched: list[dict[str, object]] = []
     fell_back: list[dict[str, object]] = []
 
+    empty_payload: list[dict[str, object]] = []
+
     header = (
-        f"{'흔들림':<8} {'일치':<6} {'search_center':<24} "
-        f"{'time_available':<18} {'응답모델':<26} {'지연':<8} 발화"
+        f"{'흔들림':<8} {'일치':<6} {'search_center':<20} "
+        f"{'time_available':<16} {'페이로드 모양':<28} {'응답모델':<20} {'지연':<8} 발화"
     )
     print(f"\n{header}")
-    print("-" * 150)
+    print("-" * 170)
     current_group = None
     for r in rows:
         if r["그룹"] != current_group:
@@ -307,11 +388,14 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
             unstable.append(r)
         if not _is_stable(models):
             fell_back.append(r)
+        shapes = r.get("모양") or []
+        if any(str(s).startswith("페이로드없음") for s in shapes):  # type: ignore[union-attr]
+            empty_payload.append(r)
 
         print(
             f"{'⚠️  흔들림' if not stable else '  고정':<8} {match_mark:<5} "
-            f"{_fmt(centers):<24} {_fmt(times):<18} {_fmt(models):<26} "
-            f"{str(r['ms_평균']) + 'ms':<8} {r['발화']}"
+            f"{_fmt(centers):<20} {_fmt(times):<16} {_fmt(list(shapes)):<28} "
+            f"{_fmt(models):<20} {str(r['ms_평균']) + 'ms':<8} {r['발화']}"
         )
         for error in set(r["오류"]):  # type: ignore[arg-type]
             print(f"{'':>16} ⚠️  {error}")
@@ -336,6 +420,11 @@ def _report(rows: list[dict[str, object]], repeat: int) -> int:
     if repeat >= 2:
         for r in unstable:
             print(f"    - {r['발화']}  center={_fmt(r['centers'])} time={_fmt(r['times'])}")
+    # **불일치를 두 종류로 갈라 센다.** 이 줄이 없으면 프롬프트를 고쳐야 할
+    # 건수와 되뽑기(D-126)가 이미 잡는 건수가 한 숫자에 섞인다.
+    print(f"  페이로드가 비어 온 케이스 {len(empty_payload)}/{len(rows)}건")
+    for r in empty_payload:
+        print(f"    - {r['발화']}  모양={_fmt(list(r.get('모양') or []))}")
     print(f"  응답 모델이 바뀐 케이스 {len(fell_back)}/{len(rows)}건")
     for r in fell_back:
         print(f"    - {r['발화']}  {_fmt([_short_model(m) for m in r['models']])}")
@@ -379,9 +468,18 @@ def main() -> None:
         "--out-dir", type=Path, default=None,
         help="주면 <out-dir>/verify_extraction_<모델>.json에 원자료를 남긴다",
     )
+    parser.add_argument(
+        "--subset", choices=("extract-fix",), default=None,
+        help="이름 붙은 부분집합만 돈다. extract-fix=프롬프트 전후 비교용 12건",
+    )
+    parser.add_argument(
+        "--only", default=None,
+        help="발화에 이 문자열이 들어간 케이스만 돈다(쉼표로 여러 개). --subset이 우선",
+    )
     args = parser.parse_args()
 
-    planned = args.repeat * len(CASES)
+    cases = _select_cases(args.only, args.subset)
+    planned = args.repeat * len(cases)
     print(f"예정 호출 {planned}건, 상한 {args.max_calls}건")
     if planned > args.max_calls:
         raise SystemExit(
@@ -394,6 +492,7 @@ def main() -> None:
             args.model,
             args.repeat,
             args.delay,
+            cases=cases,
             max_consecutive_errors=args.max_consecutive_errors,
         )
     )
@@ -404,13 +503,19 @@ def main() -> None:
         # **요청 모델을 파일에 박는다.** 어느 모델의 기준선인지 나중에 config
         # 이력과 .env를 뒤져 확인하는 일이 실제로 있었다(RULES 함정 49).
         tag = (args.model or "설정값").replace("/", "_")
+        # **부분집합 실행이 18건 기준선 파일을 덮어쓰면 안 된다.** 같은
+        # 이름으로 적히면 나중에 "12건짜리인데 18건으로 읽는" 사고가 난다.
+        if args.subset:
+            tag = f"{tag}__{args.subset}"
+        elif args.only:
+            tag = f"{tag}__only{len(cases)}"
         out_path = args.out_dir / f"verify_extraction_{tag}.json"
         out_path.write_text(
             json.dumps(
                 {
                     "요청_모델": args.model,
                     "반복": args.repeat,
-                    "케이스_수": len(CASES),
+                    "케이스_수": len(cases),
                     "흔들린_케이스_수": unstable,
                     "행": rows,
                 },

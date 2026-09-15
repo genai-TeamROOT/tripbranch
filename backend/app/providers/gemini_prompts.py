@@ -38,7 +38,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.30"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.31"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -349,6 +349,27 @@ def build_info_answer_instruction(question_type: str) -> str:
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         question_type=question_type,
+    )
+
+
+def build_review_evidence_filter_instruction() -> str:
+    """후기 문장 중 쓸 수 있는 것만 번호로 고르게 하는 system instruction.
+
+    **페르소나를 꽂지 않는다.** 사용자에게 보이는 문장을 만드는 호출이 아니라
+    판정만 하는 호출이라 말투가 필요 없다 — `build_place_reason_instruction()`이
+    입력 토큰을 이유로 뺀 것과 같은 판단이다.
+    """
+
+    return render_text("info/review_evidence_filter.md")
+
+
+def build_review_answer_instruction() -> str:
+    """선별된 후기 문장만 근거로 답변을 만드는 system instruction."""
+
+    return render_text(
+        "info/review_answer_instruction.md",
+        chatbot_name=CHATBOT_NAME,
+        persona=load_text("_shared/persona/trivi.md"),
     )
 
 

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Protocol
@@ -124,7 +125,7 @@ class PlaceEvidenceProvider:
         # 안 보이면 "취향을 말했는데 점수가 왜 이러냐"를 코드로만 추론해야 한다.
         # 질의 원문은 싣지 않는다 — 사용자 발화에서 뽑은 문장이다.
         with observe_step("taste_evidence_search", kind="retriever") as step:
-            embedding = self._encoder.encode(query)
+            embedding = await self._encode(query)
             matches = await self._repository.search_place_evidence(
                 embedding,
                 candidate_content_ids,
@@ -153,3 +154,62 @@ class PlaceEvidenceProvider:
                 ProviderStatus.SUCCESS if matches else ProviderStatus.NO_DATA
             ),
         )
+
+    async def search_one_place(
+        self,
+        query: str,
+        content_id: str,
+        *,
+        match_count: int,
+        min_similarity: float,
+    ) -> ProviderResult[PlaceEvidenceMatch | None]:
+        """장소 한 곳 안에서만 근거를 찾는다. 후기로 답하는 INFO 질문이 쓴다.
+
+        추천 채점용 `search()`와 컷·개수를 따로 받는 이유: 저쪽은 여러 장소를 줄
+        세우려고 컷을 0.43으로 잡았지만, 여기는 후보가 한 곳뿐이라 경쟁이 없어 같은
+        컷이 의미를 갖지 않는다. 실측(2026-09-14, 24개 질문)에서 답할 수 있는 질문과
+        없는 질문의 유사도 분포가 크게 겹쳤다 — 답 가능 평균 0.650, 불가 평균 0.481에
+        경계가 서지 않는다. 그래서 **유사도로 답 여부를 가르지 않는다.** 낮은 컷으로
+        넉넉히 가져오고, 쓸 수 있는 근거인지는 뒤의 선별 단계가 판정한다.
+        """
+        if not query.strip() or not content_id:
+            return provider_result(
+                None,
+                source=ProviderSource.SUPABASE_PLACE_EVIDENCE,
+                status=ProviderStatus.NO_DATA,
+            )
+
+        with observe_step("review_evidence_search", kind="retriever") as step:
+            embedding = await self._encode(query)
+            matches = await self._repository.search_place_evidence(
+                embedding,
+                [content_id],
+                match_count=match_count,
+                min_similarity=min_similarity,
+            )
+            match = matches[0] if matches else None
+            try:
+                step.record(
+                    output={
+                        "snippets": len(match.snippets) if match else 0,
+                        "avg_similarity": round(match.avg_similarity, 4) if match else None,
+                        "min_similarity": min_similarity,
+                        "match_count": match_count,
+                    }
+                )
+            except Exception:
+                logger.warning("후기 검색 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        return provider_result(
+            match,
+            source=ProviderSource.SUPABASE_PLACE_EVIDENCE,
+            status=ProviderStatus.SUCCESS if match else ProviderStatus.NO_DATA,
+        )
+
+    async def _encode(self, query: str) -> Sequence[float]:
+        """문장 인코딩은 CPU를 수십 ms 잡아먹는 동기 호출이라 스레드로 내보낸다.
+
+        추천 경로는 턴당 한 번이라 넘어갔지만, 후기 답변은 채팅 스트리밍 도중에
+        일어난다 — 이벤트 루프에서 그대로 돌리면 그동안 다른 사용자의 토큰 전송까지
+        멈춘다.
+        """
+        return await asyncio.to_thread(self._encoder.encode, query)
