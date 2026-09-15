@@ -11,8 +11,15 @@ condition_change_logs/trace_records/session_messages) 행을 전부 지운다. r
 
 입력: --days(기준 일수, 기본 30), --dry-run(삭제 없이 대상만 출력).
 출력: 정리한(또는 정리할) 세션 수, 실패한 세션 id.
-호출 시점: `python -m scripts.cleanup_expired_sessions` (수동 실행). 자동
-스케줄(cron 등)은 이번 범위 밖 — D-074 참고.
+호출 시점: `python -m scripts.cleanup_expired_sessions` (수동 실행), 그리고
+.github/workflows/cleanup-sessions.yml이 매일 자동으로 호출한다(2026-09-15, D+C
+협의). --days를 넘기지 않는 한 방침 문구("마지막 이용일로부터 30일")와 기본값이
+같은 값을 가리킨다.
+
+**auth.users(익명 계정) 정리(scripts/cleanup_anonymous_users.py)는 여기 함께
+자동화하지 않는다.** 계정 기준(생성일)과 이 스크립트의 기준(마지막 활동일)이
+갈려서, 계정 정리를 무작정 같이 돌리면 아직 쓰고 있는 게스트의 계정이 먼저
+지워지고 세션만 고아로 남을 수 있다.
 
 STATE_STORE_BACKEND=memory에서는 프로세스가 재시작되면 데이터가 사라지므로
 이 스크립트가 의미 없다 — supabase가 아니면 즉시 종료한다.
