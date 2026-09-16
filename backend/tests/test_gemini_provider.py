@@ -18,6 +18,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from app.domain.models import AccessibilityNeed
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.gemini import (
@@ -27,6 +28,7 @@ from app.providers.gemini import (
     _GeneralAnswer,
     _PlaceReason,
     _RecommendationSummary,
+    _TravelModePlan,
 )
 from app.schedule.budget import derive_item_range
 from app.schedule.planner import plan_schedule
@@ -970,6 +972,69 @@ async def test_place_reason_turns_thinking_off_on_its_own_model() -> None:
 
     assert result.data == "숲속 한옥에서 쉬기 좋아요."
     assert captured == [("gemini-3.1-flash-lite", genai_types.ThinkingLevel.MINIMAL)]
+
+
+@pytest.mark.asyncio
+async def test_mode_judge_uses_its_own_models_and_schedule_plan_stays_on_generation() -> None:
+    """이동수단 판정만 전용 묶음으로 가고, 같은 생성 티어였던 일정 편성은 그대로다.
+
+    배선이 끊겨 판정이 생성 모델로 흘러도 응답은 정상이라 테스트 없이는 모른다. 반대로
+    판정 묶음이 일정 편성까지 끌고 가면 편성 품질이 조용히 바뀐다 — 둘 다 못 박는다.
+    """
+
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model"],
+        mode_judge_model_names=["mode-judge-model"],
+        timeout_seconds=1.0,
+    )
+    called: dict[str, str] = {}
+    responses = {
+        _TravelModePlan: _TravelModePlan(modes=["walking"]),
+        ScheduleLLMPlan: ScheduleLLMPlan(
+            items=[_schedule_item_dict("p1", 1)], total_duration_min=60, route_summary="동선"
+        ),
+    }
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        schema = kwargs["config"].response_schema
+        called[schema.__name__] = kwargs["model"]
+        return _FakeResponse(responses[schema])
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.judge_travel_modes(
+            [
+                SegmentModeInput(
+                    from_place_id="p1", to_place_id="p2", order=1,
+                    distance_m=700, walk_minutes=10.0,
+                )
+            ],
+            ModeJudgmentContext(transport=None),
+        )
+        await provider.generate_schedule_plan(
+            SchedulePlanningRequest(
+                candidates=[_recommendation_item()],
+                conditions=UserConditions(),
+                visit_datetime=datetime(2026, 9, 15, 13, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+                pairwise_distances_km={},
+            )
+        )
+
+    assert called == {"_TravelModePlan": "mode-judge-model", "ScheduleLLMPlan": "generation-model"}
+
+
+def test_mode_judge_models_default_to_generation_models() -> None:
+    """판정 묶음을 안 넘기면 생성 묶음을 그대로 쓴다 — 이 인자를 모르는 호출부가 그대로 돈다."""
+
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model", "generation-fallback"],
+        timeout_seconds=1.0,
+    )
+
+    assert provider._mode_judge_model_names == ["generation-model", "generation-fallback"]
 
 
 def test_place_reason_payload_caps_evidence_and_hides_ranking() -> None:
