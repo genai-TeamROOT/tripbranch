@@ -95,14 +95,26 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
                       <span
                         key={tag.code}
                         data-query-match={tag.is_query_match ? "true" : undefined}
+                        /*
+                          질문에 걸린 태그만 브랜드 색으로 **채운다**(2026-09-16).
+                          나머지는 바탕도 테두리도 없이 브랜드 색 글자만 남는다.
+                          색은 한 가지고 채움 여부만 다르므로 "이 줄에서 무엇이
+                          답인가"가 한눈에 읽힌다.
+
+                          전에는 걸린 것이 옅은 브랜드 배경, 나머지가 하늘색 배경이라
+                          색이 두 갈래로 갈렸다.
+                        */
                         className={`flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          tag.is_query_match
-                            ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/30"
-                            : "bg-sky-light text-label"
+                          tag.is_query_match ? "bg-brand text-white" : "bg-white text-brand"
                         }`}
                       >
                         {tag.label}
-                        <span className="font-normal text-muted">({tag.mention_count})</span>
+                        {/*
+                          개수는 칩의 색과 굵기를 그대로 물려받는다. 전에는 회색
+                          가는 글씨였는데, 채운 칩 위에서 대비가 떨어져 읽히지 않았다.
+                          따로 감싸 두는 것은 개수만 집어낼 수 있게 하기 위해서다.
+                        */}
+                        <span>({tag.mention_count})</span>
                       </span>
                     ))}
                   </div>
