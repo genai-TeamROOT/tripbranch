@@ -5,7 +5,7 @@
  * 호출 시점: ChatMessageList가 place_info_result 메시지를 렌더할 때 호출된다.
  */
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type {
   InfoPlaceCard as InfoPlaceCardData,
   RealtimeInfoDetailItem,
@@ -29,6 +29,11 @@ import {
 } from "./CongestionForecastBars";
 import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
+import { CollapseToggleButton } from "./CollapseToggleButton";
+import { splitOverviewParagraphs } from "../../utils/overviewText";
+import { hasSeoulRealtimeContent, hasTourApiContent } from "../../utils/dataSourceAttribution";
+import { SeoulRealtimeSourceNote, TourApiSourceNote } from "./SourceNotes";
+import { HomepageLink } from "./HomepageLink";
 
 const FIELD_LABELS: Record<string, string> = {
   operating_hours: "운영시간",
@@ -151,6 +156,61 @@ function formatCardValue(fieldKey: keyof InfoPlaceCardData, value: string) {
     formatted = formatted.replace(/(?:^|\s)-\s*/g, "\n- ");
   }
   return formatted.trim();
+}
+
+/* 개요처럼 긴 설명은 여섯 줄까지만 보이고 "더 보기"로 편다.
+ *
+ * **자르는 것이 아니라 접는다.** line-clamp는 화면에서만 가리고 원문은 그대로
+ * 남으므로 낭독기와 브라우저 찾기는 전문을 본다(상세 모달의 같은 처리와 동일).
+ *
+ * 여섯 줄인 이유는 "경복궁이 뭐야?" 같은 질문의 TourAPI 개요가 수백 자라 카드
+ * 하나가 화면을 다 덮어버리기 때문이다 — 첫 대여섯 줄이면 무엇인지는 알 수 있고,
+ * 나머지는 필요한 사람만 편다.
+ */
+const CLAMPED_ANSWER_FIELDS = new Set(["overview"]);
+
+function ClampedAnswerValue({ value, isEn }: { value: string; isEn: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const clampRef = useRef<HTMLDivElement | null>(null);
+
+  /* 글자 수가 아니라 실제로 넘쳤는지로 판정한다. 화면 폭과 언어에 따라 같은 값도
+     줄 수가 달라져서, 글자 수로 재면 어떤 화면에서는 버튼이 헛돈다. */
+  useEffect(() => {
+    const node = clampRef.current;
+    if (!node || expanded) return;
+    const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [value, expanded]);
+
+  return (
+    <div className="flex flex-col items-stretch gap-1.5">
+      {/* 줄 간격·문단 나눔·접는 높이를 상세 모달의 개요 절과 같게 둔다. 같은 글이
+          두 화면에서 다른 모양으로 보이면 어느 쪽이 요약본인지 헷갈린다.
+          10.5rem은 leading-7(1.75rem) × 6줄이다. */}
+      <div
+        ref={clampRef}
+        className={`flex flex-col gap-3 leading-7${
+          expanded ? "" : " max-h-[10.5rem] overflow-hidden"
+        }`}
+      >
+        {splitOverviewParagraphs(value).map((paragraph, index) => (
+          <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>
+        ))}
+      </div>
+      {/* 편 뒤에는 넘침 판정이 거짓이 되므로(가릴 것이 없다) expanded도 함께 본다. */}
+      {(overflowing || expanded) && (
+        <CollapseToggleButton
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          isEn={isEn}
+        />
+      )}
+    </div>
+  );
 }
 
 function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
@@ -696,6 +756,13 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
                 <dd className="min-w-0 whitespace-pre-line text-ink">
                   {hoursRows ? (
                     <OperatingHoursRows rows={hoursRows} />
+                  ) : key === "homepage" ? (
+                    <HomepageLink value={value} isEn={isEn} />
+                  ) : CLAMPED_ANSWER_FIELDS.has(key) ? (
+                    <ClampedAnswerValue
+                      value={formatCardValue(key as keyof InfoPlaceCardData, value)}
+                      isEn={isEn}
+                    />
                   ) : (
                     formatCardValue(key as keyof InfoPlaceCardData, value)
                   )}
@@ -715,6 +782,19 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
       <PopulationForecastBars card={card} />
       <SeoulRealtimeSummarySection card={card} />
       <RoadTrafficStatusSection card={card} />
+
+      {/* 답변 카드에도 같은 규칙으로 맨 아래 한 줄씩. 관광공사 상세와 서울시
+          실시간이 한 카드에 함께 실리는 경우가 있어(혼잡도 답변) 둘 다 필요하면
+          두 줄이 된다. */}
+      {(hasTourApiContent(card) || hasSeoulRealtimeContent(card)) && (
+        /* 오른쪽 아래에 붙인다. 왼쪽 끝에 두면 본문 첫 글자와 같은 선에서 시작해
+           읽는 흐름의 일부처럼 보였다 — 표기는 본문이 아니라 카드에 다는 꼬리표다.
+           상세 모달이 출처를 오른쪽에 두는 것과도 같은 방향이다. */
+        <div className="flex flex-col items-end gap-0.5 px-4 pb-3">
+          {hasTourApiContent(card) && <TourApiSourceNote isEn={isEn} />}
+          {hasSeoulRealtimeContent(card) && <SeoulRealtimeSourceNote isEn={isEn} />}
+        </div>
+      )}
 
       {showDetail && (
         <RecommendationDetailPreviewModal card={card} onClose={() => setShowDetail(false)} />

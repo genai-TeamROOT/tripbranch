@@ -31,6 +31,7 @@
 import { useState } from "react";
 import type { PhotoSimilarPlace } from "../../types";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
+import { TourApiSourceNote } from "./SourceNotes";
 import { PlaceThumbnail } from "../PlaceThumbnail";
 
 /** 이 미만이면 벡터가 사진 한 장에 좌우된다(D-087). 표시를 달리한다. */
@@ -171,6 +172,8 @@ export function PhotoSimilarResultMessage({
                   </li>
                 ))}
               </ul>
+              {/* 비교 대상 사진과 장소 이름이 모두 관광공사 장소 데이터다. */}
+              <TourApiSourceNote />
             </>
           )}
         </div>
