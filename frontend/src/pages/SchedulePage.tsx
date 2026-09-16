@@ -1,9 +1,8 @@
 /*
- * 역할: 일정 탭. 기본은 **목록**(저장한 일정 + 이번 세션에서 마지막으로 짠
- *   일정)이고, 그중 하나를 누르면 그 일정의 상세로 화면이 바뀐다. 상세 카드
- *   레이아웃 자체는 Figma "Schedule (Sheet)"(29:82)를 그대로 옮긴 것이다.
- * 입력: TripContext의 messages 중 가장 최근 schedule_result(=지금 일정),
- *   `?saved=<id>`(=저장한 일정 상세, GET /api/schedules/:id).
+ * 역할: 일정 탭. 기본은 **저장한 일정 목록**이고, 그중 하나를 누르면 그 일정의
+ *   상세로 화면이 바뀐다. 상세 카드 레이아웃 자체는 Figma
+ *   "Schedule (Sheet)"(29:82)를 그대로 옮긴 것이다.
+ * 입력: `?saved=<id>`(=저장한 일정 상세, GET /api/schedules/:id).
  * 출력: 상세 화면에서는 요약 문구·정류장 타임라인(장소 상세는 기존
  *   RecommendationDetailPreviewModal 재사용)·도움이 됐는지 피드백(로컬
  *   표시만 — 세션/런 id가 이 메시지에 없어 실제 전송은 안 한다)과 목록으로
@@ -11,12 +10,23 @@
  * 호출 시점: 사이드바 "일정"에서 열린다(DESIGN_SYSTEM.md §5).
  *
  * **목록과 상세를 한 화면에 같이 두지 않는다**(2026-09-07). 전에는 들어오자마자
- * 지금 일정 상세가 펼쳐져 있고 그 아래 저장 목록이 붙어 있었는데, "왜 목록이
- * 아니라 이게 먼저 보이지"가 됐다. 지금은 목록이 기본 화면이고, "지금 일정"도
- * 저장한 일정과 똑같이 **목록의 한 줄**로 두어 눌러야 상세가 뜬다. 헤더
+ * 일정 상세가 펼쳐져 있고 그 아래 저장 목록이 붙어 있었는데, "왜 목록이 아니라
+ * 이게 먼저 보이지"가 됐다. 지금은 목록이 기본 화면이고 눌러야 상세가 뜬다. 헤더
  * 화살표가 없는 화면이라(9/7, d70e85ce), 목록으로 돌아가는 버튼을 상세 화면
  * 맨 위에 직접 둔다 — `?saved=` 조회가 실패했을 때도 상세 자리에 오류와 함께
  * 이 버튼이 뜬다(목록을 같이 그리지 않는다).
+ *
+ * **"지금 일정" 줄을 없앴다(2026-09-16).** 저장하지 않은, 이번 대화의 마지막
+ * 일정을 목록 맨 위에 한 줄로 얹고 있었다. 없앤 이유는 그 줄이 목록의 규칙을
+ * 따르지 않아서다 — `SavedScheduleList` 밖에 있어 검색·날짜 필터가 걸리지 않았고,
+ * 저장하면 같은 일정이 위아래로 두 번 떴으며, 기준 시각을 편성 시각이 아니라
+ * **렌더 시각**(`new Date()`)으로 말했다(메시지에 생성 시각이 없다).
+ *
+ * **대가를 알고 없앴다.** 실측으로 편성된 일정 100건 중 저장된 것은 14건뿐이라
+ * (`trace_records.schedule_quality` 100 : `saved_schedules` 14), 저장하지 않은
+ * 일정은 이제 이 화면에서 볼 수 없다. 자동 저장은 두지 않기로 했다(D 결정) —
+ * 남기고 싶으면 채팅의 일정 카드에서 저장 버튼을 누르는 것이 유일한 경로다.
+ * 그래서 빈 화면 문구도 "짠 일정이 없어요"가 아니라 "저장한 일정이 없어요"다.
  *
  * **카드 레이아웃은 채팅과 같다**(2026-09-09). 예전에는 채팅이 ScheduleCard·
  * ScheduleTravelSegment 한 벌을 따로 갖고 있었고, 이 화면만 Figma가 그린 전용
@@ -30,9 +40,6 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
 import { PageTransition } from "../components/layout/PageTransition";
-import { IdentityAvatar } from "../components/layout/SidebarAccount";
-import { useAuth } from "../auth/AuthContext";
-import { identityDisplay } from "../auth/identityLabel";
 import { useTripState } from "../state/TripContext";
 import { fetchSavedSchedule } from "../api/trip";
 import { SavedScheduleList } from "../components/schedule/SavedScheduleList";
@@ -47,19 +54,12 @@ export function SchedulePage() {
   const navigate = useNavigate();
   const state = useTripState();
   const isEn = state.language === "en";
-  const { session } = useAuth();
-  /* 카드 아이콘은 계정 아바타로 쓴다(2026-09-07) — SavedScheduleList의 카드와
-     같은 근거다. */
-  const identity = session ? identityDisplay(session, isEn ? "en" : "ko") : null;
   const [searchParams] = useSearchParams();
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   /* 저장 목록이 비었는지는 빈 화면에서 무엇을 안내할지 정하는 데 쓴다.
      아직 못 받아온 동안(null)에는 안내를 띄우지 않는다 — 저장한 일정이 있는
-     사람에게 "아직 짠 일정이 없어요"가 잠깐 스쳤다 사라지면 안 된다. */
+     사람에게 "저장한 일정이 없어요"가 잠깐 스쳤다 사라지면 안 된다. */
   const savedList = useSavedSchedules();
-  /* "지금 일정" 줄을 목록에서 눌렀는지. `savedId`가 생기면(다른 줄을 눌렀다는
-     뜻이다) 함께 꺼서 두 상세가 겹쳐 뜨지 않게 한다. */
-  const [viewingCurrent, setViewingCurrent] = useState(false);
 
   /*
    * ?saved=<id>로 들어오면 저장한 일정을 보여준다(SCHEDULE 카드 2). 없으면
@@ -79,7 +79,6 @@ export function SchedulePage() {
       setSavedError(false);
       return;
     }
-    setViewingCurrent(false);
     let active = true;
     setSavedError(false);
     void fetchSavedSchedule(savedId)
@@ -94,17 +93,12 @@ export function SchedulePage() {
     };
   }, [savedId]);
 
-  const lastSchedule = [...state.messages]
-    .reverse()
-    .find((message) => message.type === "schedule_result");
-
-  /* 상세로 보여줄 일정. 저장한 것을 보는 중이면 그것, "지금 일정"을 눌렀으면
-     세션의 마지막 일정, 둘 다 아니면 목록 화면이라 상세가 없다. */
-  const schedule = saved ? saved.payload : viewingCurrent ? lastSchedule?.schedule : undefined;
-  const showingDetail = Boolean(savedId) || viewingCurrent;
-  /* 체크 진행을 저장·복원할 열쇠. 저장한 일정은 그 id, 지금 일정은 메시지 id다
-     (state/scheduleProgress.ts). */
-  const scheduleKey = saved ? saved.id : (lastSchedule?.id ?? "current");
+  /* 상세로 보여줄 일정은 저장한 것뿐이다. 저장하지 않은 일정은 이 화면에
+     오지 않는다 — 채팅의 일정 카드에서 저장해야 목록에 남는다(2026-09-16). */
+  const schedule = saved?.payload;
+  const showingDetail = Boolean(savedId);
+  /* 체크 진행을 저장·복원할 열쇠(state/scheduleProgress.ts). */
+  const scheduleKey = saved?.id ?? "";
   const [visited, toggleVisited] = useScheduleVisited(scheduleKey);
   /*
    * **"언제 기준인지"를 지금 시각으로 쓰지 않는다.** 저장한 일정의 도착 시각·
@@ -132,14 +126,12 @@ export function SchedulePage() {
       : `${basisAt.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준으로 짠 동선이에요.`;
 
   function backToList() {
-    setViewingCurrent(false);
     if (savedId) navigate("/schedule", { replace: true });
   }
 
   /* 목록↔상세 전환에 쓰는 키다(2026-09-07). AppShell의 PageTransition은
      경로(pathname)로만 다시 재생되는데, 목록에서 상세로 들어가는 건 쿼리만
-     바뀌거나(?saved=) 아예 라우팅이 없어서(viewingCurrent) 그 전환이 안
-     탔다. 여기서 한 겹 더 감싸 목록/상세/어느 저장 일정인지가 바뀔 때마다
+     바뀔 뿐이라(?saved=) 그 전환이 안 탔다. 여기서 한 겹 더 감싸 목록/상세/어느 저장 일정인지가 바뀔 때마다
      같은 떠오르는 페이드를 재생한다. */
   const contentKey = showingDetail ? (savedId ?? "current") : "list";
 
@@ -259,40 +251,28 @@ export function SchedulePage() {
               </>
             ) : (
               <>
-                {/* "지금 일정"도 저장한 일정과 같은 자격의 목록 한 줄이다 — 저장
-                여부와 무관하게 눌러야 상세가 뜬다. */}
-                {lastSchedule?.schedule && (
-                  <button
-                    type="button"
-                    onClick={() => setViewingCurrent(true)}
-                    className="flex items-center gap-3 rounded-2xl border border-border p-3 text-left"
-                  >
-                    {identity && <IdentityAvatar identity={identity} size="md" />}
-                    <span className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-ink">
-                        {isEn ? "Current schedule" : "지금 일정"}
-                      </p>
-                      <p className="truncate text-[11px] text-muted">
-                        {lastSchedule.schedule.route_summary}
-                      </p>
-                    </span>
-                  </button>
-                )}
-
                 <SavedScheduleList />
 
                 {/*
-              **짠 일정이 하나도 없을 때만** 나온다 — 지금 일정도, 저장한 일정도
-              없을 때다. 목록을 아직 못 받아온 동안(null)에는 띄우지 않는다(잠깐
-              스쳤다 사라진다).
+              **저장한 일정이 없을 때만** 나온다. 검색바·달력 아래에 붙는다 —
+              목록의 틀은 늘 보이고(SavedScheduleList 머리말) 그 안이 비었을 때
+              무엇을 할지를 여기서 안내한다. 목록을 아직 못 받아온 동안(null)에는
+              띄우지 않는다(잠깐 스쳤다 사라진다).
+
+              문구가 "짠 일정이 없어요"가 아니라 "저장한 일정이 없어요"인 이유는
+              2026-09-16에 "지금 일정" 줄을 없앴기 때문이다 — 이제 저장하지 않은
+              일정은 여기 오지 않으므로, 방금 일정을 짠 사람도 이 화면을 본다.
+              "짠 일정이 없어요"는 그 사람에게 거짓말이 된다.
             */}
-                {!lastSchedule && savedList !== null && savedList.length === 0 && (
+                {savedList !== null && savedList.length === 0 && (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 py-14 text-center">
                     <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
                       <RouteIcon size={22} />
                     </span>
                     <p className="text-sm text-muted">
-                      {isEn ? "No schedule yet." : "아직 짠 일정이 없어요."}
+                      {isEn
+                        ? "No saved schedules yet."
+                        : "저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요."}
                     </p>
                     <button
                       type="button"
