@@ -52,6 +52,11 @@ import {
   RoadTrafficStatusSection,
 } from "./CongestionForecastBars";
 import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
+import { CollapseToggleButton } from "./CollapseToggleButton";
+import { splitOverviewParagraphs } from "../../utils/overviewText";
+import { hasSeoulRealtimeContent, hasTourApiContent } from "../../utils/dataSourceAttribution";
+import { SeoulRealtimeSourceNote, TourApiSourceNote } from "./SourceNotes";
+import { HomepageLink } from "./HomepageLink";
 
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
@@ -68,7 +73,7 @@ interface RecommendationDetailPreviewModalProps {
 }
 
 /**
- * 주소·혼잡도·행사 INFO는 첫 응답에서 필요한 값만 받아온다. 카드 클릭 때만
+ * 주소·혼잡도·행사·개요 INFO는 첫 응답에서 필요한 값만 받아온다. 카드 클릭 때만
  * 전체 PlaceDetails를 보강 조회해, 답변 단계의 불필요한 상세 API 호출은 피한다.
  */
 function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
@@ -78,7 +83,12 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   // 후기 답변 카드는 추천 카드와 같은 상세를 보여준다(사용자 결정, 2026-09-14).
   // C가 사진·개요를 이미 실어 보내지만 취향 태그·대표 후기(preference_insights)는
   // place-details 응답에만 있어서, 그 절을 띄우려면 여기서 한 번 더 조회해야 한다.
-  if (card?.question_type === "review_opinion") return true;
+  //
+  // 개요 답변(general_info)도 같다(사용자 결정, 2026-09-16). 개요·사진은 이미
+  // 왔으니 "더 받을 게 없다"고 건너뛰고 있었는데, 그 판단에서 후기가 빠져 있어
+  // 이 카드에서만 방문자 후기 절이 통째로 비었다. 호출은 답변 단계가 아니라
+  // 카드를 연 순간이라 목록 응답은 느려지지 않는다.
+  if (card && ["review_opinion", "general_info"].includes(card.question_type)) return true;
   return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 
@@ -263,6 +273,77 @@ function CollapsibleDetailText({
         </button>
       )}
     </div>
+  );
+}
+
+/*
+ * 개요는 접힌 상태에서 여섯 줄까지만 보이고, 버튼으로 펴고 다시 접는다.
+ *
+ * 답변 카드와 같은 규칙이다 — 개요가 수백 자인 장소(경복궁 등)에서는 이 절
+ * 하나가 모달의 나머지를 전부 아래로 밀어낸다.
+ *
+ * **자르는 것이 아니라 접는다.** 넘치는 부분을 가릴 뿐 원문은 그대로 남으므로
+ * 낭독기와 브라우저 찾기는 전문을 본다.
+ *
+ * 접는 높이는 줄 수(line-clamp)가 아니라 최대 높이로 준다. 본문이 여러 문단으로
+ * 나뉘어 있어 line-clamp가 문단을 가로질러 세지 못하기 때문이다. 10.5rem은
+ * leading-7(1.75rem) × 6줄이라, 줄 간격을 바꾸면 이 값도 같이 바꿔야 한다.
+ */
+function OverviewSection({ overview, isEn }: { overview: string; isEn: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const clampRef = useRef<HTMLDivElement | null>(null);
+  const paragraphs = splitOverviewParagraphs(overview);
+
+  /* 글자 수가 아니라 실제로 넘쳤는지로 판정한다 — 화면 폭과 언어에 따라 같은
+     값도 줄 수가 달라져서, 글자 수로 재면 어떤 화면에서는 버튼이 헛돈다. */
+  useEffect(() => {
+    const node = clampRef.current;
+    if (!node || expanded) return;
+    const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [overview, expanded]);
+
+  return (
+    /* 위 정보 표는 바깥까지 닿는 흰 상자라 그 상자의 글자보다 안쪽에서 시작한다.
+       개요를 모달 가장자리에 붙이면 표 안의 글자보다 바깥으로 튀어나와, 같은
+       화면인데 두 개의 글줄 시작선이 생긴다. 상자 안쪽 여백(px-4)과 맞춘다. */
+    <section className="flex flex-col gap-2 px-4">
+      <h3 className="text-xs font-bold text-label">{isEn ? "Overview" : "개요"}</h3>
+      <div className="relative">
+        <div
+          ref={clampRef}
+          className={`flex flex-col gap-3 text-sm leading-7 text-ink${
+            expanded ? "" : " max-h-[10.5rem] overflow-hidden"
+          }`}
+        >
+          {paragraphs.map((paragraph, index) => (
+            <p key={`${index}-${paragraph.slice(0, 12)}`} className="whitespace-pre-line">
+              {paragraph}
+            </p>
+          ))}
+        </div>
+        {/* 접힌 동안 마지막 줄을 배경색으로 흐린다. 글이 여기서 끝난 것이 아니라
+            이어진다는 것을 버튼을 읽기 전에 눈으로 먼저 알 수 있다. */}
+        {!expanded && overflowing && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-bg to-transparent"
+          />
+        )}
+      </div>
+      {/* 편 뒤에는 넘침 판정이 거짓이 되므로(가릴 것이 없다) expanded도 함께 본다. */}
+      {(overflowing || expanded) && (
+        <CollapseToggleButton
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          isEn={isEn}
+        />
+      )}
+    </section>
   );
 }
 
@@ -944,18 +1025,17 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
 
 function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
   return (
-    <div className="flex flex-wrap gap-2">
-      {/* **출처는 링크가 아니라 라벨이다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
-          신청 안내라 사용자가 읽을 화면이 아니다. 어디서 온 값인지만 밝히고 누를 수는
-          없게 둔다 — 화살표(↗)를 떼고 hover 반응도 없앤 것이 그 표시다.
-          **색은 옆 칩들과 같은 파랑으로 남긴다.** 회색으로 낮췄더니 눌리지 않는 칩이
-          아니라 비활성된 버튼처럼 보였다(2026-09-09). 옆의 두 칩(주차정보 포털·혼잡도
-          지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
-      {card.realtime_source_url && (
-        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300">
-          서울시 데이터
-        </span>
-      )}
+    /* 이 묶음은 실시간 절의 오른쪽 위에 놓인다. 출처를 맨 윗줄에 두어 그 아래
+       링크 칩들과 세로로 맞춘다 — 표기와 링크는 성격이 다르지만 "이 절이 어디서
+       온 무엇인지"를 한자리에서 읽게 된다. */
+    <div className="flex flex-col items-end gap-1.5">
+      {/* 이 절의 제목·라벨이 모두 한국어 고정이라 표기도 한국어로 둔다. */}
+      <SeoulRealtimeSourceNote />
+      <div className="flex flex-wrap justify-end gap-2">
+      {/* 출처 칩은 없다. 어디서 온 값인지는 화면 맨 아래 출처 줄이 관광공사 표기와
+          같은 모양으로 말한다(2026-09-16) — 예전에는 여기 파란 칩으로 떠서, 같은
+          뜻의 표기가 두 기관 사이에서 서로 다른 모양이었다. 옆의 두 칩(주차정보
+          포털·혼잡도 지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
       {isRealtimeParkingCard(card) && (
         <a
           href={SEOUL_PARKING_PORTAL_URL}
@@ -975,7 +1055,8 @@ function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
         >
           실시간 혼잡도 지도 ↗
         </a>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -1793,13 +1874,13 @@ export function RecommendationDetailPreviewModal({
             h-1.5(6px)로 16px에서 끝나고, 아래 스크롤 영역의 pt-3(12px)이 더해진다.
             셋 중 하나를 바꾸면 이 값도 같이 바꿔야 한다.
 
-            right-3(12px)은 사진의 오른쪽 끝(스크롤 영역 px-4 = 16px)보다 4px
-            바깥이다. 딱 맞추면(right-4) 버튼의 모서리와 사진의 둥근 모서리가
+            right-5(20px)는 사진의 오른쪽 끝(스크롤 영역 px-6 = 24px)보다 4px
+            바깥이다. 딱 맞추면(right-6) 버튼의 모서리와 사진의 둥근 모서리가
             겹쳐 그 사이에 초승달 모양 틈이 보인다 — 조금 넘겨서 덮는다. */}
         <button
           type="button"
           onClick={handleClose}
-          className="absolute right-3 top-7 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/70 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-brand"
+          className="absolute right-5 top-7 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/70 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-brand"
           aria-label={isEn ? "Close details" : "상세 창 닫기"}
         >
           <X size={20} />
@@ -1809,7 +1890,7 @@ export function RecommendationDetailPreviewModal({
             없으면 상세를 맨 위까지 올린 뒤 더 올릴 때 뒤의 채팅이 함께 밀린다 —
             이 모달은 document.body로 포털되고 #root는 min-height라, 대화가 길면
             문서 자체가 스크롤되기 때문이다. */}
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5 pt-3">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-6 pb-5 pt-3">
           {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
               PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
               화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
@@ -1987,20 +2068,22 @@ export function RecommendationDetailPreviewModal({
           ) : (
             detailCard && (
               <>
+                {/* 출처는 운영정보 표의 오른쪽 위에 둔다 — 이 표부터 아래 편의시설·
+                    개요까지가 전부 관광공사 값이라, 그 묶음이 시작하는 자리에서
+                    한 번 밝히면 된다. 실시간 절의 출처가 그 절 오른쪽 위에 붙는
+                    것과 같은 자리 규칙이다(2026-09-16 사용자 결정). */}
+                {hasTourApiContent(detailCard) && (
+                  <div className="-mb-2 flex justify-end">
+                    <TourApiSourceNote isEn={isEn} />
+                  </div>
+                )}
                 <InfoTable card={detailCard} isEn={isEn} />
                 <AccessibilityTable card={detailCard} isEn={isEn} />
               </>
             )
           )}
 
-          {detailCard?.overview && (
-            <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-bold text-label">{isEn ? "Overview" : "개요"}</h3>
-              <p className="whitespace-pre-line text-sm leading-relaxed text-ink">
-                {detailCard.overview}
-              </p>
-            </section>
-          )}
+          {detailCard?.overview && <OverviewSection overview={detailCard.overview} isEn={isEn} />}
 
           {!isLoading &&
             (detailCard ? (
@@ -2018,7 +2101,16 @@ export function RecommendationDetailPreviewModal({
                               ? (ANSWER_FIELD_LABELS_EN[key] ?? ANSWER_FIELD_LABELS[key] ?? key)
                               : (ANSWER_FIELD_LABELS[key] ?? key)}
                           </dt>
-                          <AnswerValue value={value} />
+                          {/* 홈페이지만 링크 버튼이다 — 이 행에서 하는 일은 여는
+                              것 하나뿐이라 긴 주소를 그대로 적을 이유가 없다.
+                              나머지 값은 문장이라 그 안의 주소만 링크가 된다. */}
+                          {key === "homepage" ? (
+                            <dd className="min-w-0">
+                              <HomepageLink value={value} isEn={isEn} />
+                            </dd>
+                          ) : (
+                            <AnswerValue value={value} />
+                          )}
                         </div>
                       ))}
                     </dl>
@@ -2029,6 +2121,14 @@ export function RecommendationDetailPreviewModal({
                   (detailCard.concentration_forecasts?.length ?? 0) > 0 ||
                   detailCard.question_type === "realtime_traffic") && (
                   <section className="overflow-hidden rounded-xl border border-border bg-white">
+                    {/* 실시간 항목·지도가 없는 카드(예측 막대만 있는 혼잡도 답변)는
+                        위 실시간 절이 통째로 안 그려져 출처가 사라진다. 그때는 이
+                        절의 오른쪽 위가 서울시 값이 시작하는 자리다. */}
+                    {!hasRealtimeDetails && hasSeoulRealtimeContent(detailCard) && (
+                      <div className="flex justify-end px-4 pt-3">
+                        <SeoulRealtimeSourceNote isEn={isEn} />
+                      </div>
+                    )}
                     <ConcentrationForecastBars card={detailCard} />
                     <PopulationForecastBars card={detailCard} />
                     <SeoulRealtimeSummarySection card={detailCard} />
@@ -2036,6 +2136,10 @@ export function RecommendationDetailPreviewModal({
                   </section>
                 )}
                 <PreferenceInsightsSection card={detailCard} />
+                {/* 출처는 맨 아래 한 줄로만 둔다. 이 화면의 사진·개요·운영정보·
+                    편의시설이 전부 관광공사 값이라, 절마다 붙이면 같은 말이
+                    다섯 번 반복된다. 관광공사 값이 하나도 없는 카드(서울시
+                    실시간 전용)에서는 판정이 거짓이라 그려지지 않는다. */}
               </>
             ) : (
               <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
@@ -2051,7 +2155,7 @@ export function RecommendationDetailPreviewModal({
         </div>
 
         {showRouteFooter && (
-          <div className="relative shrink-0 bg-bg/80 px-4 pb-7 pt-4 backdrop-blur-md">
+          <div className="relative shrink-0 bg-bg/80 px-6 pb-7 pt-4 backdrop-blur-md">
             {/* **바 자체가 반투명이다**(2026-09-08). 처음에는 불투명한 bg-bg 바
                 위에 페이드 띠만 얹었는데, 그러니 그 띠가 내용 위에 덧칠된
                 별개의 층으로 읽혀 새 선처럼 보였다(사용자 보고). 지금은 바가
