@@ -80,3 +80,33 @@ it("질문과 일치한 취향 태그만 강조한다", () => {
     "data-query-match",
   );
 });
+
+/*
+ * **좁은 화면에서 둘째 태그가 잘리던 것을 막는다(2026-09-16).**
+ *
+ * 표가 table-fixed에 장소 칸이 w-1/3이라 태그 칸이 고정되는데, 칩은
+ * whitespace-nowrap이라 넘치면 바깥 카드의 overflow-hidden이 말없이 잘라냈다
+ * (기기 390px에서 20~31px, 320px에서 66~77px — 실제 브라우저 측정).
+ *
+ * jsdom은 레이아웃을 계산하지 않아 "정말 잘리는지"는 여기서 잴 수 없다. 그래서
+ * 줄바꿈을 막는 클래스가 되돌아오는 것만 막는다 — 잘림 자체의 근거는 위 실측이다.
+ */
+it("좁은 화면에서 태그가 다음 줄로 내려갈 수 있어야 한다", () => {
+  render(
+    <PreferenceTagSummaryTable
+      items={[{
+        place_id: "place-1",
+        name: "이한열기념관",
+        preference_tags: [
+          { code: "culture", label: "문화·예술을 즐기기 좋은", mention_count: 8 },
+          { code: "photo", label: "사진 찍기 좋은", mention_count: 5 },
+        ],
+      }]}
+      language="ko"
+    />,
+  );
+
+  const row = screen.getByText("문화·예술을 즐기기 좋은").closest("div");
+  expect(row).toHaveClass("flex-wrap");
+  expect(row).not.toHaveClass("flex-nowrap");
+});

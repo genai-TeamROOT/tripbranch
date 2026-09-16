@@ -70,7 +70,27 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
                   {item.name}
                 </th>
                 <td className="px-4 py-2.5">
-                  <div className="flex flex-nowrap gap-1.5">
+                  {/*
+                    **좁은 화면에서는 태그가 다음 줄로 내려간다(2026-09-16).**
+
+                    전에는 flex-nowrap이었다. 표가 table-fixed에 장소 칸이 w-1/3이라
+                    태그 칸 너비가 화면에 따라 고정되는데, 칩은 whitespace-nowrap이라
+                    줄바꿈도 축소도 하지 않는다. 그래서 넘친 만큼을 바깥 카드의
+                    overflow-hidden(둥근 모서리용)이 **말없이 잘라냈다.** 스크롤도
+                    안 되니 둘째 태그를 볼 방법이 아예 없었다.
+
+                    실측(태그 문구 실제 값 기준):
+                      기기 390px → 태그 칸 205px, 칩 247~253px, 20~31px 잘림
+                      기기 360px → 185px 칸에 40~51px 잘림
+                      기기 320px → 159px 칸에 66~77px 잘림
+                    390px에서 이미 모든 행의 둘째 태그가 잘렸다.
+
+                    줄바꿈을 허용하면 280px까지 넘침이 0이다. 대가는 높이다 —
+                    행 44px → 74px(3행 기준 표 133px → 222px). 장소 칸을 좁혀
+                    한 줄에 맞추는 안도 재봤지만, w-1/5까지 줄여야 들어가고
+                    그러면 장소명이 서너 줄로 깨져서 접었다.
+                  */}
+                  <div className="flex flex-wrap gap-1.5">
                     {item.preference_tags?.slice(0, 2).map((tag) => (
                       <span
                         key={tag.code}
