@@ -139,7 +139,8 @@ test("약관 보기를 누르면 약관 모달이 열린다", async () => {
 
   const dialog = await screen.findByRole("dialog");
   expect(dialog).toHaveAccessibleName("이용약관 및 개인정보처리방침");
-  expect(dialog).toHaveTextContent("준비 중");
+  /* 껍데기가 아니라 본문이 실려 있는지 본다. 조별 검증은 TermsModal.test.tsx 몫이다. */
+  expect(dialog).toHaveTextContent("제1조 (서비스의 내용)");
 });
 
 /* 모달을 읽었다고 동의가 켜지면 안 된다 — 동의는 사용자가 직접 눌러야 한다. */

@@ -312,6 +312,34 @@ class SupabaseStateStore:
             prefer="resolution=merge-duplicates,return=minimal",
         )
 
+    def list_session_ids_for_user(self, user_id: str) -> list[str]:
+        """탈퇴용. **제목 없는 세션도 담는다** — 남는 행이 없어야 한다(store.py 주석).
+
+        list_sessions_for_user와 달리 title 필터가 없고 id만 가져온다.
+        agent_states_user_recent_idx(user_id, ...)의 앞 컬럼을 그대로 탄다.
+        """
+        response = self._request(
+            "GET",
+            "/agent_states",
+            params={"user_id": f"eq.{user_id}", "select": "session_id"},
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid agent_states response")
+        try:
+            return [str(row["session_id"]) for row in payload]
+        except (KeyError, TypeError):
+            raise StateStoreError("invalid agent_states row") from None
+
+    def delete_preferences(self, user_id: str) -> None:
+        """탈퇴 전용. 화면의 "취향 비우기"는 빈 목록 저장이다(store.py 주석)."""
+        self._request(
+            "DELETE",
+            "/user_preferences",
+            params={"user_id": f"eq.{user_id}"},
+            prefer="return=minimal",
+        )
+
     # ------------------------------------------------------------ Favorites
 
     def get_favorites(self, user_id: str) -> UserFavoriteList | None:
@@ -336,6 +364,15 @@ class SupabaseStateStore:
             params={"on_conflict": "user_id"},
             json=favorites.model_dump(mode="json"),
             prefer="resolution=merge-duplicates,return=minimal",
+        )
+
+    def delete_favorites(self, user_id: str) -> None:
+        """탈퇴 전용. 취향과 같은 이유로 비우기와 삭제를 가른다(store.py 주석)."""
+        self._request(
+            "DELETE",
+            "/user_favorites",
+            params={"user_id": f"eq.{user_id}"},
+            prefer="return=minimal",
         )
 
     # ------------------------------------------------------------ ChangeLog
