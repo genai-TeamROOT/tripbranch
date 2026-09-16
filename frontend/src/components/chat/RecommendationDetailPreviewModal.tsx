@@ -1211,7 +1211,11 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   if (isRealtimeSubwayCard(card)) return <RealtimeSubwayEntries card={card} />;
 
   return (
-    <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 실시간 인구 칸·
+       돌발상황 칸과 같은 규칙이다. 하늘색 계열(sky-50/sky-100)을 쓰고 있었는데,
+       이 구획에서 색이 뜻을 나르는 것은 혼잡도 단계 칩뿐이라 바탕이 그 신호와
+       경쟁했다. 테두리는 팔레트 색이 아니라 토큰(border)을 쓴다. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -2089,7 +2093,9 @@ export function RecommendationDetailPreviewModal({
             (detailCard ? (
               <>
                 {answerEntries.length > 0 && (
-                  <section className="rounded-xl bg-sky-light p-3">
+                  /* 위와 같은 규칙 — 바탕을 걷고 테두리로 구분한다(2026-09-16).
+                     여기는 테두리도 없이 bg-sky-light로만 묶여 있었다. */
+                  <section className="rounded-xl border border-border p-3">
                     <h3 className="text-sm font-semibold text-ink">
                       {isEn ? "Related info" : "관련 정보"}
                     </h3>
