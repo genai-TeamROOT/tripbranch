@@ -72,6 +72,8 @@ python -m pip install -e ".[dev]"
 | `LLM_FAST_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash` | 위 모델 실패 시 폴백(콤마 구분) |
 | `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 사용자 문장·일정 생성용 1순위 모델 |
 | `LLM_GENERATION_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash-lite` | 위 모델 실패 시 폴백(콤마 구분) |
+| `MODE_JUDGE_MODEL_NAME` | `gemini-3.1-flash-lite` | 구간 이동수단(도보·대중교통) 판정 전용 모델. 비우면 `LLM_GENERATION_MODEL_NAME`을 쓴다. 프롬프트 `mode_judge.select` 1.1.0과 짝이다 |
+| `MODE_JUDGE_FALLBACK_MODEL_NAMES` | 빈 값 | 위 모델 실패 시 폴백(콤마 구분). 비우면 생성 모델 묶음 전체를 쓴다 |
 | `GEMINI_AUDIO_MODEL_NAME` | 빈 값 | 음성→텍스트 전용 모델. 비우면 `LLM_FAST_MODEL_NAME`을 쓴다 |
 | ~~`LLM_MODEL_NAME`~~ / ~~`LLM_FALLBACK_MODEL_NAMES`~~ | — | **폐지됐다.** 남아 있으면 부팅에서 막는다(D-042) — 역할별 위 네 개로 대체 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |

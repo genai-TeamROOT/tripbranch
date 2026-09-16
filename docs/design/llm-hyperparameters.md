@@ -199,6 +199,7 @@
 | `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 문장·일정 생성 1순위 모델 |
 | `LLM_GENERATION_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash-lite` | 위 모델의 폴백(콤마 구분) |
 | ~~`LLM_MODEL_NAME`~~ / ~~`LLM_FALLBACK_MODEL_NAMES`~~ | — | **폐지됐다.** 남아 있으면 부팅에서 막는다(D-042). 역할별 모델 라우팅 도입(2026-08-18)으로 위 네 개가 대체했다 |
+| `MODE_JUDGE_MODEL_NAME` | `gemini-3.1-flash-lite` | 구간 이동수단 판정 전용 모델. 비우면 생성 묶음을 따른다. 추론 단계는 다른 호출과 같은 MINIMAL이고, 이 판정에서는 LOW·HIGH가 이득이 없다(`backend/test_results/mode_judge_thinking_2026-09-14/`) |
 | `LLM_API_TIMEOUT_SECONDS` | 빈 값(`EXTERNAL_API_TIMEOUT_SECONDS`로 폴백) | Gemini 전용 타임아웃, Tool/DB 호출과 분리(2026-08-11) |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | Gemini 호출에만 적용되는 모델 하나당 재시도 횟수(지수 백오프) |
 
