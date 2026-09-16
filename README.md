@@ -61,7 +61,7 @@
 - 멀티턴 되묻기와 되묻기 답변의 Intent 유지
 - Rule 기반 카드 문장 조립 + 요약·GENERAL 답변의 LLM 생성
 - Backend 세션 상태의 Add/Update/Remove/Keep 조건 병합과 이력 관리
-- Gemini 호출 실패 시 같은 벤더 내 대체 모델 fallback
+- 역할별 Gemini 모델 묶음(판단·생성·추천 이유·이동수단 판정)과 호출 실패 시 같은 벤더 내 대체 모델 fallback
 
 ### 추천과 일정
 
@@ -72,6 +72,7 @@
 - Scoring 상위 후보에 한정한 집중률 후조회
 - 후보·거리·조건을 받아 LLM으로 일정을 편성하는 Schedule Planner
 - 활동 가능 시간에 따른 일정 항목 수 조정과 후보 부족 시 안내 반환
+- 날씨·동행·무장애 조건을 보고 일정 구간과 추천 후보의 도보·대중교통을 정하는 이동수단 판정(실패 시 직선거리 규칙)
 
 ### 외부 데이터 (Tool·Provider)
 
@@ -246,10 +247,13 @@ Backend Provider는 `PROVIDER_MODE=fake|real`로 일괄 전환하며, 개별 `*_
 
 | 환경변수 | 기본값 | 용도 |
 | --- | --- | --- |
-| `PLACE_DETAILS_SOURCE` | `tour_api` | 후보별 상세·운영정보 출처(`supabase` 시 사전 동기화 테이블 사용) |
+| `PLACE_DETAILS_SOURCE` | `supabase` | 후보별 상세·운영정보 출처(`tour_api` 시 TourAPI 상세를 직접 호출) |
 | `STATE_STORE_BACKEND` | `memory` | 세션 상태 저장소(`supabase` 시 DB 영속화) |
-| `LLM_MODEL_NAME` | `gemini-2.5-flash` | 1순위 Gemini 모델 |
-| `LLM_FALLBACK_MODEL_NAMES` | 빈 값 | 재시도 소진 시 순서대로 시도할 대체 모델(쉼표 구분) |
+| `LLM_FAST_MODEL_NAME` | `gemini-3.5-flash-lite` | 의도 분류·조건 추출 등 짧은 구조화 판단 모델 |
+| `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 답변·비교·일정 편성 등 문장 생성 모델 |
+| `PLACE_REASON_MODEL_NAME` | `gemini-3.1-flash-lite` | 장소 상세 카드의 추천 이유 문장 모델 |
+| `MODE_JUDGE_MODEL_NAME` | `gemini-3.1-flash-lite` | 구간 이동수단(도보·대중교통) 판정 모델. 비우면 `LLM_GENERATION_MODEL_NAME`을 따름 |
+| `*_FALLBACK_MODEL_NAMES` | 역할마다 다름 | 위 모델별 재시도 소진 시 순서대로 시도할 대체 모델(쉼표 구분) |
 | `LLM_API_TIMEOUT_SECONDS` | 빈 값 | LLM 전용 timeout. 비우면 `EXTERNAL_API_TIMEOUT_SECONDS`를 사용 |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | TourAPI·Naver·Supabase 등 일반 외부 호출 timeout |
 
@@ -257,6 +261,10 @@ Frontend의 `VITE_API_BASE_URL`은 비워두면 `/api`를 사용하며(Vite dev 
 `http://localhost:8000`으로 프록시), `VITE_SHOW_INTERPRETATION_DEBUG`는 Interpret
 디버그 카드 표시를, `VITE_TEST_DEVICE_LOCATION`은 로컬 테스트용 고정 위치를
 제어합니다. `VITE_` 변수에는 비밀값을 넣으면 안 됩니다.
+
+예전 단일 모델 설정 `LLM_MODEL_NAME`·`LLM_FALLBACK_MODEL_NAMES`는 폐지됐으며, `.env`에
+남아 있으면 부팅에서 막습니다. 모델별 선택 근거는 `backend/.env.example` 주석과
+`backend/test_results/`의 측정 기록에 있습니다.
 
 상세한 설정은 [개발 가이드](docs/development-guide.md)를 참고하세요.
 

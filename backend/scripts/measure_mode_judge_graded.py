@@ -298,6 +298,7 @@ async def run(args: argparse.Namespace) -> dict:
         api_key=settings.llm_api_key,
         fast_model_names=[args.model],
         generation_model_names=[args.model],
+        mode_judge_model_names=[args.model],
         timeout_seconds=TIMEOUT_S,
     )
     calls: list[dict] = []
