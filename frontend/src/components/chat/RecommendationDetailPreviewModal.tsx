@@ -816,7 +816,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
   const items = card.realtime_detail_items ?? [];
   const groups = groupSubwayArrivals(items);
   return (
-    <section className="rounded-xl border border-border bg-chip/60 p-4">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 다른 구획과 같은 규칙. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-ink">실시간 지하철 도착 정보</h3>
@@ -831,7 +832,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
         {groups.map((group) => (
           <article
             key={group.stationLine}
-            className="min-w-0 rounded-lg border border-border bg-white px-3 py-2.5"
+            /* 바깥 구획의 바탕이 사라졌으니 흰 바탕으로 띄울 이유도 없다. */
+            className="min-w-0 rounded-lg border border-border px-3 py-2.5"
           >
             <div className="flex min-w-0 items-center gap-1.5">
               <span
@@ -852,7 +854,14 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
               className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "sm:grid-cols-2" : "grid-cols-1"}`}
             >
               {group.directions.map((direction) => (
-                <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2.5 py-2">
+                /* **방향 칸은 테두리를 반드시 남긴다.** 상행/하행이 나열 순서만으로는
+                   구분이 안 된다는 실사용 지적으로 칸을 나눈 자리다(2026-09-02).
+                   바탕만 걷고 테두리를 안 주면 두 방향이 붙어 읽혀 그 지적이 되살아난다
+                   — 실제로 렌더해 보고 확인했다. */
+                <div
+                  key={direction.direction}
+                  className="min-w-0 rounded-lg border border-border px-2.5 py-2"
+                >
                   <p className="text-xs font-semibold text-muted">{direction.direction}</p>
                   <div className="mt-1 grid gap-1">
                     {direction.items.map((item, index) => (
@@ -865,7 +874,7 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
           </article>
         ))}
         {items.length === 0 && (
-          <p className="rounded-lg bg-white px-3 py-4 text-center text-sm text-muted">
+          <p className="rounded-lg border border-border px-3 py-4 text-center text-sm text-muted">
             지하철 도착 정보를 제공하지 않는 역이에요.
           </p>
         )}
