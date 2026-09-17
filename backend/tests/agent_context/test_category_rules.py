@@ -33,15 +33,32 @@ def test_multiple_place_types_preserve_request_order() -> None:
 def test_place_tag_uses_small_category_and_infers_place_type() -> None:
     plan = build_category_query_plan([], ["카페"])
 
-    assert len(plan.filters) == 1
-    category_filter = plan.filters[0]
-    assert category_filter is not None
-    assert category_filter.content_type_id == "39"
-    assert category_filter.lcls_systm1 == "FD"
-    assert category_filter.lcls_systm2 == "FD05"
-    assert category_filter.lcls_systm3 == "FD050100"
+    assert [item.lcls_systm3 for item in plan.filters if item] == [
+        "FD050100",
+        "FD050200",
+        "FD050300",
+    ]
     assert plan.resolved_place_types == ("restaurant",)
     assert plan.resolved_place_tags == ("카페",)
+
+
+def test_dining_tag_excludes_cafes_and_bars_from_restaurant_search() -> None:
+    plan = build_category_query_plan(["restaurant"], ["식당"])
+
+    assert [item.lcls_systm3 for item in plan.filters if item] == [
+        "FD010100",
+        "FD010200",
+        "FD020100",
+        "FD020200",
+        "FD020300",
+        "FD020400",
+        "FD020500",
+        "FD030200",
+        "FD030300",
+        "FD030400",
+        "FD030600",
+    ]
+    assert plan.resolved_place_tags == ("식당",)
 
 
 def test_broad_tag_expands_to_multiple_small_category_filters() -> None:
@@ -64,7 +81,11 @@ def test_duplicate_conditions_are_removed_without_changing_order() -> None:
 
     assert plan.resolved_place_types == ("restaurant",)
     assert plan.resolved_place_tags == ("카페",)
-    assert len(plan.filters) == 1
+    assert [item.lcls_systm3 for item in plan.filters if item] == [
+        "FD050100",
+        "FD050200",
+        "FD050300",
+    ]
 
 
 def test_unknown_conditions_are_reported_without_broadening_search() -> None:
@@ -94,6 +115,8 @@ def test_tag_filters_take_priority_over_broad_type_filter() -> None:
 
     assert [item.lcls_systm3 for item in plan.filters if item] == [
         "FD050100",
+        "FD050200",
+        "FD050300",
         "VE070100",
     ]
 
@@ -109,7 +132,7 @@ def test_no_exclude_tags_plans_nothing_to_filter() -> None:
 def test_exclude_tags_resolve_to_small_codes() -> None:
     plan = build_excluded_category_plan(["박물관", "카페"])
 
-    assert plan.small_codes == frozenset({"VE070100", "FD050100"})
+    assert plan.small_codes == frozenset({"VE070100", "FD050100", "FD050200", "FD050300"})
     assert plan.unmapped_tags == ()
 
 

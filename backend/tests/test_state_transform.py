@@ -6,6 +6,8 @@ docs/design/test-cases.md의 TC-07~09와 conditions-schema.md §5 예시5(place_
 
 from __future__ import annotations
 
+import pytest
+
 from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
@@ -15,6 +17,7 @@ from app.schemas import (
     ModifyPayload,
     ModifyType,
     OutputStatus,
+    PlaceTag,
     RecommendPayload,
     UserConditions,
     WeatherIntent,
@@ -103,16 +106,13 @@ def test_modify_category_replacement_updates_place_types_and_tags_together() -> 
             ),
         ),
         _context(
-            user_conditions=StateUserConditions(
-                place_types=["restaurant"], place_tags=["카페"]
-            )
+            user_conditions=StateUserConditions(place_types=["restaurant"], place_tags=["카페"])
         ),
         "공원도 추천해줘",
     )
 
     operations = {
-        (operation.op, operation.field): operation.value
-        for operation in request.operations
+        (operation.op, operation.field): operation.value for operation in request.operations
     }
     assert operations[("Update", "place_types")] == ["attraction"]
     assert operations[("Update", "place_tags")] == ["공원"]
@@ -183,6 +183,48 @@ def test_recommend_still_uses_update_for_place_types_and_place_tags() -> None:
     ops = {(op.op, op.field): op.value for op in request.operations}
     assert ops[("Update", "place_types")] == ["restaurant"]
     assert ops[("Update", "place_tags")] == ["카페"]
+
+
+@pytest.mark.parametrize("phrase", ["식당 추천해줘", "맛집 찾아줘", "혼밥하기 좋은 곳"])
+def test_explicit_dining_words_are_narrowed_to_dining_subcategory(phrase: str) -> None:
+    request = transform(
+        LLMOutput(
+            intent=Intent.RECOMMEND,
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(conditions=UserConditions(place_types=["restaurant"])),
+        ),
+        _context(),
+        phrase,
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_types")] == ["restaurant"]
+    assert operations[("Update", "place_tags")] == [PlaceTag.RESTAURANT]
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected_tag"),
+    [("카페 추천해줘", PlaceTag.CAFE), ("술집 추천해줘", PlaceTag.BAR)],
+)
+def test_explicit_cafe_and_bar_words_are_narrowed_even_when_llm_omits_tag(
+    phrase: str, expected_tag: PlaceTag
+) -> None:
+    request = transform(
+        LLMOutput(
+            intent=Intent.RECOMMEND,
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(conditions=UserConditions(place_types=["restaurant"])),
+        ),
+        _context(),
+        phrase,
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_tags")] == [expected_tag]
 
 
 def test_recommend_skips_null_and_empty_fields() -> None:
@@ -682,14 +724,11 @@ def _modify_exclude_tags(final: list[str], current: list[str]) -> list[tuple]:
         _context(user_conditions=StateUserConditions(exclude_tags=current)),
         "박물관도 포함해줘",
     )
-    return [
-        (op.op, op.field, op.value if op.has_value else None)
-        for op in request.operations
-    ]
+    return [(op.op, op.field, op.value if op.has_value else None) for op in request.operations]
 
 
 def test_exclude_tags_partial_removal_becomes_remove_operation() -> None:
-    """"박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
+    """ "박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
 
     assert _modify_exclude_tags(["카페"], ["박물관", "카페"]) == [
         ("Remove", "exclude_tags", ["박물관"])
@@ -718,6 +757,4 @@ def test_exclude_tags_unchanged_produces_no_operation() -> None:
 def test_exclude_tags_cleared_still_uses_valueless_remove() -> None:
     """전체 해제는 기존 동작(값 없는 Remove)을 그대로 유지한다."""
 
-    assert _modify_exclude_tags([], ["박물관", "카페"]) == [
-        ("Remove", "exclude_tags", None)
-    ]
+    assert _modify_exclude_tags([], ["박물관", "카페"]) == [("Remove", "exclude_tags", None)]

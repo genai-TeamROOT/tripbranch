@@ -651,6 +651,7 @@ class PlaceTag(StrEnum):
     DUTY_FREE = "면세점"
     DEPARTMENT_STORE = "백화점"
     # restaurant 하위
+    RESTAURANT = "식당"
     KOREAN_FOOD = "한식"
     JAPANESE_FOOD = "일식"
     CHINESE_FOOD = "중식"
