@@ -37,8 +37,8 @@ class PipelineDeps:
     travel_route_tool: TravelRouteToolProvider | None
     store: StateStore | None
     principal: object | None
-    # 보관함 장소를 편성 후보에 주입할 때만 쓴다(SCHEDULE-12 후속). 없으면
-    # 주입을 건너뛴다.
+    # 보관함 장소를 편성 후보에 주입할 때(SCHEDULE-12 후속)와 부분 재편성에서
+    # 유지한 장소의 사진을 채울 때 쓴다. 없으면 둘 다 건너뛴다.
     place_details_repository: object | None = None
 
 
@@ -183,6 +183,9 @@ async def schedule_node(
         # 구간 실측 조회에 쓴다(TP-216). 구 경로도 같은 값을 넘긴다 — 두 경로가
         # 다른 이동시간을 내면 같은 발화가 화면마다 다른 시각을 갖는다.
         travel_route_tool=deps.travel_route_tool,
+        # 부분 재편성에서 유지한 장소의 사진을 다시 조회한다. 구 경로도 같은 값을
+        # 넘긴다 — 한쪽만 넘기면 경로에 따라 유지한 자리의 사진이 빠진다.
+        place_details_repository=deps.place_details_repository,
     )
     return {"response": response}
 

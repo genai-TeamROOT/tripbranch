@@ -259,8 +259,9 @@ class ScheduleItem(BaseModel):
     # INFO 전체(이름 재해석 + 외부 조회 + 취향 인사이트)를 타므로 정류장 수만큼
     # 부르면 일정을 열 때마다 외부 호출이 그 수만큼 나간다.
     #
-    # 후보에 없는 place_id(부분 재편성의 pinned 항목)는 None이고, 프론트는 그때
-    # 자리표시를 그린다 — operating_hours_display와 같은 취급이다.
+    # 부분 재편성의 pinned 항목은 후보에 없어서, 편성 전에 장소 DB에서 사진을 다시
+    # 조회해 채운다(agent_runtime._with_pinned_images). 조회하지 못한 장소는 None이고,
+    # 프론트는 그때 자리표시를 그린다.
     image_url: str | None = None
     # image_url이 404일 때 대신 그릴 주소. 추천 카드와 같은 규칙이다
     # (RecommendationItem.image_url_fallback 주석 참고).
