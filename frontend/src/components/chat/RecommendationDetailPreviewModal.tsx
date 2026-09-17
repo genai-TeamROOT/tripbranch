@@ -662,13 +662,13 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
   if (insights.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
+    <section className="rounded-xl border border-border p-4">
       <div className="flex items-baseline justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <h3 className="text-sm font-semibold text-ink">
             방문자 후기에 나타난 특징
           </h3>
-          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+          <p className="mt-0.5 text-xs text-muted">
             같은 문서에서 반복된 표현은 한 번만 집계했어요.
           </p>
         </div>
@@ -680,29 +680,29 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
             <details
               key={insight.code}
               open={index === 0}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+              className="rounded-lg border border-border px-3 py-2"
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <p className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                <p className="min-w-0 text-sm font-semibold text-ink">
                   {insight.label}
-                  <span className="ml-2 text-xs font-medium text-blue-600 dark:text-blue-300">
+                  <span className="ml-2 text-xs font-medium text-brand">
                     {insight.mention_count}개 후기
                   </span>
                 </p>
               </summary>
 
-              <div className="mt-2 space-y-3 border-t border-gray-100 pt-2.5 dark:border-gray-800">
+              <div className="mt-2 space-y-3 border-t border-border pt-2.5">
                 {insight.evidence.map((evidence, evidenceIndex) => (
                   <blockquote
                     key={`${evidence.text}-${evidenceIndex}`}
-                    className="border-l-2 border-blue-300 pl-3 text-sm leading-6 text-gray-700 dark:text-gray-300"
+                    className="border-l-2 border-brand/40 pl-3 text-sm leading-6 text-label"
                   >
                     <p>“{evidence.text}”</p>
                     <EvidenceSource evidence={evidence} />
                   </blockquote>
                 ))}
                 {insight.evidence.length === 0 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-xs text-muted">
                     대표 문장을 준비하고 있어요.
                   </p>
                 )}
@@ -726,12 +726,12 @@ function EvidenceSource({
       href={evidence.source_url}
       target="_blank"
       rel="noreferrer"
-      className="mt-1 inline-block text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+      className="mt-1 inline-block text-xs font-medium text-brand hover:underline"
     >
       {label} ↗
     </a>
   ) : (
-    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
+    <p className="mt-1 text-xs text-muted">{label}</p>
   );
 }
 
