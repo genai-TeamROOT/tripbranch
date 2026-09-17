@@ -800,10 +800,14 @@ class RealGeminiProvider:
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
     ) -> ProviderResult[str]:
         instruction = gemini_prompts.build_place_reason_instruction()
         payload = self._place_reason_payload(
-            place_name=place_name, category_label=category_label, insights=insights
+            place_name=place_name,
+            category_label=category_label,
+            insights=insights,
+            matched_preference_codes=matched_preference_codes,
         )
         result = await self._call_structured(
             instruction,
@@ -826,8 +830,17 @@ class RealGeminiProvider:
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
     ) -> dict[str, object]:
         """상세 카드 문장 생성에 넘겨도 되는 값만 상한 안에서 남긴다.
+
+        **사용자 취향과 맞은 태그를 먼저 넣는다.** 저장소가 주는 순서는 그 장소에서
+        후기에 많이 언급된 순서라, 사용자가 "조용한 데"를 말했어도 사진 이야기가
+        앞설 수 있다. 태그를 상위 3개만 넘기므로 순서 문제가 아니라 **일치한 태그가
+        아예 안 실리는** 문제가 된다. 그래서 `matched_preference_codes`(화면이
+        들고 있던 `preference_tags[].is_query_match`)에 걸리는 태그를 앞으로 당기고,
+        payload에서도 `matches_user_preference`로 표시해 프롬프트가 그 태그부터
+        말하게 한다. 코드가 비면 예전과 똑같이 언급 수 순서다.
 
         **순위·점수·조건 축을 넣지 않는다.** 그 정보는 카드가 이미 들고 있는 고정
         문장이 말하고, 이 문장은 그 아래에 붙는다(recommend/HISTORY.md의
@@ -844,6 +857,11 @@ class RealGeminiProvider:
         중복은 비용만 늘리는 것이 아니라 그 문장을 세 번 강조된 근거처럼 보이게 한다.
         """
 
+        matched = {code.strip() for code in matched_preference_codes if code.strip()}
+        # 정렬은 안정 정렬이다 — 일치 여부만 앞으로 당기고, 같은 그룹 안에서는
+        # 저장소가 준 언급 수 순서를 그대로 둔다.
+        ordered = sorted(insights, key=lambda insight: insight.code not in matched)
+
         seen: set[str] = set()
         tags: list[dict[str, object]] = []
         evidence: list[str] = []
@@ -857,8 +875,14 @@ class RealGeminiProvider:
             seen.add(normalized)
             into.append(normalized[: cls._REASON_MAX_EVIDENCE_CHARS])
 
-        for insight in insights[: cls._REASON_MAX_TAGS]:
-            tags.append({"label": insight.label, "mention_count": insight.mention_count})
+        for insight in ordered[: cls._REASON_MAX_TAGS]:
+            tag: dict[str, object] = {
+                "label": insight.label,
+                "mention_count": insight.mention_count,
+            }
+            if insight.code in matched:
+                tag["matches_user_preference"] = True
+            tags.append(tag)
             taken_here = len(evidence)
             for quote in insight.evidence:
                 # 부정 근거는 태그 안에 섞지 않고 따로 모은다. 섞으면 모델이 그 문장을
