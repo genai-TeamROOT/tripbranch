@@ -5,9 +5,9 @@
  * 호출 시점: vitest 실행 시 호출된다.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { DeveloperAuditTurn, ToolExecutionDebug } from "../../types";
+import type { DeveloperAuditTurn, RecommendationItem, ToolExecutionDebug } from "../../types";
 import { DeveloperAuditPanel } from "./DeveloperAuditPanel";
 
 const enrichmentExecution: ToolExecutionDebug = {
@@ -82,6 +82,142 @@ async function openToolsTab(execution: ToolExecutionDebug) {
   );
   await user.click(screen.getByRole("button", { name: "C Tool" }));
 }
+
+function scoringItem(overrides: Partial<RecommendationItem> = {}): RecommendationItem {
+  return {
+    place_id: "place-score-1",
+    name: "혼밥 테스트 식당",
+    category: "restaurant",
+    category_label: "한식",
+    distance_km: 0.42,
+    remaining_minutes: 180,
+    environment_type: "indoor",
+    recommendation_reason: "테스트 추천이에요.",
+    explanations: ["가까운 곳이에요."],
+    warnings: [],
+    score: 0.784,
+    feature_scores: {
+      weather: 1,
+      remaining_operating_time: 0.75,
+      distance: 0.8,
+      taste: 0.85,
+    },
+    weights_used: {
+      weather: 0.35,
+      remaining_operating_time: 0.35,
+      distance: 0.15,
+      taste: 0.15,
+    },
+    taste_evidence: [
+      { text: "혼자 편하게 식사하기 좋았어요.", similarity: 0.61 },
+    ],
+    taste_tag_score: 0.5,
+    taste_tag_label: "혼자 가기 좋은",
+    taste_tag_documents: 4,
+    taste_tag_details: [
+      {
+        code: "alone",
+        label: "혼자 가기 좋은",
+        positive_document_count: 4,
+        negative_document_count: 0,
+        candidate_max_positive_document_count: 8,
+        relative_score: 0.5,
+      },
+    ],
+    taste_embedding_similarity: 0.61,
+    taste_embedding_score: 0.82,
+    taste_combined_score: 0.85,
+    scoring_rank: 1,
+    preference_tags: [
+      { code: "alone", label: "혼자 가기 좋은", mention_count: 4, is_query_match: true },
+    ],
+    ...overrides,
+  };
+}
+
+function renderScoringTab(turn: DeveloperAuditTurn) {
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+}
+
+it("D Scoring에서 원점수·가중치·기여점과 임베딩·태그 결합 과정을 보여준다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  const item = scoringItem();
+  turn.recommendations = {
+    recommendations: [item],
+    unverified_recommendations: [],
+    elapsed_ms: 20,
+  };
+
+  renderScoringTab(turn);
+  await user.click(screen.getByRole("button", { name: "D Scoring" }));
+
+  const card = within(screen.getByTestId("scoring-breakdown-place-score-1"));
+  expect(card.getByText("총점")).toBeInTheDocument();
+  expect(card.getByText("원점수")).toBeInTheDocument();
+  expect(card.getByText("가중치")).toBeInTheDocument();
+  expect(card.getByText("기여점")).toBeInTheDocument();
+  // 임베딩 환산점수와 태그 상대점수가 한 식으로 결합돼 최종 취향 점수가 된다.
+  expect(card.getByText("최종 0.85")).toBeInTheDocument();
+  expect(card.getByText("0.82 + 0.35 × 0.50 × (1 - 0.82) = 0.85")).toBeInTheDocument();
+  expect(card.getByText("태그 점수 0.50")).toBeInTheDocument();
+  expect(card.getByText("임베딩 환산점수 0.82")).toBeInTheDocument();
+  expect(card.getByText("“혼자 편하게 식사하기 좋았어요.”")).toBeInTheDocument();
+
+  await user.click(card.getByText("태그 계산 자세히 보기"));
+  expect(card.getByText("4 / 8 = 0.50")).toBeInTheDocument();
+
+  await user.click(card.getByText("원본 점수 JSON 보기"));
+  expect(card.getByText(/"taste_combined_score"/)).toBeInTheDocument();
+});
+
+it("추천되지 않은 채점 후보와 점수 계산 전 탈락 후보를 따로 펼쳐 볼 수 있다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  const shown = scoringItem();
+  const hidden = scoringItem({
+    place_id: "place-score-2",
+    name: "채점만 된 식당",
+    score: 0.41,
+    scoring_rank: 6,
+  });
+  turn.recommendations = {
+    recommendations: [shown],
+    unverified_recommendations: [],
+    scoring_candidates: [hidden, shown],
+    scoring_excluded_candidates: [
+      {
+        place_id: "place-closed",
+        name: "문 닫은 식당",
+        category: "restaurant",
+        distance_km: 0.3,
+        reason: "closed",
+      },
+    ],
+    elapsed_ms: 20,
+  };
+
+  renderScoringTab(turn);
+  await user.click(screen.getByRole("button", { name: "D Scoring" }));
+
+  expect(screen.queryByTestId("scoring-breakdown-place-score-2")).not.toBeVisible();
+  await user.click(screen.getByText("추천되지 않은 채점 후보 1곳 점수 보기"));
+  const hiddenCard = within(screen.getByTestId("scoring-breakdown-place-score-2"));
+  expect(hiddenCard.getByText("6. 채점만 된 식당")).toBeInTheDocument();
+  expect(hiddenCard.getByText("채점 후 미노출")).toBeInTheDocument();
+
+  await user.click(screen.getByText("점수 계산 전 탈락 후보 1곳 보기"));
+  expect(screen.getByText("문 닫은 식당")).toBeInTheDocument();
+  expect(screen.getByText("현재 운영시간 아님")).toBeInTheDocument();
+});
 
 it("빌려온 값과 직접 조회한 값을 구분해서 보여준다", async () => {
   await openToolsTab(enrichmentExecution);
