@@ -12,12 +12,13 @@ AppError는 여기서 잡지 않고 그대로 전파한다 — RecommendationPro
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
-from app.domain.models import PlaceEvidenceMatch
+from app.domain.models import PlaceEvidenceMatch, PreferenceTag, PreferenceTagMatch
+from app.domain.scoring import match_preference_tags
 from app.domain.travel_route import TravelRoute
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.repositories.supabase_places import SupabasePlaceRepository
@@ -113,6 +114,42 @@ def _requested_preference_codes(conditions: UserConditions) -> tuple[str, ...]:
         if code not in requested and any(alias.lower() in query for alias in aliases):
             requested.append(code)
     return tuple(requested)
+
+
+def _to_preference_tags(rows: Sequence[Mapping[str, object]]) -> tuple[PreferenceTag, ...]:
+    """저장소의 취향 태그 행을 채점용 도메인 값으로 변환한다.
+
+    추천 카드용 저장소 계약은 dict 행을 반환한다. 채점 계층까지 그 표현을
+    흘려보내지 않고 여기서 숫자 기본값과 빈 코드를 정리한다. 일부 필드가 없는
+    오래된 테스트·데이터는 0으로 다뤄 가산점을 만들지 않는다.
+    """
+    converted: list[PreferenceTag] = []
+    for row in rows:
+        code = str(row.get("preference_code") or "").strip()
+        if not code:
+            continue
+        try:
+            confidence = float(row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            positive_documents = int(row.get("positive_document_count") or 0)
+        except (TypeError, ValueError):
+            positive_documents = 0
+        try:
+            negative_documents = int(row.get("negative_document_count") or 0)
+        except (TypeError, ValueError):
+            negative_documents = 0
+        converted.append(
+            PreferenceTag(
+                code=code,
+                label=str(row.get("preference_label") or code),
+                confidence=confidence,
+                positive_documents=max(0, positive_documents),
+                negative_documents=max(0, negative_documents),
+            )
+        )
+    return tuple(converted)
 
 
 # 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
@@ -322,6 +359,13 @@ class RealRecommendationProvider:
         # 합치지 않는 이유는 protocols.py의 같은 인자 주석 참고.
         saved_taste_query: str | None = None,
     ) -> RecommendationResponse:
+        # 임베딩 검색은 태그 인식 여부와 무관하게 항상 실행한다. 사전에 있는 취향
+        # (혼밥 → alone 등)은 후보군 상대 태그 점수도 만들고, D가 임베딩을 기본으로
+        # 태그를 가산한다. 어느 한쪽 근거만 있는 후보도 취향 점수를 받을 수 있다.
+        taste_tag_matches = await self._taste_tag_matches_for(conditions, prepared)
+        taste_matches = await self._taste_matches_for(
+            conditions, prepared, saved_taste_query=saved_taste_query
+        )
         response = await score_prepared_recommendation(
             prepared,
             search_radius_km=to_search_radius_km(conditions),
@@ -333,9 +377,8 @@ class RealRecommendationProvider:
             # 채점된다.
             travel_routes=travel_routes,
             travel_budget_speed_km_per_min=to_search_radius_speed_km_per_min(conditions),
-            taste_matches=await self._taste_matches_for(
-                conditions, prepared, saved_taste_query=saved_taste_query
-            ),
+            taste_matches=taste_matches,
+            taste_tag_matches=taste_tag_matches,
         )
         response = await self._with_preference_tags(response, conditions)
         return await self._with_thumbnails(response)
@@ -438,6 +481,75 @@ class RealRecommendationProvider:
                 ],
             }
         )
+
+    async def _taste_tag_matches_for(
+        self,
+        conditions: UserConditions,
+        prepared: PreparedRecommendationResult,
+    ) -> dict[str, PreferenceTagMatch] | None:
+        """발화에서 뽑은 사전 취향 코드로 후보의 취향 태그를 맞춘다.
+
+        None을 돌려주면 호출부가 기존 임베딩 경로로 떨어진다. 그 경우는 둘이다 —
+        발화에 사전 코드가 없거나(자유 표현 "빈티지한 분위기"), 태그 저장소가
+        붙어 있지 않을 때다.
+
+        **채점 대상 후보 전원의 태그를 읽는다.** `_with_preference_tags()`는
+        채점이 끝난 뒤 노출되는 5곳 남짓만 읽지만, 순위를 이 값으로 정하려면
+        후보 30곳이 다 필요하다. 같은 배치 조회라 왕복 횟수는 그대로다.
+
+        조회 실패는 추천을 막지 않는다 — 취향은 순위를 다듬는 축이지 후보를
+        만드는 축이 아니라서, 실패하면 임베딩 경로로 내려가는 편이 낫다
+        (`_taste_matches_for()`와 같은 원칙).
+        """
+        if self._preference_tags is None:
+            return None
+        requested_codes = _requested_preference_codes(conditions)
+        if not requested_codes:
+            return None
+
+        place_ids = [item.candidate.place_id for item in prepared.preparation.eligible_candidates]
+        if not place_ids:
+            return None
+
+        try:
+            tags_by_place = await self._preference_tags.find_preference_tags(place_ids)
+        except Exception:
+            logger.exception("취향 태그 조회 실패 — 임베딩 근거로 채점한다")
+            return None
+
+        converted_tags = {
+            place_id: _to_preference_tags(tags_by_place.get(place_id, ()))
+            for place_id in place_ids
+        }
+        max_positive_documents_by_code = {
+            code: max(
+                (
+                    tag.positive_documents
+                    for tags in converted_tags.values()
+                    for tag in tags
+                    if tag.code == code
+                ),
+                default=0,
+            )
+            for code in requested_codes
+        }
+        matches = {
+            place_id: match_preference_tags(
+                place_id,
+                requested_codes,
+                converted_tags[place_id],
+                max_positive_documents_by_code=max_positive_documents_by_code,
+            )
+            for place_id in place_ids
+        }
+        matched = sum(1 for match in matches.values() if match.score > 0)
+        logger.info(
+            "취향 태그 채점: 코드=%s 후보=%d곳 → 일치 %d곳",
+            ",".join(requested_codes),
+            len(place_ids),
+            matched,
+        )
+        return matches
 
     async def _taste_matches_for(
         self,

@@ -124,11 +124,18 @@ export function fetchRecommendationPlaceDetails(request: {
  * `place_id`가 필수인 것은 서버가 문장의 근거(취향 태그·후기)를 그 id로 다시 읽기
  * 때문이다. `category_label`은 문장이 장소 종류를 잘못 말하지 않게 넘기는 값으로,
  * 카드만 알고 있다(서버가 읽는 상세에는 분류 필드가 없다).
+ *
+ * `matched_preference_codes`는 이번 추천에서 사용자 취향과 맞은 태그 코드
+ * (`preference_tags[].is_query_match`)다. 서버가 상위 3태그만 문장 근거로 넘기는데
+ * 그 순서가 "이 장소에서 많이 언급된 순서"라, 이 값이 없으면 사용자가 말한 취향에
+ * 걸린 태그가 근거에서 통째로 빠질 수 있다. 라벨이나 후기 문장은 보내지 않는다 —
+ * 서버가 저장소에서 다시 읽고, 화면이 주는 것은 고르는 기준(코드)뿐이다.
  */
 export function fetchPlaceAiReason(request: {
   place_id: string;
   place_name: string;
   category_label?: string | null;
+  matched_preference_codes?: string[];
 }) {
   return apiClient.post<PlaceReasonResponse>("/chat/place-details/reason", request);
 }

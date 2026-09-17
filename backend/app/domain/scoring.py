@@ -25,6 +25,9 @@ from app.domain.models import (
     OperatingHours,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
+    PreferenceTag,
+    PreferenceTagMatch,
+    PreferenceTagScoreDetail,
     ScoringCandidate,
     WeatherCondition,
 )
@@ -48,7 +51,7 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
 # weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
 # feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
-SCORING_VERSION = "recommendation-scoring-1.9.0"
+SCORING_VERSION = "recommendation-scoring-1.10.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -116,9 +119,7 @@ def build_weights(optional_features: Iterable[str] = ()) -> dict[str, float]:
         )
     concession = _BASE_CONCESSION * len(active)
     # 0.4 - 0.1 = 0.30000000000000004 같은 부동소수 찌꺼기를 여기서 끊는다.
-    weights = {
-        feature: round(weight - concession, 10) for feature, weight in _BASE_WEIGHTS.items()
-    }
+    weights = {feature: round(weight - concession, 10) for feature, weight in _BASE_WEIGHTS.items()}
     weights.update({feature: _OPTIONAL_WEIGHT for feature in active})
     return weights
 
@@ -149,6 +150,13 @@ TASTE_WEIGHTS: Mapping[str, float] = build_weights(("taste",))
 # 검색 결과로 오지 않는다.
 _TASTE_CUT = 0.43
 _TASTE_FULL_SCORE = 0.65
+
+# 태그는 임베딩을 대체하지 않고 남은 점수 여백만 일부 채운다. 같은 리뷰·블로그에서
+# 태그와 임베딩이 함께 만들어졌을 수 있어 단순 합산하면 근거를 두 번 세게 된다.
+# 0.35는 태그만 있는 후보의 taste를 최대 0.35로 제한하면서, 임베딩이 이미 높은
+# 후보에는 작은 확인 보너스만 주는 초기값이다. 개발자 패널에서 두 원점수와 결합식을
+# 함께 확인한 뒤 실측으로 조정한다.
+_TASTE_TAG_BONUS_FACTOR = 0.35
 
 # 남은 운영시간이 이 값(분) 이상이면 만점(1.0)으로 취급한다.
 _REMAINING_TIME_FULL_SCORE_MINUTES = 120.0
@@ -236,8 +244,7 @@ def _accessibility_warnings(candidate: ScoringCandidate) -> tuple[str, ...]:
     return tuple(
         warning
         for need, verdict in sorted(verdicts.items())
-        if verdict == _PARTIAL_VERDICT
-        and (warning := _ACCESSIBILITY_PARTIAL_WARNINGS.get(need))
+        if verdict == _PARTIAL_VERDICT and (warning := _ACCESSIBILITY_PARTIAL_WARNINGS.get(need))
     )
 
 
@@ -321,6 +328,22 @@ class RankedCandidate:
     # 내림차순). taste_evidence_text는 이 중 1위만 문장 조립용으로 뽑은 것이고,
     # 이건 개발자 디버그 화면이 "taste=0인데 왜 0인지"를 원문으로 확인하는 데 쓴다.
     taste_evidence: tuple[PlaceEvidenceSnippet, ...] = ()
+    # 태그 경로로 채점했을 때 맞은 태그의 라벨("혼자 가기 좋은")과 그 근거가 된
+    # 긍정 문서 수. 임베딩 경로에서는 항상 비어 있다. 근거 문장이 유사도 1위
+    # 원문(taste_evidence_text) 대신 이 값을 쓴다 — 태그로 뽑았는데 문장은
+    # 임베딩에서 가져오면 "혼밥으로 뽑고 가족 외식 문장을 보여주는" 어긋남이 그대로다.
+    taste_tag_label: str | None = None
+    taste_tag_documents: int = 0
+    # 태그 최종 점수와 코드별 상대 점수 계산식. 임베딩 근거와 분리해 개발자
+    # 화면에서 "무엇이 순위에 반영됐는지"를 확인할 수 있게 보존한다.
+    taste_tag_score: float | None = None
+    taste_tag_details: tuple[PreferenceTagScoreDetail, ...] = ()
+    # 임베딩과 태그를 결합하기 전·후 값을 개발자 화면까지 보존한다. similarity는
+    # 검색 결과의 평균 코사인 유사도, embedding_score는 0.43~0.65를 0~1로 편 값,
+    # combined_score는 실제 feature_scores["taste"]에 들어간 값이다.
+    taste_embedding_similarity: float | None = None
+    taste_embedding_score: float | None = None
+    taste_combined_score: float | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -461,6 +484,32 @@ def _taste_score(match: PlaceEvidenceMatch | None) -> float:
     return _clamp((match.avg_similarity - _TASTE_CUT) / span, 0.0, 1.0)
 
 
+def _taste_similarity(match: PlaceEvidenceMatch | None) -> float | None:
+    """임베딩 점수 환산 전 평균 코사인 유사도를 디버그용으로 보존한다."""
+    return match.avg_similarity if match is not None else None
+
+
+def combine_taste_scores(
+    embedding_score: float | None,
+    tag_score: float | None,
+) -> float:
+    """임베딩을 기본점수로 두고 태그가 남은 여백의 35%까지만 가산한다.
+
+    ``embedding + 0.35 * tag * (1 - embedding)``이라 태그가 없어도 임베딩
+    점수는 그대로 유지되고, 둘 다 강해도 1.0을 넘지 않는다. 태그만 있으면 최대
+    0.35라서 동일 원문에서 파생된 두 신호를 단순 합산하는 이중 계상을 피한다.
+    """
+    embedding = _clamp(embedding_score or 0.0, 0.0, 1.0)
+    if tag_score is None:
+        return embedding
+    tag = _clamp(tag_score, 0.0, 1.0)
+    return _clamp(
+        embedding + _TASTE_TAG_BONUS_FACTOR * tag * (1.0 - embedding),
+        0.0,
+        1.0,
+    )
+
+
 def _taste_evidence_text(match: PlaceEvidenceMatch | None) -> str | None:
     """근거 문장 중 유사도 1위 원문을 꺼낸다.
 
@@ -480,6 +529,116 @@ def _taste_evidence_snippets(
     if match is None:
         return ()
     return match.snippets
+
+
+def match_preference_tags(
+    content_id: str,
+    requested_codes: Sequence[str],
+    tags: Sequence[PreferenceTag],
+    *,
+    max_positive_documents_by_code: Mapping[str, int] | None = None,
+) -> PreferenceTagMatch:
+    """요청 취향 코드와 그 장소의 태그를 맞춰 taste 점수를 만든다.
+
+    **맞으면 주고, 안 맞으면 0이다. 감점은 없다.** 3상태(일치 / 태그는 있는데
+    불일치 / 태그 없음)로 나눠 가운데를 중립값으로 두는 안을 먼저 검토했는데,
+    실측이 그 안을 기각했다 — 후보 30곳에서 태그 자체가 없는 곳이 평균 59.3%이고
+    지역 편차가 23~90%로 컸다(2026-09-17, `test_results/preference_tag_coverage.csv`).
+    "태그 없음"을 "태그는 있는데 불일치"보다 높게 두면 안국역처럼 후기가 많이
+    수집된 지역에서 **자료가 있는 장소가 자료가 없는 장소보다 낮은 점수**를 받는다.
+    그래서 불일치와 미수집을 같은 0으로 두고 일치에만 점수를 준다.
+
+    전원이 0인 경우도 순위에는 무해하다 — 모두 같은 만큼 낮아진다(`_taste_score()`와
+    같은 이유). 태그가 거의 없는 지역(실측에서 홍대입구 27/30)에서는 이 축이
+    사실상 동점이 되어 기존 순위가 그대로 유지된다.
+    """
+    if not requested_codes:
+        return PreferenceTagMatch(content_id=content_id, score=0.0)
+
+    by_code = {tag.code: tag for tag in tags}
+    scores: list[float] = []
+    details: list[PreferenceTagScoreDetail] = []
+    for code in requested_codes:
+        tag = by_code.get(code)
+        if tag is None:
+            scores.append(0.0)
+            details.append(
+                PreferenceTagScoreDetail(
+                    code=code,
+                    label=None,
+                    positive_documents=0,
+                    negative_documents=0,
+                    candidate_max_positive_documents=max(
+                        0, int((max_positive_documents_by_code or {}).get(code, 0))
+                    ),
+                    score=0.0,
+                )
+            )
+            continue
+        candidate_max = max(
+            0,
+            int((max_positive_documents_by_code or {}).get(code, tag.positive_documents)),
+        )
+        # 부정이 긍정보다 많은 태그는 "그 취향에 맞다"는 근거가 아니다. 실측 64건
+        # 에서 부정이 섞인 것은 3건뿐이고 우세한 경우는 없었지만, 태그 이름만
+        # 보고 점수를 주면 "혼자 가긴 좀"이라는 후기가 만점이 된다.
+        if tag.negative_documents > tag.positive_documents:
+            scores.append(0.0)
+            details.append(
+                PreferenceTagScoreDetail(
+                    code=code,
+                    label=tag.label,
+                    positive_documents=tag.positive_documents,
+                    negative_documents=tag.negative_documents,
+                    candidate_max_positive_documents=candidate_max,
+                    score=0.0,
+                )
+            )
+            continue
+        # 장소마다 리뷰·블로그 수집량이 달라 절대 언급 수를 그대로 비교할 수 없다.
+        # 같은 요청의 하드 필터 통과 후보 안에서 가장 많이 언급된 장소를 1.0으로
+        # 두고 상대 비중만 가산한다. 태그가 없는 장소에는 벌점을 주지 않고 0점이다.
+        relative_score = (
+            _clamp(tag.positive_documents / candidate_max, 0.0, 1.0)
+            if candidate_max > 0
+            else 0.0
+        )
+        scores.append(relative_score)
+        details.append(
+            PreferenceTagScoreDetail(
+                code=code,
+                label=tag.label,
+                positive_documents=tag.positive_documents,
+                negative_documents=tag.negative_documents,
+                candidate_max_positive_documents=candidate_max,
+                score=relative_score,
+            )
+        )
+
+    strongest = max(details, key=lambda detail: detail.score, default=None)
+    has_strongest = strongest is not None and strongest.score > 0
+    return PreferenceTagMatch(
+        content_id=content_id,
+        score=sum(scores) / len(scores),
+        label=strongest.label if has_strongest else None,
+        documents=strongest.positive_documents if has_strongest else 0,
+        details=tuple(details),
+    )
+
+
+def _taste_score_from_tags(match: PreferenceTagMatch | None) -> float:
+    """태그 일치 점수를 그대로 쓴다. 태그가 아예 없는 후보는 0.0이다."""
+    if match is None:
+        return 0.0
+    return _clamp(match.score, 0.0, 1.0)
+
+
+def _taste_tag_label(match: PreferenceTagMatch | None) -> str | None:
+    return match.label if match is not None else None
+
+
+def _taste_tag_documents(match: PreferenceTagMatch | None) -> int:
+    return match.documents if match is not None else 0
 
 
 def _travel_minutes_budget(max_distance_km: float, budget_speed_km_per_min: float) -> float:
@@ -720,9 +879,7 @@ def prepare_candidates(
 
     for candidate in candidates:
         if candidate.place_id in shown:
-            excluded.append(
-                ExcludedCandidate(candidate, ExclusionReason.ALREADY_SHOWN)
-            )
+            excluded.append(ExcludedCandidate(candidate, ExclusionReason.ALREADY_SHOWN))
             continue
         if candidate.place_id in rejected:
             excluded.append(ExcludedCandidate(candidate, ExclusionReason.REJECTED))
@@ -740,8 +897,10 @@ def prepare_candidates(
 
         is_unverified = candidate.operating_hours is None or is_closed
         operating_warnings = (
-            (_CLOSED_NOW_WARNING,) if is_closed else (_UNVERIFIED_WARNING,)
-        ) if is_unverified else ()
+            ((_CLOSED_NOW_WARNING,) if is_closed else (_UNVERIFIED_WARNING,))
+            if is_unverified
+            else ()
+        )
         # **무장애 안내를 앞에 둔다.** 표시 측은 첫 줄만 보여주는데(PlaceCard.tsx),
         # 운영시간은 "가서 닫혀 있을 수 있다"이고 무장애는 "가도 못 들어가는 데가
         # 있다"라 무게가 다르다. 뒤에 두면 운영시간 미확인 후보에서 무장애 안내가
@@ -755,9 +914,7 @@ def prepare_candidates(
             and not is_unverified
             else ()
         )
-        warnings = (
-            _accessibility_warnings(candidate) + uncertain_warnings + operating_warnings
-        )
+        warnings = _accessibility_warnings(candidate) + uncertain_warnings + operating_warnings
         eligible.append(
             PreparedCandidate(
                 candidate=candidate,
@@ -830,6 +987,10 @@ def score_prepared_candidates(
     # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
     # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
     taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
+    # 취향 태그 일치 결과(place_id = content_id 기준). 임베딩을 대체하지 않고
+    # `combine_taste_scores()`의 가산 신호로 함께 쓴다. 태그가 없는 후보도
+    # 임베딩 근거가 있으면 그대로 점수를 받는다.
+    taste_tag_matches: Mapping[str, PreferenceTagMatch] | None = None,
 ) -> ScoringResult:
     """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
@@ -849,7 +1010,10 @@ def score_prepared_candidates(
     # 취향 Feature는 요청 단위로 켜고 끈다. 켜지면 모든 후보가 이 Feature를
     # 가지므로 한 순위 안에서 가중치 세트가 갈리지 않는다.
     taste_by_place_id = dict(taste_matches or {})
-    uses_taste = taste_matches is not None
+    taste_tag_by_place_id = dict(taste_tag_matches or {})
+    uses_taste_tags = taste_tag_matches is not None
+    uses_embedding_taste = taste_matches is not None
+    uses_taste = uses_taste_tags or uses_embedding_taste
     default_weights = build_weights(("taste",) if uses_taste else ())
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(default_weights),
@@ -942,10 +1106,19 @@ def score_prepared_candidates(
                 )
             ),
         }
-        taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
+        taste_match = (
+            taste_by_place_id.get(candidate.place_id) if uses_embedding_taste else None
+        )
+        taste_tag_match = (
+            taste_tag_by_place_id.get(candidate.place_id) if uses_taste_tags else None
+        )
         if uses_taste:
-            # 근거가 없으면 0.0이다 — 결측이 아니라 "안 맞는다"는 평가다.
-            feature_scores["taste"] = _taste_score(taste_match)
+            # 둘 중 한쪽 근거가 없어도 다른 쪽은 그대로 살아 있다. 모두 없으면
+            # 0.0이지 결측이 아니다 — 후보마다 가중치 세트가 달라지지 않게 한다.
+            feature_scores["taste"] = combine_taste_scores(
+                _taste_score(taste_match) if uses_embedding_taste else None,
+                _taste_score_from_tags(taste_tag_match) if uses_taste_tags else None,
+            )
 
         score = sum(
             feature_scores[feature] * weight  # type: ignore[operator]
@@ -989,12 +1162,31 @@ def score_prepared_candidates(
                 routes_by_place_id.get(candidate.place_id), "duration_seconds"
             ),
             travel_mode=_travel_mode_of(routes_by_place_id.get(candidate.place_id)),
-            taste_evidence_text=_taste_evidence_text(
-                taste_by_place_id.get(candidate.place_id)
+            taste_evidence_text=_taste_evidence_text(taste_by_place_id.get(candidate.place_id)),
+            taste_evidence=_taste_evidence_snippets(taste_by_place_id.get(candidate.place_id)),
+            taste_tag_label=_taste_tag_label(taste_tag_by_place_id.get(candidate.place_id)),
+            taste_tag_documents=_taste_tag_documents(taste_tag_by_place_id.get(candidate.place_id)),
+            taste_tag_score=(
+                _taste_score_from_tags(taste_tag_by_place_id.get(candidate.place_id))
+                if uses_taste_tags
+                else None
             ),
-            taste_evidence=_taste_evidence_snippets(
-                taste_by_place_id.get(candidate.place_id)
+            taste_tag_details=(
+                taste_tag_by_place_id.get(candidate.place_id).details
+                if uses_taste_tags and taste_tag_by_place_id.get(candidate.place_id) is not None
+                else ()
             ),
+            taste_embedding_similarity=(
+                _taste_similarity(taste_by_place_id.get(candidate.place_id))
+                if uses_embedding_taste
+                else None
+            ),
+            taste_embedding_score=(
+                _taste_score(taste_by_place_id.get(candidate.place_id))
+                if uses_embedding_taste
+                else None
+            ),
+            taste_combined_score=(feature_scores.get("taste") if uses_taste else None),
         )
         for index, (
             candidate,

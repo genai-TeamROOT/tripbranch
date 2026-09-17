@@ -110,6 +110,7 @@ _TAG_TO_TYPE: dict[PlaceTag, PlaceType] = {
     PlaceTag.DUTY_FREE: PlaceType.SHOPPING,
     PlaceTag.DEPARTMENT_STORE: PlaceType.SHOPPING,
     # restaurant 하위
+    PlaceTag.RESTAURANT: PlaceType.RESTAURANT,
     PlaceTag.KOREAN_FOOD: PlaceType.RESTAURANT,
     PlaceTag.JAPANESE_FOOD: PlaceType.RESTAURANT,
     PlaceTag.CHINESE_FOOD: PlaceType.RESTAURANT,
@@ -119,6 +120,28 @@ _TAG_TO_TYPE: dict[PlaceTag, PlaceType] = {
     PlaceTag.BAR: PlaceType.RESTAURANT,
     PlaceTag.SNACK: PlaceType.RESTAURANT,
 }
+
+# `restaurant`는 TourAPI의 음식점 전체(content type 39)를 뜻해 카페·찻집·주점까지
+# 섞인다. 사용자가 이 셋을 **직접** 말했을 때는 LLM이 place_tags를 비워도 더 좁은
+# 분류를 강제한다. 다만 한식·일식처럼 LLM이 이미 더 구체적인 태그를 뽑았으면 그
+# 선택을 넓히지 않는다.
+_FOOD_SUBCATEGORY_TAGS = frozenset(
+    {
+        PlaceTag.RESTAURANT,
+        PlaceTag.KOREAN_FOOD,
+        PlaceTag.JAPANESE_FOOD,
+        PlaceTag.CHINESE_FOOD,
+        PlaceTag.WESTERN_FOOD,
+        PlaceTag.CAFE,
+        PlaceTag.TEA_HOUSE,
+        PlaceTag.BAR,
+        PlaceTag.SNACK,
+    }
+)
+_DINING_MARKERS = ("식당", "음식점", "맛집", "밥집", "혼밥")
+_CAFE_MARKERS = ("카페", "찻집")
+_BAR_MARKERS = ("술집", "주점", "펍")
+_CATEGORY_NEGATION_SUFFIXES = ("말고", "제외", "빼고", "빼줘", "말구")
 
 # int-03-modify.md §8 기준. 순서가 판정 우선순위다(먼저 매칭되는 문구가 채택됨).
 _RESET_SCOPE_PHRASES: tuple[tuple[str, str], ...] = (
@@ -164,8 +187,9 @@ def transform(
             and not _has_explicit_reset_phrase(user_input)
         )
         reset_scope = None if answers_clarification else "soft"
+        conditions = _with_explicit_food_subcategory(llm_output.recommend.conditions, user_input)
         operations = _full_replace_operations(
-            llm_output.recommend.conditions,
+            conditions,
             preserve_clarification_defaults=answers_clarification,
         )
         # 새 RECOMMEND가 목적지·현재 위치를 전혀 언급하지 않으면, soft reset 뒤에도
@@ -178,8 +202,7 @@ def transform(
         # 제외해야 한다.
         existing_search_center = session_context.user_conditions.search_center
         has_new_location = (
-            llm_output.recommend.conditions.search_center is not None
-            or llm_output.recommend.conditions.current_location is not None
+            conditions.search_center is not None or conditions.current_location is not None
         )
         if (
             reset_scope == "soft"
@@ -280,6 +303,45 @@ def _serialize(value: object) -> object:
     return str(value)
 
 
+def _with_explicit_food_subcategory(
+    conditions: UserConditions,
+    user_input: str,
+) -> UserConditions:
+    """명시 음식 업종을 TourAPI 소분류 태그로 보정한다.
+
+    모델 출력의 place_types=[restaurant]는 음식점 전체라 카페·주점까지 포함한다.
+    "카페", "술집", "식당/맛집/혼밥"은 사용자가 후보 범위를 직접 정한 말이므로
+    이 단계에서 태그를 보장한다. 카페·주점이 식사 일반어보다 우선한다 —
+    "혼밥 카페"를 식당 전체로 넓히면 안 된다.
+    "카페 말고 식당"처럼 제외를 말한 업종은 보정 대상에서 빼고 남은 업종을 쓴다.
+    """
+    if any(tag in _FOOD_SUBCATEGORY_TAGS for tag in conditions.place_tags):
+        return conditions
+
+    compact = "".join(user_input.casefold().split())
+
+    def mentioned(markers: tuple[str, ...]) -> bool:
+        return any(
+            marker in compact
+            and not any(f"{marker}{suffix}" in compact for suffix in _CATEGORY_NEGATION_SUFFIXES)
+            for marker in markers
+        )
+
+    if mentioned(_CAFE_MARKERS):
+        tag = PlaceTag.CAFE
+    elif mentioned(_BAR_MARKERS):
+        tag = PlaceTag.BAR
+    elif mentioned(_DINING_MARKERS):
+        tag = PlaceTag.RESTAURANT
+    else:
+        return conditions
+
+    place_types = list(conditions.place_types)
+    if PlaceType.RESTAURANT not in place_types:
+        place_types.append(PlaceType.RESTAURANT)
+    return conditions.model_copy(update={"place_types": place_types, "place_tags": [tag]})
+
+
 def _full_replace_operations(
     conditions: UserConditions,
     *,
@@ -297,10 +359,7 @@ def _full_replace_operations(
     operations: list[Operation] = []
     for field in _SINGLE_FIELDS:
         value = getattr(conditions, field)
-        if (
-            preserve_clarification_defaults
-            and _CLARIFICATION_DEFAULT_FIELDS.get(field) == value
-        ):
+        if preserve_clarification_defaults and _CLARIFICATION_DEFAULT_FIELDS.get(field) == value:
             continue
         if value is not None:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
@@ -335,9 +394,7 @@ def _changed_field_operations(
             # Update에 value=None은 B에서 null_value 오류로 거부되므로 Remove를 쓴다.
             operations.append(Operation(op="Remove", field=field))
         elif field in _MULTI_FIELDS_ADD:
-            operations.extend(
-                _list_diff_operations(field, value, session_context)
-            )
+            operations.extend(_list_diff_operations(field, value, session_context))
         else:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
     return operations

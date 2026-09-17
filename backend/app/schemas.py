@@ -139,6 +139,17 @@ class PreferenceTagSummary(BaseModel):
     is_query_match: bool = False
 
 
+class PreferenceTagScoreDetail(BaseModel):
+    """D가 한 요청 태그를 후보군 안에서 상대 채점한 계산 근거."""
+
+    code: str
+    label: str | None = None
+    positive_document_count: int = Field(ge=0)
+    negative_document_count: int = Field(ge=0)
+    candidate_max_positive_document_count: int = Field(ge=0)
+    relative_score: float = Field(ge=0, le=1)
+
+
 class RecommendationItem(BaseModel):
     place_id: str
     name: str
@@ -177,6 +188,19 @@ class RecommendationItem(BaseModel):
     # 컷을 넘는 근거가 없었다는 뜻이다. 서비스 화면에는 원문을 직접 노출하지 않되,
     # RECOMMEND/MODIFY 말풍선 생성에는 후보별 일부 문장을 제한적으로 전달할 수 있다.
     taste_evidence: list[TasteEvidenceQuote] = Field(default_factory=list)
+    # 태그가 취향 순위에 반영된 경우에만 0~1 값이 있다. 임베딩 유사도와 달리
+    # 후보군 안의 positive_document_count 최댓값으로 나눈 상대 점수다.
+    taste_tag_score: float | None = Field(default=None, ge=0, le=1)
+    taste_tag_label: str | None = None
+    taste_tag_documents: int = Field(default=0, ge=0)
+    taste_tag_details: list[PreferenceTagScoreDetail] = Field(default_factory=list)
+    # 취향 결합점수 계산 과정. embedding_similarity는 환산 전 평균 코사인
+    # 유사도이고, embedding_score는 0.43~0.65 구간을 0~1로 편 값이다.
+    taste_embedding_similarity: float | None = None
+    taste_embedding_score: float | None = Field(default=None, ge=0, le=1)
+    taste_combined_score: float | None = Field(default=None, ge=0, le=1)
+    # 개발자 패널의 전체 후보 목록에서 원래 D 순위를 보존한다.
+    scoring_rank: int | None = Field(default=None, ge=1)
     # 리뷰·블로그 원문은 보내지 않고 장소별 상위 태그와 문서 단위 언급 수만
     # 서비스 화면에 노출한다. 태그 미수집 장소는 빈 배열이다.
     preference_tags: list[PreferenceTagSummary] = Field(default_factory=list)
@@ -209,6 +233,16 @@ class TravelOriginToggle(BaseModel):
     alternative_origin_name: str
 
 
+class ExcludedScoringCandidate(BaseModel):
+    """하드 필터에서 점수 계산 전에 제외된 후보의 개발자용 요약."""
+
+    place_id: str
+    name: str
+    category: str
+    distance_km: float
+    reason: str
+
+
 class RecommendationResponse(BaseModel):
     recommendations: list[RecommendationItem]
     unverified_recommendations: list[RecommendationItem]
@@ -228,6 +262,11 @@ class RecommendationResponse(BaseModel):
     # 반영한다 — 그러지 않으면 노출 이력이 없는 폐점 후보가 매 회차 다시 수집된다
     # (TP-82, docs/design/... 참고). LLM이 생성하지 않고 D가 결정적으로 채운다.
     excluded_closed_place_ids: list[str] = Field(default_factory=list)
+    # 사용자에게 보여 주는 5곳과 별개인 개발자 진단용 목록. scoring_candidates는
+    # 하드 필터를 통과해 실제 점수를 받은 전체 후보이고, excluded는 점수 계산 전에
+    # 빠진 후보라 탈락 사유만 갖는다. 사용자 화면은 두 필드를 렌더링하지 않는다.
+    scoring_candidates: list[RecommendationItem] = Field(default_factory=list)
+    scoring_excluded_candidates: list[ExcludedScoringCandidate] = Field(default_factory=list)
 
 
 class ScheduleItem(BaseModel):
@@ -652,6 +691,7 @@ class PlaceTag(StrEnum):
     DUTY_FREE = "면세점"
     DEPARTMENT_STORE = "백화점"
     # restaurant 하위
+    RESTAURANT = "식당"
     KOREAN_FOOD = "한식"
     JAPANESE_FOOD = "일식"
     CHINESE_FOOD = "중식"
@@ -1588,6 +1628,27 @@ class PlaceReasonRequest(BaseModel):
     place_id: str = Field(min_length=1, max_length=100)
     place_name: str = Field(min_length=1, max_length=200)
     category_label: str | None = Field(default=None, max_length=100)
+    # 이번 추천에서 **사용자 취향과 일치한** 태그 코드들. 화면이 이미 들고 있는
+    # `RecommendationItem.preference_tags[].is_query_match`가 그대로 여기로 온다.
+    #
+    # **코드만 받는다.** 위에서 "화면이 준 값을 LLM 입력으로 믿지 않는다"고 한
+    # 원칙은 그대로다 — 이 코드는 저장소가 준 태그 중 어느 것을 먼저 말할지
+    # 고르는 데만 쓰고, 문장에 실리는 라벨과 후기는 전부 저장소 조회 결과다.
+    # 비어 있으면(취향 발화도 저장 취향도 없는 턴) 예전처럼 언급 수 순서다.
+    matched_preference_codes: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("matched_preference_codes")
+    @classmethod
+    def normalize_codes(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        codes: list[str] = []
+        for code in value:
+            normalized = code.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            codes.append(normalized[:100])
+        return codes
 
     @field_validator("place_id", "place_name")
     @classmethod
@@ -1599,7 +1660,7 @@ class PlaceReasonRequest(BaseModel):
 
 
 class PlaceReasonResponse(BaseModel):
-    """"AI가 추천하는 이유" 문장 단건 생성 결과.
+    """ "AI가 추천하는 이유" 문장 단건 생성 결과.
 
     **None이 정상 값이다.** 취향 태그가 없는 장소이거나, 설정이 꺼졌거나
     (PLACE_REASON_ENABLED), 생성이 실패한 경우 전부 None이다. 화면은 그때 카드가

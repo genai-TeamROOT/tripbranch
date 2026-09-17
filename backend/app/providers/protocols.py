@@ -243,15 +243,20 @@ class LLMProvider(Protocol):
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
     ) -> ProviderResult[str]:
         """장소 상세 카드의 "AI가 추천하는 이유" 1~2문장을 만든다.
 
         근거는 그 장소의 취향 태그 집계와 후기 문장뿐이다 — 순위·점수·조건 축은
-        넘기지 않는다(카드가 이미 들고 있는 고정 문장이 그 역할을 한다). 태그가
-        없는 장소는 호출부가 아예 부르지 않는다.
+        넘기지 않는다(순위는 카드 제목이 이미 말한다). 태그가 없는 장소는 호출부가
+        아예 부르지 않는다.
+
+        `matched_preference_codes`는 이번 추천에서 **사용자 취향과 맞은** 태그
+        코드다. 구현은 그 태그를 먼저 말하도록 입력을 정렬한다 — 없으면 언급 수
+        순서다.
 
         실패해도 상세 카드 자체는 성립해야 하므로 호출부는 이 문장을 비운 채
-        응답한다 — 화면은 기존 고정 문장 한 줄만 보여준다.
+        응답한다 — 화면은 이 절을 통째로 접는다.
         """
         ...
 

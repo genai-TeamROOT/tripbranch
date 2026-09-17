@@ -11,12 +11,19 @@ Scoring v1은 카테고리를 가중치 계산에 사용하지 않고, 운영 �
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.models import (
+    OperatingHours,
+    PreferenceTag,
+    PreferenceTagMatch,
+    ScoringCandidate,
+    WeatherCondition,
+)
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     DEFAULT_WEIGHTS,
@@ -27,6 +34,7 @@ from app.domain.scoring import (
     _travel_minutes_budget,
     co_visited_score,
     concentration_score,
+    match_preference_tags,
     prepare_candidates,
     redistribute_weights,
     score_candidates,
@@ -116,10 +124,7 @@ def test_prepare_candidates_returns_eligible_and_excluded_with_reasons() -> None
     )
 
     assert [item.candidate.place_id for item in result.eligible_candidates] == ["p1"]
-    assert [
-        (item.place_id, item.reason)
-        for item in result.excluded_candidates
-    ] == [
+    assert [(item.place_id, item.reason) for item in result.excluded_candidates] == [
         ("p3", ExclusionReason.CLOSED),
         ("p2", ExclusionReason.ALREADY_SHOWN),
         ("p5", ExclusionReason.REJECTED),
@@ -311,6 +316,80 @@ def test_반경_검색은_균등_배분을_쓰지_않는다() -> None:
         )
 
 
+def test_preference_tag_match_only_rewards_requested_codes() -> None:
+    match = match_preference_tags(
+        "place-1",
+        ("alone", "quiet"),
+        (
+            PreferenceTag("alone", "혼자 가기 좋은", 0.8, 4, 0),
+            PreferenceTag("date", "데이트하기 좋은", 1.0, 9, 0),
+        ),
+        max_positive_documents_by_code={"alone": 5, "date": 9},
+    )
+
+    # alone은 후보군 최다 5건 중 4건이라 0.8이고, 요청한 두 축 중 alone만 맞았으므로
+    # 그 절반이다. 요청하지 않은 date는 문서 수가 더 많아도 점수에 들어가지 않는다.
+    assert match.score == pytest.approx(0.4)
+    assert match.label == "혼자 가기 좋은"
+    assert match.documents == 4
+
+
+def test_preference_tag_absence_and_mismatch_are_both_zero() -> None:
+    no_tags = match_preference_tags("no-tags", ("alone",), ())
+    mismatch = match_preference_tags(
+        "mismatch",
+        ("alone",),
+        (PreferenceTag("date", "데이트하기 좋은", 1.0, 7, 0),),
+    )
+
+    assert no_tags.score == 0.0
+    assert mismatch.score == 0.0
+    assert no_tags.label is None
+    assert mismatch.label is None
+
+
+def test_preference_tag_with_more_negative_documents_gets_no_bonus() -> None:
+    match = match_preference_tags(
+        "place-1",
+        ("alone",),
+        (PreferenceTag("alone", "혼자 가기 좋은", 1.0, 2, 3),),
+    )
+
+    assert match.score == 0.0
+    assert match.label is None
+
+
+def test_matching_preference_tag_only_adds_taste_score_within_existing_candidates() -> None:
+    matched = replace(MUSEUM_OPEN, place_id="matched", name="태그 일치")
+    unmatched = replace(MUSEUM_OPEN, place_id="unmatched", name="태그 없음")
+    prepared = prepare_candidates([unmatched, matched], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+        taste_tag_matches={
+            "matched": PreferenceTagMatch(
+                content_id="matched",
+                score=0.8,
+                label="혼자 가기 좋은",
+                documents=4,
+            ),
+            "unmatched": PreferenceTagMatch(content_id="unmatched", score=0.0),
+        },
+    )
+
+    assert [item.place_id for item in result.ranked] == ["matched", "unmatched"]
+    ranked = {item.place_id: item for item in result.ranked}
+    # 임베딩 근거가 없으면 태그는 남은 여백의 35%까지만 채운다: 0.35 × 0.8.
+    assert ranked["matched"].feature_scores["taste"] == pytest.approx(0.28)
+    assert ranked["unmatched"].feature_scores["taste"] == 0.0
+    assert ranked["matched"].weights_used["taste"] == pytest.approx(0.15)
+    assert ranked["matched"].score - ranked["unmatched"].score == pytest.approx(0.042)
+    assert ranked["matched"].taste_tag_label == "혼자 가기 좋은"
+    assert ranked["matched"].taste_tag_documents == 4
+
+
 def test_구_단위_취향이_없으면_균등과_비례가_같다() -> None:
     """축이 2개면 두 방식이 같은 값을 낸다 — 1.8.0 동작이 그대로 유지된다."""
     prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
@@ -346,6 +425,7 @@ def test_균등_배분은_결측_축까지_함께_뺀다() -> None:
     ranked = result.ranked[0]
     assert ranked.feature_scores["remaining_operating_time"] is None
     assert ranked.weights_used == pytest.approx({"weather": 0.5, "taste": 0.5})
+
 
 def test_scores_and_sorts_fixed_candidates() -> None:
     result = score_candidates(
@@ -874,9 +954,7 @@ def test_distance_feature_falls_back_when_route_lookup_failed() -> None:
     조회에 실패한 후보만 거리 Feature가 빠져 오히려 유리해진다."""
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        travel_routes=[
-            _walking_route("p1", duration_seconds=None, status=RouteStatus.NO_DATA)
-        ],
+        travel_routes=[_walking_route("p1", duration_seconds=None, status=RouteStatus.NO_DATA)],
     )
 
     assert score == pytest.approx(0.75)
@@ -947,9 +1025,7 @@ def test_fallback_candidate_exposes_no_measured_route() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        travel_routes=[
-            _walking_route("p1", duration_seconds=None, status=RouteStatus.UNAVAILABLE)
-        ],
+        travel_routes=[_walking_route("p1", duration_seconds=None, status=RouteStatus.UNAVAILABLE)],
     )
 
     ranked = result.ranked[0]

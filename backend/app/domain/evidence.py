@@ -66,12 +66,8 @@ def resolve_feature_order(feature_scores: Mapping[str, float | None]) -> tuple[s
     빠졌다(점수에는 반영되는데 feature_scores에는 없었다). 알려진 축을 먼저
     정해진 순서로 놓고, 나머지는 들어온 순서를 그대로 이어 붙인다.
     """
-    ordered = [
-        feature for feature in _BASE_FEATURE_ORDER if feature in feature_scores
-    ]
-    ordered.extend(
-        feature for feature in feature_scores if feature not in _BASE_FEATURE_ORDER
-    )
+    ordered = [feature for feature in _BASE_FEATURE_ORDER if feature in feature_scores]
+    ordered.extend(feature for feature in feature_scores if feature not in _BASE_FEATURE_ORDER)
     return tuple(ordered)
 
 
@@ -111,6 +107,11 @@ class RecommendationEvidence:
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
     taste_evidence_text: str | None = None
+    # 태그 경로로 채점했을 때 맞은 태그의 라벨과 긍정 문서 수. 문장이 원문 인용
+    # 대신 "후기 5건에서 '혼자 가기 좋은' 이야기가 나와요"로 말하는 재료다
+    # (scoring.py::RankedCandidate.taste_tag_label 참고).
+    taste_tag_label: str | None = None
+    taste_tag_documents: int = 0
     # 거리·이동시간을 어디서부터 잰 것인지 사용자에게 부를 이름. 검색 기준점이
     # 기기 GPS면 부를 이름이 없어 None이고, 문장이 "현재 위치"로 옮긴다
     # (explanation.py::_distance_sentence()). distance_km의 기준점 자체는 바뀌지
@@ -183,6 +184,8 @@ def build_evidence(
         travel_duration_seconds=candidate.travel_duration_seconds,
         travel_mode=candidate.travel_mode,
         taste_evidence_text=candidate.taste_evidence_text,
+        taste_tag_label=candidate.taste_tag_label,
+        taste_tag_documents=candidate.taste_tag_documents,
         origin_name=origin_name,
         co_visited_place_names=candidate.co_visited_place_names,
     )
@@ -197,6 +200,4 @@ def build_evidence_list(
     같은 값을 찍는다 — 후보마다 다른 기준점을 표현할 수 있는 모양으로 두면
     픽스처가 서로 다른 값을 넣어도 아무도 잡지 못한다.
     """
-    return tuple(
-        build_evidence(candidate, origin_name=origin_name) for candidate in result.ranked
-    )
+    return tuple(build_evidence(candidate, origin_name=origin_name) for candidate in result.ranked)
