@@ -156,6 +156,9 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             )
 
     monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    # 취향 근거 조회는 conftest가 막지 않는다. 막지 않으면 backend/.env에 Supabase
+    # 키가 있는 로컬에서만 실제 DB의 경복궁 후기 근거가 붙어 아래 비교가 깨진다.
+    monkeypatch.setattr(chat_route, "get_place_details_repository", lambda client: None)
     client = TestClient(app)
 
     response = client.post(
@@ -237,6 +240,8 @@ def test_recommendation_place_details_by_name_only_skips_id_match(monkeypatch) -
             )
 
     monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    # 위 테스트와 같은 이유로 실제 DB를 읽지 않게 막는다.
+    monkeypatch.setattr(chat_route, "get_place_details_repository", lambda client: None)
     client = TestClient(app)
 
     response = client.post("/api/chat/place-details", json={"place_name": "창덕궁"})

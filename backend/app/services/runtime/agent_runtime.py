@@ -213,6 +213,7 @@ from app.state.service import (
 from app.state.session import new_trace_id
 from app.state.store import StateStore, get_store
 from app.tools.mode_judge import LlmModeJudge, narrow_accessibility_needs
+from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.schedule_travel import (
     JUDGE_SKIPPED_TRANSPORTS,
     select_modes_for_segments,
@@ -4165,6 +4166,7 @@ async def _run_agent_flow(
             effective_ignore_operating_hours=effective_ignore_operating_hours,
             stream_event_sink=stream_event_sink,
             travel_route_tool=travel_route_tool,
+            place_details_repository=place_details_repository,
         )
 
     return await _finalize_recommendation_response(
@@ -4880,6 +4882,47 @@ async def _score_recommendations(
     return _ScoringOutcome(recommendations=recommendations, tool_context=tool_context)
 
 
+async def _with_pinned_images(
+    pinned_items: list[ScheduleItem],
+    place_details_repository: PlaceDetailsReadRepository | None,
+) -> list[ScheduleItem]:
+    """부분 재편성에서 유지한 장소에 사진 주소를 채운다.
+
+    유지한 장소는 B에 저장된 직전 일정으로 다시 만드는데, 거기에는 사진 주소가
+    없다. 편성 단계는 이번 턴 후보에서만 사진을 찾고 유지한 장소는 중복 선택을
+    막으려고 후보에서 뺀다 — 그래서 여기서 채우지 않으면 새로 고른 자리만 사진이
+    나오고 나머지는 전부 자리표시로 바뀐다.
+
+    B에 사진 주소를 함께 저장하는 대신 다시 조회한다. 계약 필드를 늘리지 않아도
+    되고, 이미 저장된 세션에도 그대로 통한다. 추천 카드와 같은 Tool을 써서 대표
+    주소와 대체 주소를 고르는 규칙도 같다. DB 조회 1회이고 외부 호출은 없다.
+
+    조회가 실패해도 일정은 그대로 짠다 — 사진은 편성 판단에 쓰이지 않는다.
+    """
+
+    if not pinned_items or place_details_repository is None:
+        return pinned_items
+    try:
+        result = await RecommendationCardTool(place_details_repository).get_cards(
+            [item.place_id for item in pinned_items]
+        )
+    except Exception:
+        logger.exception("유지한 장소 사진 조회 실패 — 사진 없이 편성한다")
+        return pinned_items
+    cards = {card.content_id: card for card in result.cards}
+    return [
+        item.model_copy(
+            update={
+                "image_url": cards[item.place_id].thumbnail_url,
+                "image_url_fallback": cards[item.place_id].fallback_thumbnail_url,
+            }
+        )
+        if item.place_id in cards
+        else item
+        for item in pinned_items
+    ]
+
+
 async def _run_schedule_branch(
     llm_output: LLMOutput,
     state_response: StateApplyResponse,
@@ -4896,6 +4939,9 @@ async def _run_schedule_branch(
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
     travel_route_tool: TravelRouteToolProvider | None = None,
+    # 부분 재편성에서 유지한 장소의 사진을 다시 조회할 때만 쓴다. 없으면 그
+    # 장소들은 사진 없이 나간다.
+    place_details_repository: PlaceDetailsReadRepository | None = None,
 ) -> AgentResponse:
     """SCHEDULE 편성 분기(6-2단계)를 처리한다.
 
@@ -5015,6 +5061,7 @@ async def _run_schedule_branch(
                     reason=prev.reason or "",
                 )
             )
+        pinned_items = await _with_pinned_images(pinned_items, place_details_repository)
 
     # 거리 행렬을 한 번만 만든다(TP-242). 예전에는 부분 재편성·전체 편성 두 분기가
     # 각각 만들었는데, 여기에 지표까지 따로 만들면 같은 요청을 세 번 계산하고
