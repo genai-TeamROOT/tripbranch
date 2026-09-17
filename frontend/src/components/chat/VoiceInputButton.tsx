@@ -128,8 +128,9 @@ export function VoiceInputButton({
   }
 
   async function startRecording() {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      onError?.("이 브라우저에서는 음성 입력을 지원하지 않아요. 텍스트로 입력해 주세요.");
+    const unsupportedReason = describeMicrophoneUnavailability();
+    if (unsupportedReason) {
+      onError?.(unsupportedReason);
       return;
     }
     try {
@@ -252,4 +253,54 @@ export function VoiceInputButton({
       <span className="sr-only">{label}</span>
     </button>
   );
+}
+
+/*
+ * 마이크를 못 쓰는 이유를 갈라서 알려준다.
+ *
+ * 예전에는 원인을 가리지 않고 "이 브라우저에서는 지원하지 않아요"만 띄웠는데,
+ * 실제 모바일에서 이 문구가 뜨는 경우는 대개 브라우저가 낡아서가 아니다.
+ * ① 카카오톡 같은 앱 안에서 열린 웹뷰는 마이크 권한을 아예 내주지 않고,
+ * ② http로 접속하면 브라우저가 navigator.mediaDevices 자체를 감춘다.
+ * 두 경우 모두 사용자가 할 수 있는 일(밖의 브라우저로 열기 / https로 접속)이
+ * 분명한데, 뭉뚱그린 문구는 그걸 알려주지 못해 테스트가 거기서 멈춘다.
+ */
+function describeMicrophoneUnavailability(): string | null {
+  const hasGetUserMedia = typeof navigator.mediaDevices?.getUserMedia === "function";
+  if (hasGetUserMedia && typeof MediaRecorder !== "undefined") return null;
+
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    return "보안 연결(https)이 아니라 마이크를 쓸 수 없어요. https 주소로 다시 열어 주세요.";
+  }
+  if (isInAppBrowser()) {
+    return "앱 안에서 열린 브라우저는 마이크를 쓸 수 없어요. 링크를 Safari나 Chrome으로 열어 주세요.";
+  }
+  /*
+   * 여기까지 왔다는 건 https이고 앱 웹뷰도 아닌데 API가 없다는 뜻이다. iOS에서
+   * 이 경우가 실제로 보고됐는데(2026-09-15, 팀 모바일 테스트) 원인이 아직
+   * 확정되지 않았다. 어느 쪽이 비었는지를 화면에 같이 띄워, 기기를 들고 있는
+   * 사람의 스크린샷 한 장으로 원인이 갈리게 한다. 원인이 잡히면 이 꼬리표는 뗀다.
+   */
+  const missing = [
+    hasGetUserMedia ? null : "getUserMedia",
+    typeof MediaRecorder === "undefined" ? "MediaRecorder" : null,
+  ].filter(Boolean);
+  return `이 브라우저에서는 음성 입력을 지원하지 않아요. 텍스트로 입력해 주세요. (진단: ${missing.join(", ")} 없음 / ${navigator.userAgent.slice(0, 80)})`;
+}
+
+/* 카카오톡·인스타그램·페이스북·라인·네이버 등 앱 내장 웹뷰의 UA 표식이다. */
+const IN_APP_BROWSER_MARKERS = [
+  "KAKAOTALK",
+  "Instagram",
+  "FBAN",
+  "FBAV",
+  "Line/",
+  "NAVER(inapp",
+  "DaumApps",
+  "Slack",
+];
+
+function isInAppBrowser(): boolean {
+  const userAgent = navigator.userAgent ?? "";
+  return IN_APP_BROWSER_MARKERS.some((marker) => userAgent.includes(marker));
 }

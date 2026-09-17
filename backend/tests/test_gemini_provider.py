@@ -1086,9 +1086,82 @@ def test_place_reason_payload_caps_evidence_and_hides_ranking() -> None:
     ]
     assert not any(
         key in payload for key in ("rank", "scoring_axes", "score", "recommendation_reason")
-    ), "순위·조건 축을 넘기고 있다 — 고정 문장과 같은 말을 두 번 하게 된다"
+    ), "순위·조건 축을 넘기고 있다 — 순위는 카드 제목이 이미 말한다"
     # 출처 링크는 문장이 말하지 않는다. 화면이 태그 근거로 따로 보여준다.
     assert "example.test" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_place_reason_payload_puts_user_preference_tags_first() -> None:
+    """사용자 취향과 맞은 태그가 상위 3개에 밀려 빠지지 않아야 한다.
+
+    저장소가 주는 순서는 "이 장소에서 후기에 많이 언급된 순서"다. 태그를 3개만
+    넘기므로, 사용자가 말한 취향에 걸린 태그가 4번째면 순서 문제가 아니라 근거에서
+    **아예 빠지는** 문제가 된다 — 문장이 사용자 취향과 무관한 이야기만 하게 된다.
+    """
+
+    insights = [
+        PlacePreferenceInsight(
+            code=code,
+            label=f"{code} 태그",
+            mention_count=mention_count,
+            positive_document_count=mention_count,
+            negative_document_count=0,
+            evidence=[
+                PreferenceEvidenceQuote(
+                    polarity="positive", text=f"{code} 후기 문장", source_type="naver_post"
+                )
+            ],
+        )
+        for code, mention_count in (
+            ("photo", 30),
+            ("culture", 25),
+            ("view", 20),
+            ("quiet", 5),
+        )
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각",
+        category_label="카페/전통찻집",
+        insights=insights,
+        matched_preference_codes=["quiet"],
+    )
+
+    tags = payload["preference_tags"]
+    assert [tag["label"] for tag in tags] == ["quiet 태그", "photo 태그", "culture 태그"]
+    # 프롬프트가 "이 태그부터 말하라"를 판단하는 표시다. 일치하지 않은 태그에는
+    # 붙지 않는다 — 전부 붙으면 우선순위를 말하지 않는 것과 같다.
+    assert tags[0]["matches_user_preference"] is True
+    assert all("matches_user_preference" not in tag for tag in tags[1:])
+    assert "quiet 후기 문장" in payload["tag_evidence"]
+
+
+def test_place_reason_payload_keeps_mention_order_without_user_preference() -> None:
+    """일치 코드가 없으면 예전 그대로 언급 수 순서다."""
+
+    insights = [
+        PlacePreferenceInsight(
+            code=code,
+            label=f"{code} 태그",
+            mention_count=mention_count,
+            positive_document_count=mention_count,
+            negative_document_count=0,
+        )
+        for code, mention_count in (("photo", 30), ("culture", 25), ("quiet", 5))
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각", category_label="카페/전통찻집", insights=insights
+    )
+
+    assert [tag["label"] for tag in payload["preference_tags"]] == [
+        "photo 태그",
+        "culture 태그",
+        "quiet 태그",
+    ]
+    assert all(
+        "matches_user_preference" not in tag for tag in payload["preference_tags"]
+    )
 
 
 def test_place_reason_payload_drops_evidence_repeated_across_tags() -> None:

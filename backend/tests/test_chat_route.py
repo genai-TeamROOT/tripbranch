@@ -378,12 +378,15 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
     seen: list[dict] = []
 
     class FakeLLM:
-        async def generate_place_reason(self, *, place_name, category_label, insights):
+        async def generate_place_reason(
+            self, *, place_name, category_label, insights, matched_preference_codes=()
+        ):
             seen.append(
                 {
                     "place_name": place_name,
                     "category_label": category_label,
                     "labels": [insight.label for insight in insights],
+                    "matched": list(matched_preference_codes),
                 }
             )
             return provider_result(
@@ -399,6 +402,9 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
             "place_id": "2832918",
             "place_name": "한옥카페 선운각",
             "category_label": "카페/전통찻집",
+            # 화면이 추천 카드에서 들고 온 일치 표시. 문장이 사용자 취향과 맞은
+            # 태그부터 말하도록 고르는 기준으로만 쓰인다.
+            "matched_preference_codes": ["nature", "nature", " "],
         },
     )
 
@@ -409,6 +415,8 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
             "place_name": "한옥카페 선운각",
             "category_label": "카페/전통찻집",
             "labels": ["자연을 즐기기 좋은"],
+            # 중복과 빈 값은 스키마가 걸러 낸다.
+            "matched": ["nature"],
         }
     ]
 
