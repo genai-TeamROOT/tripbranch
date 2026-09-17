@@ -1587,6 +1587,27 @@ class PlaceReasonRequest(BaseModel):
     place_id: str = Field(min_length=1, max_length=100)
     place_name: str = Field(min_length=1, max_length=200)
     category_label: str | None = Field(default=None, max_length=100)
+    # 이번 추천에서 **사용자 취향과 일치한** 태그 코드들. 화면이 이미 들고 있는
+    # `RecommendationItem.preference_tags[].is_query_match`가 그대로 여기로 온다.
+    #
+    # **코드만 받는다.** 위에서 "화면이 준 값을 LLM 입력으로 믿지 않는다"고 한
+    # 원칙은 그대로다 — 이 코드는 저장소가 준 태그 중 어느 것을 먼저 말할지
+    # 고르는 데만 쓰고, 문장에 실리는 라벨과 후기는 전부 저장소 조회 결과다.
+    # 비어 있으면(취향 발화도 저장 취향도 없는 턴) 예전처럼 언급 수 순서다.
+    matched_preference_codes: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("matched_preference_codes")
+    @classmethod
+    def normalize_codes(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        codes: list[str] = []
+        for code in value:
+            normalized = code.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            codes.append(normalized[:100])
+        return codes
 
     @field_validator("place_id", "place_name")
     @classmethod

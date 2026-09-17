@@ -99,6 +99,9 @@ export default defineConfig({
     },
   },
   server: {
+    // 모바일 테스트용 cloudflared 터널(https://*.trycloudflare.com)에서 접속할 때
+    // Vite의 호스트 검사에 막히지 않게 허용한다. 로컬 개발 서버 한정 설정이다.
+    allowedHosts: [".trycloudflare.com"],
     // PORT가 지정되면 그대로 따른다 — 안 지키면 5173이 이미 쓰이고 있을 때 Vite가
     // 조용히 다른 포트로 넘어가버려서, 이 포트를 기대하는 프리뷰 도구와 어긋난다.
     port: process.env.PORT ? Number(process.env.PORT) : 5173,
@@ -113,6 +116,25 @@ export default defineConfig({
       },
     },
   },
+  /*
+   * 배포 빌드를 그대로 폰에서 확인할 때 쓰는 서버다(`npm run preview`).
+   *
+   * 개발 서버와 달리 import.meta.env.DEV가 false라 개발자용 버튼과 /dev-chat이
+   * 산출물에서 아예 빠진다 — 팀원·외부에게 보여줄 때 이쪽으로 띄우는 이유다.
+   * 다만 preview는 server.proxy를 쓰지 않으므로, /api를 백엔드로 넘기는 설정을
+   * 여기에 한 번 더 둔다. 없으면 화면은 뜨는데 요청이 전부 404로 떨어진다.
+   */
+  preview: {
+    port: process.env.PREVIEW_PORT ? Number(process.env.PREVIEW_PORT) : 4173,
+    allowedHosts: [".trycloudflare.com"],
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY_TARGET ?? "http://localhost:8000",
+        changeOrigin: true,
+      },
+    },
+  },
+
   test: {
     environment: "jsdom",
     globals: true,

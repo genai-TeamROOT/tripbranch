@@ -256,13 +256,20 @@ async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReaso
     통째로 멈춘다. 화면이 카드를 먼저 그리고 문장은 도착하는 대로 채우도록,
     기다리는 쪽을 이 호출 하나로 좁혔다.
 
+    **사용자 취향과 맞은 태그를 먼저 말한다.** 화면이 추천 카드에서 이미 들고 있던
+    일치 표시(`preference_tags[].is_query_match`)를 `matched_preference_codes`로
+    받아, 저장소가 준 태그 중 어느 것을 넘길지 고르는 데 쓴다. 저장소 순서는 그
+    장소에서 많이 언급된 순서라, 그대로 상위 3개만 자르면 사용자가 말한 취향에
+    걸린 태그가 아예 빠질 수 있다. 문장에 실리는 라벨·후기는 여전히 전부 저장소
+    조회 결과다 — 화면이 준 것은 고르는 기준뿐이다.
+
     **취향 태그가 있는 장소에만 만든다.** 근거로 쓸 것이 태그 집계와 후기 문장뿐이라
     태그가 없으면 쓸 재료가 없고, 그때 억지로 부르면 카드에 없는 사실을 지어낼 여지만
-    준다. 태그 미수집 장소는 기존 고정 문장 한 줄만 남는다.
+    준다. 태그 미수집 장소는 화면이 이 절을 통째로 접는다.
 
     **실패를 오류 응답으로 만들지 않는다.** 이 문장이 없어도 절이 성립하도록 화면을
-    만들었으므로(카드가 이미 들고 있는 `recommendation_reason`이 위에 있다), LLM이
-    죽어도 화면은 지금까지처럼 그대로 있어야 한다. 추천
+    만들었으므로(문장이 없으면 화면이 절을 접는다), LLM이 죽어도 카드는 지금까지처럼
+    그대로 있어야 한다. 추천
     요약(compose_recommendation_summary)이 같은 이유로 같은 선택을 한다.
     """
 
@@ -276,9 +283,10 @@ async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReaso
             place_name=request.place_name,
             category_label=request.category_label,
             insights=insights,
+            matched_preference_codes=request.matched_preference_codes,
         )
     except Exception:
-        logger.warning("상세 카드 추천 이유 생성 실패 — 고정 문장만 보여준다", exc_info=True)
+        logger.warning("상세 카드 추천 이유 생성 실패 — 그 절을 접는다", exc_info=True)
         return PlaceReasonResponse()
     return PlaceReasonResponse(ai_reason=result.data.strip() or None)
 

@@ -1794,6 +1794,11 @@ export function RecommendationDetailPreviewModal({
         place_id: resolved.place_id,
         place_name: resolved.place_name ?? item?.name ?? placeName ?? "",
         category_label: item?.category_label ?? item?.category,
+        // 사용자 취향과 맞은 태그를 문장이 먼저 말하도록 넘긴다. 추천 카드가
+        // 이미 들고 있는 값이라 조회가 더 붙지 않는다(is_query_match).
+        matched_preference_codes: (item?.preference_tags ?? [])
+          .filter((tag) => tag.is_query_match)
+          .map((tag) => tag.code),
       })
         .then((response) => {
           if (!cancelled) setAiReason(response.ai_reason ?? "");
@@ -2015,36 +2020,38 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {(item?.recommendation_reason || (isReviewCard && aiReason !== "")) && (
-            /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 문장은 추천 카드가
-               이미 들고 온 값이라(item) 상세 응답을 기다리지 않는다 — 위에 두면
-               표가 스켈레톤인 동안 읽을 것이 있고, 이 장소가 왜 떴는지를 운영시간
-               같은 사실보다 먼저 본다. 길이가 처음부터 정해져 있어 나중에 표가
-               채워져도 이 절이 밀리거나 늘지 않는다.
+          {(item || isReviewCard) && aiReason !== "" && (
+            /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 장소가 왜 떴는지를
+               운영시간 같은 사실보다 먼저 본다.
 
-               박스(rounded-2xl bg-sky-light p-4)는 걷었다. 아래 "개요"와 같은
-               모양이 되어 이 화면의 절들이 제목 + 본문 하나로 고르게 읽힌다.
-               구분은 배경이 아니라 제목의 브랜드 색이 진다. */
-            <section className="flex flex-col gap-1.5">
+               **고정 문장은 더 이상 쓰지 않는다**(2026-09-16, 사용자 결정).
+               D가 주는 `item.recommendation_reason`은 "<축들> 조건을 종합한 N순위
+               추천이에요." 한 형식뿐이라 축 이름만 바뀌고 하는 말이 "N순위"인데,
+               그 순위는 카드 제목에 이미 붙어 있다. 카드에서 뺀 이유와 같다
+               (PlaceCard.tsx 주석). 값 자체는 남아 있어 개발자 패널이 그대로 쓴다.
+               그래서 이 절은 후기에서 읽어낸 LLM 문장 한 줄만 말한다.
+
+               **박스를 되살렸다**(2026-09-16, 사용자 결정). 남은 문장이 한 줄뿐이라
+               제목 색만으로는 옆 절과 구분이 안 됐다. 이 화면에서 유일하게 사람이
+               쓴 것처럼 읽히는 문장이므로 배경으로 눈에 먼저 들어오게 한다.
+               모양은 아래 "방문자 후기에 나타난 특징"(PreferenceInsightsSection)과
+               같은 값으로 맞춘다 — 한 화면에 박스가 둘인데 진하기가 다르면 둘 중
+               하나가 경고처럼 읽힌다. 바꿀 때는 두 곳을 같이 바꾼다. */
+            <section className="flex flex-col gap-1.5 rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
               <div className="flex items-center gap-1.5">
                 <Sparkles size={14} className="text-brand" />
                 <p className="text-xs font-bold text-brand">
                   {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
                 </p>
               </div>
-              {item?.recommendation_reason && (
-                <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
-              )}
-              {/* 두 번째 줄은 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
-                  위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
-                  말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
+              {/* 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
 
                   **자리를 미리 잡는다.** 이 절을 표보다 위에 둔 이유가 "표가
                   스켈레톤인 동안 읽을 것이 있고, 나중에 채워져도 이 절이 밀리거나
                   늘지 않는다"였다(2026-09-08 결정). 늦게 오는 줄을 그냥 끼우면 그
                   성질이 깨져 읽는 도중 아래가 밀린다. 그래서 대기 중에는 같은
                   높이의 자리표시자를 그리고, 문장 없이 확정되면(취향 태그가 없는
-                  장소·생성 실패) 접는다.
+                  장소·생성 실패) 절 전체를 접는다.
 
                   두 줄로 잡은 것은 프롬프트가 1~2문장으로 못 박혀 있기 때문이다. */}
               {aiReason === null ? (
@@ -2061,9 +2068,7 @@ export function RecommendationDetailPreviewModal({
                   <div className="h-3.5 w-2/3 animate-pulse rounded bg-chip" />
                 </div>
               ) : (
-                aiReason && (
-                  <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
-                )
+                <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
               )}
             </section>
           )}
