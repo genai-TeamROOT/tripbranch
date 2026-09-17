@@ -207,7 +207,9 @@ test("선택 초기화는 저장해 둔 값까지 지운다", async () => {
   await user.click(screen.getByRole("button", { name: "선택 초기화" }));
 
   expect(loadPreferences()).toEqual([]);
-  expect(screen.getByRole("status")).toHaveTextContent("저장해 둔 취향을 지웠어요");
+  /* 문구를 통째로 본다. "홈 화면에서도 사라져요"가 되살아나면 여기서 걸린다 —
+     홈에는 2026-09-07부터 취향이 안 보이므로 그 문장은 거짓이다(2026-09-17). */
+  expect(screen.getByRole("status")).toHaveTextContent(/^저장해 둔 취향을 지웠어요\.$/);
 });
 
 test("저장하면 홈 화면으로 보낸다", async () => {

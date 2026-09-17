@@ -391,14 +391,20 @@ export function PreferencesPage() {
 
           {errorMessage && <ErrorBanner message={errorMessage} />}
 
+          {/*
+           * **"홈 화면에서도 사라져요"를 뺐다(2026-09-17).** 지우기 전에도 홈에는
+           * 취향이 안 보인다 — 홈의 취향 칩 줄은 2026-09-07에 없앴다(HomePage).
+           * 사라질 것이 없는 곳을 가리키고 있었고, 읽는 사람에게는 "홈에 뭔가
+           * 보였었나" 하고 되짚게 만드는 문장이었다.
+           */}
           {cleared && (
             <p
               role="status"
               className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
             >
               {isEn
-                ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
-                : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
+                ? "Your saved preferences have been cleared."
+                : "저장해 둔 취향을 지웠어요."}
             </p>
           )}
         </div>
