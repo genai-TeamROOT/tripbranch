@@ -79,6 +79,21 @@ it("질문과 일치한 취향 태그만 강조한다", () => {
   expect(screen.getByText("모임하기 좋은").closest("span")).not.toHaveAttribute(
     "data-query-match",
   );
+
+  /*
+   * **강조가 "채움"으로 보이는지까지 본다(2026-09-16).** 위 두 줄은
+   * data-query-match만 보므로, 두 칩이 같은 색이 되어도 통과한다 — 실제로
+   * 전에는 옅은 브랜드 배경 대 하늘색 배경이라 갈리지 않았다. 걸린 칩은
+   * 채우고 나머지는 흰 바탕에 브랜드 글자라는 것을 여기서 고정한다.
+   */
+  expect(screen.getByText("아이와 함께하기 좋은").closest("span")).toHaveClass(
+    "bg-brand",
+    "text-white",
+  );
+  expect(screen.getByText("모임하기 좋은").closest("span")).toHaveClass(
+    "bg-white",
+    "text-brand",
+  );
 });
 
 /*
