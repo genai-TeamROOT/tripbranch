@@ -131,9 +131,11 @@ export function SchedulePage() {
 
   /* 목록↔상세 전환에 쓰는 키다(2026-09-07). AppShell의 PageTransition은
      경로(pathname)로만 다시 재생되는데, 목록에서 상세로 들어가는 건 쿼리만
-     바뀔 뿐이라(?saved=) 그 전환이 안 탔다. 여기서 한 겹 더 감싸 목록/상세/어느 저장 일정인지가 바뀔 때마다
-     같은 떠오르는 페이드를 재생한다. */
-  const contentKey = showingDetail ? (savedId ?? "current") : "list";
+     바뀔 뿐이라(?saved=) 그 전환이 안 탔다. 여기서 한 겹 더 감싸 목록/상세/
+     어느 저장 일정인지가 바뀔 때마다 같은 떠오르는 페이드를 재생한다. */
+  /* `??`가 아니라 `||`다 — `?saved=`처럼 값이 빈 쿼리는 상세로 치지 않는다
+     (`showingDetail`도 같은 기준이다). `??`는 빈 문자열을 그냥 통과시킨다. */
+  const contentKey = savedId || "list";
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
