@@ -4,7 +4,7 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.9.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
+| recommend.extract | 2.10.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
 | recommend.summary | 1.3.0 | summary_instruction.md | persona |
 | recommend.place_reason | 1.2.0 | place_reason_instruction.md | — |
 
@@ -38,7 +38,50 @@
   때는 최소 한 문장에 이 표현이 들어가되 같은 어미가 반복되지 않게 했습니다.
   순위 금지 규칙의 근거 문구도 "위 문장이 이미 말했습니다"에서 "순위는 카드 제목에
   이미 붙어 있습니다"로 맞췄습니다.
+- 2026-09-15(recommend.extract v2.10.0): **"~~에서 출발할건데"로 밝힌 출발지가
+  사라지던 것을 막았습니다.** 위치 설정 화면에 사당역이 잡혀 있는 상태에서
+  "효창공원역앞에서 출발할건데 용문동에 아이랑 체험하기 좋은 곳 추천해줘"라고 하면
+  출발지가 효창공원역앞이 아니라 사당역으로 잡혔습니다.
 
+  **발화 우선 규칙이 깨진 게 아니라, 규칙에 받아줄 칸이 없었습니다.**
+  화면 설정값은 `_apply_selected_locations()`가 **LLM이 그 필드를 비워 왔을 때만**
+  채웁니다(발화가 이긴다 — `agent_runtime.py`). 그러니 사당역이 들어갔다는 건
+  추출이 `current_location=null`을 냈다는 뜻입니다. 그럴 만합니다 —
+  `location_rules.md`는 `current_location`을 **"나 지금 ~~야"처럼 현재 있는 곳을
+  밝힌 경우만**으로 한정했고, `travel_origin`은 **이동시간을 말한 요청에만** 채우게
+  돼 있으며 값도 `"search_center"` 문자열이라 지명을 담지 못합니다. "앞으로 어디서
+  출발한다"는 표현을 받는 칸이 세 필드 어디에도 없었습니다.
+
+  **앱에서는 문장이 짧으면 통과하기도 했습니다.** "효창공원역앞에서 출발할건데
+  용문동에서도 추천해줘"는 출발지가 제대로 잡혔다는 제보가 있었습니다. 다만 아래
+  실측에서 보듯 **추출 단계만 떼어 재면 그 발화도 수정 전 0/3**이라, 문장 길이가
+  원인이라는 가설은 재현되지 않았습니다. 어느 쪽이든 규칙이 정한 동작이 아니라
+  모델이 눈치로 메우던 자리였다는 점은 같습니다.
+
+  **고친 것은 `current_location` 항목 하나입니다.** "출발할건데/출발해서/에서 갈
+  건데"처럼 출발점을 밝힌 발화도 현재 위치로 채우고, 이동시간 언급 여부와 무관하며,
+  한 발화에 출발점과 목적지가 같이 나오면 앞이 `current_location`·뒤가
+  `search_center`라는 것을 예시와 함께 명시했습니다. `travel_origin`·`search_center`
+  규칙은 건드리지 않았습니다 — 측정이 그 자리를 지목하지 않았습니다.
+
+  실측(2026-09-15, `gemini-3.5-flash-lite`, 9케이스 × 3회 × 전후 = **54호출**,
+  `scripts/verify_departure_origin_extraction.py`):
+
+  | | 기대 불일치 | 흔들림 |
+  | --- | --- | --- |
+  | 수정 전 | **5/9** | 0/9 |
+  | 수정 후 | **0/9** | 0/9 |
+
+  실패 5건은 전부 "~~에서 출발/갈 건데" 발화이고 전부 `current_location=null`로,
+  예외가 하나도 없습니다. 회귀 대조군 4건("나 지금 ~~야" 1건, 출발 표현 없는 발화
+  3건)은 전후 모두 3/3 통과 — 출발 표현이 없을 때 `current_location`이 비는 성질은
+  그대로라, 화면에서 정한 출발지가 채워지는 경로도 유지됩니다.
+
+  **"문장이 짧으면 통과한다"는 가설은 재현되지 않았습니다.** 앱에서 통과하던
+  "효창공원역앞에서 출발할건데 용문동에서도 추천해줘"도 추출 단계만 떼어 재면
+  수정 전 0/3입니다. 앱에서 갈렸던 이유는 추출 프롬프트 밖(대화 이력 등)에 있고
+  아직 규명하지 않았습니다 — 다만 이번 수정으로 두 발화 모두 3/3이 되므로 이
+  경로에서는 더 갈리지 않습니다.
 - 2026-09-14(recommend.extract v2.9.0): **일정 발화에서 조건이 통째로 사라지던 것을
   막았습니다.** `gemini-3.5-flash-lite`·`gemini-3.1-flash-lite`가 "경복궁 코스 짜줘"
   같은 발화에서 조건을 하나도 안 돌려주던 문제입니다.

@@ -439,6 +439,7 @@ class RealGeminiProvider:
         fast_model_names: list[str] | None = None,
         generation_model_names: list[str] | None = None,
         place_reason_model_names: list[str] | None = None,
+        mode_judge_model_names: list[str] | None = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
@@ -454,6 +455,9 @@ class RealGeminiProvider:
         # 상세 카드 추천 이유 전용 티어. 안 넘기면 생성 묶음을 그대로 쓴다 —
         # 이 티어를 모르는 기존 생성자 호출(테스트 다수)이 그대로 돌아야 한다.
         self._place_reason_model_names = place_reason_model_names or self._generation_model_names
+        # 구간 이동수단 판정 전용 묶음. 안 넘기면 생성 묶음을 그대로 쓴다 — 추천 이유 티어와
+        # 같은 이유다(config.py `mode_judge_model_name`).
+        self._mode_judge_model_names = mode_judge_model_names or self._generation_model_names
         if not self._fast_model_names or not self._generation_model_names:
             raise ValueError("빠른 판단·응답 생성 모델은 각각 최소 1개 이상이어야 합니다.")
         self._client = genai.Client(
@@ -1326,7 +1330,7 @@ class RealGeminiProvider:
             _TravelModePlan,
             operation="judge_travel_modes",
             thinking_budget=0,
-            model_names=self._generation_model_names,
+            model_names=self._mode_judge_model_names,
         )
         return provider_result(tuple(result.modes), source=ProviderSource.GEMINI)
 

@@ -582,7 +582,13 @@ function SubwayLineGroupCard({ group }: { group: SubwayLineGroup }) {
         className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}
       >
         {group.directions.map((direction) => (
-          <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2 py-1.5">
+          /* 바탕 대신 테두리로 구분한다(2026-09-16). **테두리를 빼지는 않는다** —
+             상행/하행이 나열 순서만으로는 구분이 안 된다는 실사용 지적으로 칸을
+             나눈 자리라(2026-09-02), 경계가 사라지면 두 방향이 붙어 읽힌다. */
+          <div
+            key={direction.direction}
+            className="min-w-0 rounded-lg border border-border px-2 py-1.5"
+          >
             <p className="text-[11px] font-semibold text-muted">{direction.direction}</p>
             <div className="mt-1 grid gap-1">
               {direction.items.map((item, index) => (

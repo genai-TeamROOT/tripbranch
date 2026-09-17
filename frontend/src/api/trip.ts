@@ -301,6 +301,18 @@ export function replaceFavorites(items: readonly FavoritePlaceItem[]) {
 }
 
 /*
+ * 회원 탈퇴. **본문이 없는 것이 핵심이다** — 누구를 지울지는 서버가 토큰에서만
+ * 읽는다(backend/app/routes/account.py). 여기서 user_id를 실어 보낼 수 있게
+ * 만들면 그 값이 어딘가에서 바뀌는 순간 남의 계정을 지우게 된다.
+ *
+ * 응답의 건수는 화면에 쓰지 않는다. 사용자에게 "대화 7개를 지웠어요"라고 알릴
+ * 이유가 없고, 실패 조사용으로만 서버가 돌려준다.
+ */
+export function deleteAccount() {
+  return apiClient.del<{ deleted_sessions: number; deleted_schedules: number }>("/account");
+}
+
+/*
  * 사이드바 채팅 히스토리(TP-222 후속). 목록은 세션에 속하지 않아 경로에
  * session_id가 없다 — /state/{session_id} 아래에 두면 "sessions"를 session_id로
  * 받아 삼킨다.

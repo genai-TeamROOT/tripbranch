@@ -662,13 +662,13 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
   if (insights.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
+    <section className="rounded-xl border border-border p-4">
       <div className="flex items-baseline justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <h3 className="text-sm font-semibold text-ink">
             방문자 후기에 나타난 특징
           </h3>
-          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+          <p className="mt-0.5 text-xs text-muted">
             같은 문서에서 반복된 표현은 한 번만 집계했어요.
           </p>
         </div>
@@ -680,29 +680,29 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
             <details
               key={insight.code}
               open={index === 0}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+              className="rounded-lg border border-border px-3 py-2"
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <p className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                <p className="min-w-0 text-sm font-semibold text-ink">
                   {insight.label}
-                  <span className="ml-2 text-xs font-medium text-blue-600 dark:text-blue-300">
+                  <span className="ml-2 text-xs font-medium text-brand">
                     {insight.mention_count}개 후기
                   </span>
                 </p>
               </summary>
 
-              <div className="mt-2 space-y-3 border-t border-gray-100 pt-2.5 dark:border-gray-800">
+              <div className="mt-2 space-y-3 border-t border-border pt-2.5">
                 {insight.evidence.map((evidence, evidenceIndex) => (
                   <blockquote
                     key={`${evidence.text}-${evidenceIndex}`}
-                    className="border-l-2 border-blue-300 pl-3 text-sm leading-6 text-gray-700 dark:text-gray-300"
+                    className="border-l-2 border-brand/40 pl-3 text-sm leading-6 text-label"
                   >
                     <p>“{evidence.text}”</p>
                     <EvidenceSource evidence={evidence} />
                   </blockquote>
                 ))}
                 {insight.evidence.length === 0 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-xs text-muted">
                     대표 문장을 준비하고 있어요.
                   </p>
                 )}
@@ -726,12 +726,12 @@ function EvidenceSource({
       href={evidence.source_url}
       target="_blank"
       rel="noreferrer"
-      className="mt-1 inline-block text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+      className="mt-1 inline-block text-xs font-medium text-brand hover:underline"
     >
       {label} ↗
     </a>
   ) : (
-    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
+    <p className="mt-1 text-xs text-muted">{label}</p>
   );
 }
 
@@ -816,7 +816,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
   const items = card.realtime_detail_items ?? [];
   const groups = groupSubwayArrivals(items);
   return (
-    <section className="rounded-xl border border-border bg-chip/60 p-4">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 다른 구획과 같은 규칙. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-ink">실시간 지하철 도착 정보</h3>
@@ -831,7 +832,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
         {groups.map((group) => (
           <article
             key={group.stationLine}
-            className="min-w-0 rounded-lg border border-border bg-white px-3 py-2.5"
+            /* 바깥 구획의 바탕이 사라졌으니 흰 바탕으로 띄울 이유도 없다. */
+            className="min-w-0 rounded-lg border border-border px-3 py-2.5"
           >
             <div className="flex min-w-0 items-center gap-1.5">
               <span
@@ -852,7 +854,14 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
               className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "sm:grid-cols-2" : "grid-cols-1"}`}
             >
               {group.directions.map((direction) => (
-                <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2.5 py-2">
+                /* **방향 칸은 테두리를 반드시 남긴다.** 상행/하행이 나열 순서만으로는
+                   구분이 안 된다는 실사용 지적으로 칸을 나눈 자리다(2026-09-02).
+                   바탕만 걷고 테두리를 안 주면 두 방향이 붙어 읽혀 그 지적이 되살아난다
+                   — 실제로 렌더해 보고 확인했다. */
+                <div
+                  key={direction.direction}
+                  className="min-w-0 rounded-lg border border-border px-2.5 py-2"
+                >
                   <p className="text-xs font-semibold text-muted">{direction.direction}</p>
                   <div className="mt-1 grid gap-1">
                     {direction.items.map((item, index) => (
@@ -865,7 +874,7 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
           </article>
         ))}
         {items.length === 0 && (
-          <p className="rounded-lg bg-white px-3 py-4 text-center text-sm text-muted">
+          <p className="rounded-lg border border-border px-3 py-4 text-center text-sm text-muted">
             지하철 도착 정보를 제공하지 않는 역이에요.
           </p>
         )}
@@ -943,17 +952,17 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
   const address = item.details["주소"];
 
   return (
-    <article className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+    <article className="rounded-xl border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <span className="inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+          <span className="inline-flex rounded-md border border-border px-1.5 py-0.5 text-[11px] font-semibold text-label">
             {parkingItem.category}
           </span>
-          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100">
+          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-ink">
             {item.title}
           </h4>
           <p
-            className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400"
+            className="mt-1 truncate text-xs text-muted"
             title={address ?? item.details["거리"] ?? undefined}
           >
             {address ?? item.details["거리"] ?? "주소 정보 미제공"}
@@ -967,19 +976,19 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <div className="min-w-0 rounded-lg bg-sky-50 px-2.5 py-2 dark:bg-sky-950/30">
-          <p className="whitespace-nowrap text-[11px] text-sky-700 dark:text-sky-300">가능 주차</p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">가능 주차</p>
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {availableSpaces === null
               ? "잔여 정보 미제공"
               : `${new Intl.NumberFormat("ko-KR").format(availableSpaces)}대 가능`}
           </p>
         </div>
-        <div className="min-w-0 rounded-lg bg-gray-50 px-2.5 py-2 dark:bg-gray-800">
-          <p className="whitespace-nowrap text-[11px] text-gray-500 dark:text-gray-400">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">
             주차 규모
           </p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {capacity === null
               ? "총 대수 미제공"
               : `총 ${new Intl.NumberFormat("ko-KR").format(capacity)}대`}
@@ -987,25 +996,25 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600 dark:text-gray-300">
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted">
         {currentParkedCount !== null && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {new Intl.NumberFormat("ko-KR").format(currentParkedCount)}대 주차 중
           </span>
         )}
         {item.details["거리"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["거리"]}
           </span>
         )}
         {item.details["요금"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["요금"]}
           </span>
         )}
       </div>
       {item.details["기준 시각"] && (
-        <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+        <p className="mt-2 text-[11px] text-muted">
           {item.details["기준 시각"]} 기준
         </p>
       )}
@@ -1013,7 +1022,7 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         <button
           type="button"
           onClick={() => openNaverMapSearch(address)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/60"
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-brand px-3 py-2 text-xs font-semibold text-brand transition-colors hover:bg-sky-light focus:outline-none focus:ring-2 focus:ring-brand"
         >
           <span aria-hidden="true">🧭</span>
           네이버 지도로 길찾기
@@ -1081,14 +1090,14 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
   const totalCapacity = items.reduce((sum, item) => sum + (item.capacity ?? 0), 0);
 
   return (
-    <section className="rounded-2xl border border-sky-100 bg-gradient-to-b from-sky-50 to-white p-4 shadow-sm dark:border-sky-900/60 dark:from-sky-950/30 dark:to-gray-900">
+    <section className="rounded-2xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-sky-700 dark:text-sky-300">
+          <p className="text-xs font-semibold tracking-wide text-brand">
             REALTIME PARKING
           </p>
-          <h3 className="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">주차장 현황</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+          <h3 className="mt-0.5 text-lg font-bold text-ink">주차장 현황</h3>
+          <p className="mt-1 text-sm text-muted">
             {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
             {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
           </p>
@@ -1097,39 +1106,39 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-xl bg-blue-600 px-3 py-3 text-white shadow-sm">
-          <p className="whitespace-nowrap text-xs font-medium text-blue-100">현재 가능한 주차</p>
+        <div className="rounded-xl bg-brand px-3 py-3 text-white">
+          <p className="whitespace-nowrap text-xs font-medium text-white">현재 가능한 주차</p>
           <p className="mt-1 whitespace-nowrap text-xl font-bold">
             {realtimeItems.length > 0
               ? `${new Intl.NumberFormat("ko-KR").format(totalAvailable)}대`
               : "정보 없음"}
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">실시간 제공</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">실시간 제공</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {realtimeItems.length}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">공영 주차장</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">공영 주차장</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {tabCounts["공영"]}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">목록 총 수용</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">목록 총 수용</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {formatParkingCount(totalCapacity)}
           </p>
         </div>
       </div>
 
-      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+      <p className="mt-2 text-xs text-muted">
         가능한 주차 대수는 실시간 정보가 제공된 주차장만 합산합니다.
       </p>
 
-      <div className="mt-4 grid grid-cols-4 rounded-xl border border-sky-100 bg-white p-1 dark:border-sky-900/60 dark:bg-gray-900">
+      <div className="mt-4 grid grid-cols-4 rounded-xl border border-border p-1">
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -1139,8 +1148,8 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             aria-pressed={activeTab === tab}
             className={`rounded-lg px-2 py-2 text-xs font-semibold transition sm:text-sm ${
               activeTab === tab
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-500 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-gray-300 dark:text-gray-400 dark:hover:bg-sky-950/30"
+                ? "bg-brand text-white"
+                : "text-muted hover:bg-chip disabled:cursor-not-allowed disabled:opacity-40"
             }`}
           >
             {tab} {tabCounts[tab]}
@@ -1154,11 +1163,11 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             <div className="mb-2 flex items-center justify-between">
               <h4
                 id="realtime-parking-available-heading"
-                className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                className="text-sm font-semibold text-ink"
               >
                 실시간 주차 가능
               </h4>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-muted">
                 {visibleRealtimeItems.length}곳
               </span>
             </div>
@@ -1175,12 +1184,12 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
 
         {visibleUnavailableItems.length > 0 && (
           <details
-            className="rounded-xl border border-gray-200 bg-gray-50 p-2 dark:border-gray-800 dark:bg-gray-950/40"
+            className="rounded-xl border border-border p-2"
             open={visibleRealtimeItems.length === 0}
           >
-            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-white dark:text-gray-200 dark:hover:bg-gray-900">
+            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-label hover:bg-chip">
               <span>실시간 잔여 현황 미제공</span>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              <span className="text-xs font-medium text-muted">
                 {visibleUnavailableItems.length}곳 보기
               </span>
             </summary>
@@ -1195,7 +1204,7 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
           </details>
         )}
         {visibleItems.length === 0 && (
-          <p className="rounded-xl bg-white px-3 py-4 text-center text-sm text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+          <p className="rounded-xl border border-border px-3 py-4 text-center text-sm text-muted">
             이 유형의 주차장 정보는 제공되지 않습니다.
           </p>
         )}
@@ -1211,7 +1220,11 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   if (isRealtimeSubwayCard(card)) return <RealtimeSubwayEntries card={card} />;
 
   return (
-    <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 실시간 인구 칸·
+       돌발상황 칸과 같은 규칙이다. 하늘색 계열(sky-50/sky-100)을 쓰고 있었는데,
+       이 구획에서 색이 뜻을 나르는 것은 혼잡도 단계 칩뿐이라 바탕이 그 신호와
+       경쟁했다. 테두리는 팔레트 색이 아니라 토큰(border)을 쓴다. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -2094,7 +2107,9 @@ export function RecommendationDetailPreviewModal({
             (detailCard ? (
               <>
                 {answerEntries.length > 0 && (
-                  <section className="rounded-xl bg-sky-light p-3">
+                  /* 위와 같은 규칙 — 바탕을 걷고 테두리로 구분한다(2026-09-16).
+                     여기는 테두리도 없이 bg-sky-light로만 묶여 있었다. */
+                  <section className="rounded-xl border border-border p-3">
                     <h3 className="text-sm font-semibold text-ink">
                       {isEn ? "Related info" : "관련 정보"}
                     </h3>

@@ -42,7 +42,17 @@ function SummaryTile({
   levelCaption?: string | null;
 }) {
   return (
-    <div className="min-w-0 flex-1 rounded-xl border border-border/70 bg-chip px-3 py-2.5">
+    /*
+      바탕을 깔지 않고 **테두리로만** 구분한다(2026-09-16). 전에는 bg-chip으로
+      채웠는데, 안에 든 단계 칩(보통·여유)도 채워진 모양이라 채움이 두 겹으로
+      쌓여 정작 눈에 걸려야 할 단계 칩이 묻혔다. 바탕을 걷으면 이 구획에서
+      채워진 것은 단계 칩뿐이다.
+
+      테두리는 옅게(70%) 두지 않고 그대로 쓴다 — 이제 칸을 규정하는 것이
+      테두리뿐이라서다. 같은 카드의 이웃 블록들도 border-border를 쓴다
+      (PlaceInfoCard).
+    */
+    <div className="min-w-0 flex-1 rounded-xl border border-border px-3 py-2.5">
       <p className="text-[11px] font-medium text-muted">{label}</p>
       <p className="mt-1 truncate text-[15px] font-bold leading-tight text-ink" title={value}>
         {value}

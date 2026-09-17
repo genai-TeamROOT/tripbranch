@@ -33,6 +33,7 @@ from app.observability.langfuse_tracing import (
 from app.providers.factory import validate_provider_config
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.tour_category_registry import get_tour_category_registry
+from app.routes.account import router as account_router
 from app.routes.agent import router as agent_router
 from app.routes.chat import router as chat_router
 from app.routes.dev import router as dev_router
@@ -246,6 +247,7 @@ def create_app() -> FastAPI:
     app.include_router(state_router, prefix="/api")
     app.include_router(preferences_router, prefix="/api")
     app.include_router(favorites_router, prefix="/api")
+    app.include_router(account_router, prefix="/api")
     app.include_router(feedback_router, prefix="/api")
     app.include_router(trace_router, prefix="/api")
     # 개발자 Ops 패널은 DB 쓰기까지 하는 엔드포인트를 갖는다. 설정 플래그로
