@@ -77,6 +77,23 @@ def test_missing_quote_falls_back_to_a_plain_sentence() -> None:
     assert "말씀하신 분위기와 잘 맞는 곳이에요." in sentences
 
 
+def test_tag_scored_taste_uses_matching_tag_instead_of_unrelated_embedding_quote() -> None:
+    candidate = _ranked(taste=0.9, text="가족 모임과 회식에 좋은 룸 식당이에요.")
+    candidate = RankedCandidate(
+        **{
+            **candidate.__dict__,
+            "taste_tag_label": "혼자 가기 좋은",
+            "taste_tag_documents": 4,
+        }
+    )
+
+    sentences = _explain(candidate)
+    taste_sentence = next(sentence for sentence in sentences if "후기 4건" in sentence)
+
+    assert '"혼자 가기 좋은"' in taste_sentence
+    assert not any("가족 모임" in sentence for sentence in sentences)
+
+
 def test_weak_taste_match_is_not_mentioned() -> None:
     """근거가 약한데 "취향에 맞다"고 말하면 거짓이 된다(임계값 0.7)."""
     sentences = _explain(_ranked(taste=0.3))
@@ -94,9 +111,7 @@ def test_weak_taste_match_is_not_mentioned() -> None:
 def test_reason_names_the_axes_actually_scored(weights, expected: str) -> None:
     """취향이 순위를 바꿔놓고 문장이 그 사실을 숨기면 응답이 계산과 어긋난다."""
     candidate = _ranked(taste=0.5)
-    candidate = RankedCandidate(
-        **{**candidate.__dict__, "weights_used": dict(weights)}
-    )
+    candidate = RankedCandidate(**{**candidate.__dict__, "weights_used": dict(weights)})
 
     assert _recommendation_reason(candidate) == expected
 

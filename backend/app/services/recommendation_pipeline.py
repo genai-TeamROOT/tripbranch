@@ -21,6 +21,7 @@ from app.domain.evidence import build_evidence
 from app.domain.explanation import build_explanations
 from app.domain.models import (
     PlaceEvidenceMatch,
+    PreferenceTagMatch,
     ScoringCandidate,
     WeatherCondition,
 )
@@ -51,6 +52,8 @@ from app.errors import AppError
 from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
+    ExcludedScoringCandidate,
+    PreferenceTagScoreDetail,
     RecommendationItem,
     RecommendationResponse,
     TasteEvidenceQuote,
@@ -155,9 +158,7 @@ def merge_prepared_recommendations(
     first = results[0]
     for result in results[1:]:
         if result.filter_context != first.filter_context:
-            raise ValueError(
-                "준비 결과의 방문 시각 또는 운영시간 무시 여부가 서로 다릅니다."
-            )
+            raise ValueError("준비 결과의 방문 시각 또는 운영시간 무시 여부가 서로 다릅니다.")
 
     eligible_by_id = {}
     excluded_by_id = {}
@@ -272,9 +273,7 @@ async def prepare_recommendation_from_context(
         weather_reason=weather_reason,
         requested_environment=resolve_requested_environment(conditions),
         details_missing_place_ids=frozenset(
-            place.place_id
-            for place in (places.data or [])
-            if place.operating_schedule is None
+            place.place_id for place in (places.data or []) if place.operating_schedule is None
         ),
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
@@ -306,6 +305,9 @@ async def score_prepared_recommendation(
     # taste Feature를 아예 쓰지 않는다. 빈 dict는 "말했는데 근거를 못 찾았다"라
     # Feature는 켜지고 모든 후보가 0점이 된다 — 둘을 구분한다.
     taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
+    # 취향 태그 일치 결과. 발화에서 사전 코드(혼밥 → alone 등)를 뽑아낸 요청에만
+    # 채워지고, 임베딩 점수의 가산 신호로 함께 taste 점수를 만든다.
+    taste_tag_matches: Mapping[str, PreferenceTagMatch] | None = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
@@ -329,6 +331,7 @@ async def score_prepared_recommendation(
         travel_budget_speed_km_per_min=travel_budget_speed_km_per_min,
         district_scoped=prepared.district_scoped,
         taste_matches=taste_matches,
+        taste_tag_matches=taste_tag_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
@@ -341,9 +344,7 @@ async def score_prepared_recommendation(
     )
     excluded_closed_count = len(excluded_closed_place_ids)
     excluded_all_closed = (
-        not ranked
-        and excluded_closed_count > 0
-        and excluded_closed_count == len(excluded)
+        not ranked and excluded_closed_count > 0 and excluded_closed_count == len(excluded)
     )
     response = _build_response(
         ranked,
@@ -356,7 +357,37 @@ async def score_prepared_recommendation(
         origin_name=prepared.origin_name,
         travel_origin_toggle=prepared.travel_origin_toggle,
     )
-    return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
+    # 노출 상위 N곳과 별도로, 실제 채점을 받은 전체 후보를 개발자 패널에 보낸다.
+    # 같은 변환 함수를 재사용해 점수·근거 필드가 사용자 카드와 어긋나지 않게 한다.
+    debug_response = _build_response(
+        scoring.ranked,
+        prepared.all_candidates,
+        prepared.details_missing_place_ids,
+        prepared.visit_at,
+        weather_ignored=prepared.weather_ignored,
+        origin_name=prepared.origin_name,
+    )
+    scoring_candidates = sorted(
+        [*debug_response.recommendations, *debug_response.unverified_recommendations],
+        key=lambda item: item.scoring_rank or 10_000,
+    )
+    scoring_excluded_candidates = [
+        ExcludedScoringCandidate(
+            place_id=item.candidate.place_id,
+            name=item.candidate.name,
+            category=item.candidate.category,
+            distance_km=round(item.candidate.distance_km, 2),
+            reason=item.reason.value,
+        )
+        for item in excluded
+    ]
+    return response.model_copy(
+        update={
+            "elapsed_ms": round((timer() - started_at) * 1000, 2),
+            "scoring_candidates": scoring_candidates,
+            "scoring_excluded_candidates": scoring_excluded_candidates,
+        }
+    )
 
 
 async def run_recommendation_pipeline_from_context(
@@ -543,9 +574,13 @@ async def rerank_with_concentration(
             # 문구("말씀하신 분위기와 잘 맞는 곳이에요.")로 떨어졌다.
             # 1차는 유사도 1위 조각을 쓰므로(scoring._taste_evidence_text),
             # 유사도 내림차순으로 실려 온 첫 인용문이 같은 값이다.
-            taste_evidence_text=(
-                item.taste_evidence[0].text if item.taste_evidence else None
-            ),
+            taste_evidence_text=(item.taste_evidence[0].text if item.taste_evidence else None),
+            taste_tag_label=item.taste_tag_label,
+            taste_tag_documents=item.taste_tag_documents,
+            taste_tag_score=item.taste_tag_score,
+            taste_embedding_similarity=item.taste_embedding_similarity,
+            taste_embedding_score=item.taste_embedding_score,
+            taste_combined_score=item.taste_combined_score,
             concentration_level=concentration_level,
         )
         # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로
@@ -589,6 +624,14 @@ async def rerank_with_concentration(
             # 가져온다 — 여기서 빠뜨리면 혼잡도 재순위를 탄 요청만 이 필드가
             # 조용히 사라진다(travel_distance_m과 같은 이유, 위 주석 참고).
             taste_evidence=item.taste_evidence,
+            taste_tag_score=item.taste_tag_score,
+            taste_tag_label=item.taste_tag_label,
+            taste_tag_documents=item.taste_tag_documents,
+            taste_tag_details=item.taste_tag_details,
+            taste_embedding_similarity=item.taste_embedding_similarity,
+            taste_embedding_score=item.taste_embedding_score,
+            taste_combined_score=item.taste_combined_score,
+            scoring_rank=rank,
             preference_tags=item.preference_tags,
             # 썸네일도 1차 값을 그대로 가져온다. 2차는 후보를 다시 만들지 않고
             # A가 붙여둔 값을 옮기기만 하면 된다 — 재조회 경로가 여기엔 없다.
@@ -615,6 +658,8 @@ async def rerank_with_concentration(
         # 같은 결론이다. 안 넘기면 혼잡도 재순위를 탄 요청만 "OO 기준으로 다시
         # 보기" 버튼을 잃는다(2026-08-24 발견, 위 taste_evidence_text와 같은 유형).
         travel_origin_toggle=response.travel_origin_toggle,
+        scoring_candidates=response.scoring_candidates,
+        scoring_excluded_candidates=response.scoring_excluded_candidates,
     )
 
 
@@ -749,9 +794,13 @@ async def rerank_with_co_visited(
             travel_distance_m=item.travel_distance_m,
             travel_duration_seconds=item.travel_duration_seconds,
             travel_mode=item.travel_mode,
-            taste_evidence_text=(
-                item.taste_evidence[0].text if item.taste_evidence else None
-            ),
+            taste_evidence_text=(item.taste_evidence[0].text if item.taste_evidence else None),
+            taste_tag_label=item.taste_tag_label,
+            taste_tag_documents=item.taste_tag_documents,
+            taste_tag_score=item.taste_tag_score,
+            taste_embedding_similarity=item.taste_embedding_similarity,
+            taste_embedding_score=item.taste_embedding_score,
+            taste_combined_score=item.taste_combined_score,
             co_visited_place_names=partner_names,
         )
         evidence = build_evidence(candidate, origin_name=origin_name)
@@ -784,6 +833,14 @@ async def rerank_with_co_visited(
                 if contribution.weight is not None
             },
             taste_evidence=item.taste_evidence,
+            taste_tag_score=item.taste_tag_score,
+            taste_tag_label=item.taste_tag_label,
+            taste_tag_documents=item.taste_tag_documents,
+            taste_tag_details=item.taste_tag_details,
+            taste_embedding_similarity=item.taste_embedding_similarity,
+            taste_embedding_score=item.taste_embedding_score,
+            taste_combined_score=item.taste_combined_score,
+            scoring_rank=rank,
             preference_tags=item.preference_tags,
             # 혼잡도 재순위와 같은 이유로 썸네일도 1차 값을 그대로 가져온다.
             image_url=item.image_url,
@@ -801,6 +858,8 @@ async def rerank_with_co_visited(
         excluded_all_closed=response.excluded_all_closed,
         excluded_closed_place_ids=response.excluded_closed_place_ids,
         travel_origin_toggle=response.travel_origin_toggle,
+        scoring_candidates=response.scoring_candidates,
+        scoring_excluded_candidates=response.scoring_excluded_candidates,
     )
 
 
@@ -1006,6 +1065,24 @@ def _build_response(
                 TasteEvidenceQuote(text=snippet.source_text, similarity=snippet.similarity)
                 for snippet in ranked_item.taste_evidence
             ],
+            taste_tag_score=ranked_item.taste_tag_score,
+            taste_tag_label=ranked_item.taste_tag_label,
+            taste_tag_documents=ranked_item.taste_tag_documents,
+            taste_tag_details=[
+                PreferenceTagScoreDetail(
+                    code=detail.code,
+                    label=detail.label,
+                    positive_document_count=detail.positive_documents,
+                    negative_document_count=detail.negative_documents,
+                    candidate_max_positive_document_count=detail.candidate_max_positive_documents,
+                    relative_score=detail.score,
+                )
+                for detail in ranked_item.taste_tag_details
+            ],
+            taste_embedding_similarity=ranked_item.taste_embedding_similarity,
+            taste_embedding_score=ranked_item.taste_embedding_score,
+            taste_combined_score=ranked_item.taste_combined_score,
+            scoring_rank=ranked_item.rank,
         )
         (unverified if ranked_item.is_unverified else verified).append(item)
 
@@ -1115,9 +1192,7 @@ def _recommendation_reason(ranked: RankedCandidate) -> str:
     숨기는 셈이라, 채점에 쓴 키에서 문구를 만든다.
     """
     labels = [
-        _FEATURE_LABELS[feature]
-        for feature in ranked.weights_used
-        if feature in _FEATURE_LABELS
+        _FEATURE_LABELS[feature] for feature in ranked.weights_used if feature in _FEATURE_LABELS
     ]
     axes = "·".join(labels) if labels else "여러"
     return f"{axes} 조건을 종합한 {ranked.rank}순위 추천이에요."
