@@ -316,7 +316,22 @@ export function PreferencesPage() {
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
               {/* 최소와 최대를 함께 낸다. `N / 5`만 내면 3개를 채워야 저장된다는
                   사실이 이 자리에서 안 보인다. */}
-              <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
+              {/*
+               * **최소치를 채웠는지를 칩의 채움으로 말한다(2026-09-17).** 비어 있으면
+               * 아직 저장할 수 없고, 브랜드 색으로 차면 저장 조건을 넘긴 것이다 —
+               * 아래 저장하기 버튼이 열리는 것과 같은 조건(`canSave`)을 쓴다.
+               *
+               * 색이 유일한 신호는 아니다. 같은 사실을 칩의 글자("3개 선택됨")와
+               * 옆의 안내, 저장하기 버튼의 활성 상태가 함께 말한다.
+               *
+               * 두 상태 모두 테두리를 둔다. 채운 쪽에서 빼면 1px씩 줄어 3개째를
+               * 고르는 순간 칩이 들썩이고, 그 옆 안내 문구까지 밀린다.
+               */}
+              <span
+                className={`rounded-full border border-brand px-3 py-1.5 text-xs font-bold transition-colors ${
+                  canSave ? "bg-brand text-white" : "bg-white text-brand"
+                }`}
+              >
                 {isEn
                   ? `${selected.size} of ${MIN_SELECTED}–${MAX_SELECTED} selected`
                   : `${MIN_SELECTED}–${MAX_SELECTED}개 중 ${selected.size}개 선택됨`}
