@@ -732,6 +732,52 @@ class PlaceEvidenceMatch:
 
 
 @dataclass(frozen=True)
+class PreferenceTag:
+    """`place_preference_tags` 한 행 중 채점이 보는 값만 추린 것.
+
+    `confidence`는 카드 표시·분석용 원자료로 보존한다. 추천 순위의 태그 점수는
+    요청마다 후보군 안의 `positive_documents` 최댓값으로 정규화한다.
+    """
+
+    code: str
+    label: str
+    confidence: float
+    positive_documents: int
+    negative_documents: int
+
+
+@dataclass(frozen=True)
+class PreferenceTagScoreDetail:
+    """요청 태그 하나의 후보군 상대 점수 계산 근거."""
+
+    code: str
+    label: str | None
+    positive_documents: int
+    negative_documents: int
+    candidate_max_positive_documents: int
+    score: float
+
+
+@dataclass(frozen=True)
+class PreferenceTagMatch:
+    """한 장소가 요청 취향과 얼마나 맞는지. 태그 기반 taste 점수의 입력이다.
+
+    `score`는 요청 코드 **전부**에 대한 평균이다. "혼밥 + 조용한"처럼 둘을 말했는데
+    한쪽만 맞는 곳은 절반만 받는다 — 둘 다 맞기를 요구하면(교집합) 걸리는 곳이
+    거의 없어진다. 후보 30곳에서 한 축이 맞는 비율이 평균 7.1%였다(같은 실측).
+
+    `label`/`documents`는 점수가 아니라 근거 문장용이다 — 맞은 태그 중 가장 강한
+    하나를 그대로 들고 간다("후기 5건에서 '혼자 가기 좋은' 이야기가 나와요").
+    """
+
+    content_id: str
+    score: float
+    label: str | None = None
+    documents: int = 0
+    details: tuple[PreferenceTagScoreDetail, ...] = ()
+
+
+@dataclass(frozen=True)
 class PlaceMoodProfile:
     """장소 사진에서 뽑은 분위기 축 점수 한 벌.
 

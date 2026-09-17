@@ -574,9 +574,7 @@ class SupabasePlaceRepository:
                         "polarity": str(row.get("polarity") or "mixed"),
                         "text": str(row.get("evidence_text") or ""),
                         "source_type": str(row.get("source_type") or ""),
-                        "source_url": (
-                            str(row["source_url"]) if row.get("source_url") else None
-                        ),
+                        "source_url": (str(row["source_url"]) if row.get("source_url") else None),
                     }
                 )
         insights: list[dict[str, object]] = []
@@ -615,7 +613,11 @@ class SupabasePlaceRepository:
                 "/place_preference_tags",
                 params={
                     "select": (
-                        "content_id,preference_code,preference_label,display_rank,mention_count"
+                        "content_id,preference_code,preference_label,display_rank,"
+                        # 채점이 쓰는 값이다(scoring.py::match_preference_tags).
+                        # confidence는 적재가 이미 계산해 둔 0~1 강도이고,
+                        # 긍정·부정 문서 수는 부정이 우세한 태그를 가려내는 데 쓴다.
+                        "mention_count,positive_document_count,negative_document_count,confidence"
                     ),
                     "content_id": "in.(" + ",".join(chunk) + ")",
                     "order": "content_id.asc,display_rank.asc",
@@ -824,9 +826,7 @@ class SupabasePlaceRepository:
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
                 "p_needs": [need.value for need in unique_needs],
-                "p_content_type_id": (
-                    category_filter.content_type_id if category_filter else None
-                ),
+                "p_content_type_id": (category_filter.content_type_id if category_filter else None),
                 "p_lcls_systm1": category_filter.lcls_systm1 if category_filter else None,
                 "p_lcls_systm2": category_filter.lcls_systm2 if category_filter else None,
                 "p_lcls_systm3": category_filter.lcls_systm3 if category_filter else None,
@@ -1354,9 +1354,7 @@ class SupabasePlaceRepository:
                         if isinstance(raw.get("operating_schedule"), dict)
                         else None
                     ),
-                    operating_parser_version=_optional_text(
-                        raw.get("operating_parser_version")
-                    ),
+                    operating_parser_version=_optional_text(raw.get("operating_parser_version")),
                     **_barrier_free_fields(raw.get("place_barrier_free")),
                 )
         return details

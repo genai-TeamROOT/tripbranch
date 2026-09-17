@@ -25,6 +25,7 @@ from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.schemas import (
     Environment,
+    PreferenceTagScoreDetail,
     RecommendationItem,
     RecommendationResponse,
     StatedWeather,
@@ -1554,6 +1555,22 @@ async def test_reranks_carry_every_recommendation_item_field() -> None:
         "image_url": "https://example.test/thumb.jpg",
         "image_url_fallback": "https://example.test/original.jpg",
         "category_label": "한식",
+        "taste_tag_score": 0.5,
+        "taste_tag_label": "혼자 가기 좋은",
+        "taste_tag_documents": 4,
+        "taste_tag_details": [
+            PreferenceTagScoreDetail(
+                code="alone",
+                label="혼자 가기 좋은",
+                positive_document_count=4,
+                negative_document_count=0,
+                candidate_max_positive_document_count=8,
+                relative_score=0.5,
+            )
+        ],
+        "taste_embedding_similarity": 0.61,
+        "taste_embedding_score": 0.82,
+        "taste_combined_score": 0.85,
     }
     base = _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)
     item = base.model_copy(update=sentinels)
@@ -1579,6 +1596,8 @@ async def test_reranks_carry_every_recommendation_item_field() -> None:
         "feature_scores",
         "weights_used",
         "preference_tags",
+        # 재순위는 순서를 바꾸므로 score와 같이 새 순위로 다시 매긴다.
+        "scoring_rank",
     }
     assert not unchecked, f"이 필드에 표식 값을 채워 넣어야 한다: {sorted(unchecked)}"
 

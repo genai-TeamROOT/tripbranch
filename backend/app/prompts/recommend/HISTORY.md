@@ -4,11 +4,29 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.10.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
+| recommend.extract | 2.11.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
 | recommend.summary | 1.3.0 | summary_instruction.md | persona |
 | recommend.place_reason | 1.2.0 | place_reason_instruction.md | — |
 
 ## Draft
+
+- 2026-09-17(recommend.extract v2.11.0): **"식당"·"카페"·"술집"이라고 말한 요청이
+  음식점 전체로 넓어지던 것을 막았습니다.** `restaurant`는 TourAPI 음식점 대분류라
+  카페·찻집·주점이 함께 들어 있어, LLM이 `place_tags`를 비워 오면 "식당"을 찾는
+  요청에도 카페·주점이 후보로 섞일 수 있었습니다. `place_tag_rules.md`에
+  명시한 음식 업종을 `place_tags`로 반드시 좁히라는 규칙을 추가하고, 새 태그
+  `식당`(관광식당·모범음식점·중식·일식·서양식·기타외국식·퓨전·간이음식)을 만들었습니다.
+  `카페` 태그는 커피 전문점뿐 아니라 찻집·기타음료점까지 포함하도록 넓혔습니다.
+
+  **LLM이 규칙을 놓쳐도 결과가 같도록 코드에서 한 번 더 보정합니다**
+  (`state_transform._with_explicit_food_subcategory`). 발화에 "식당·맛집·혼밥",
+  "카페·찻집", "술집·주점·펍"이 있고 LLM이 음식 소분류 태그를 비워 왔을 때만
+  태그를 채웁니다. "카페 말고 식당"처럼 제외를 말한 업종은 채우지 않고, 한식처럼
+  더 구체적인 태그가 이미 있으면 넓히지 않습니다.
+
+  검증: 전체 테스트 통과, 프롬프트 스냅샷 갱신. **실 LLM 추출 정확도 재측정은 하지
+  않았습니다** — 코드 보정이 같은 결과를 보장하므로 추출 실패가 후보 범위로 새지
+  않는 것을 단위 테스트로 확인했습니다.
 
 - 2026-09-16(recommend.place_reason v1.2.0): **사용자 취향과 맞은 후기를 먼저
   말하게 했습니다.** 이 문장의 근거로 넘기는 태그는 그 장소에서 후기에 많이 언급된

@@ -193,19 +193,33 @@ _TASTE_QUOTE_MAX_CHARS = 60
 
 
 def _taste_sentence(evidence: RecommendationEvidence) -> str:
-    """왜 취향에 맞는지를 근거 원문으로 설명한다.
+    """왜 취향에 맞는지를 근거로 설명한다.
 
-    점수만으로는 "이게 왜 내 취향이냐"에 답할 수 없다. 블로그·리뷰에서 실제로
-    뽑힌 문장을 인용해, 사용자가 판단할 재료를 준다. 원문이 없으면(검색은
-    됐지만 조각이 비어 있는 경우) 축만 언급한다.
+    점수만으로는 "이게 왜 내 취향이냐"에 답할 수 없다. 사용자가 판단할 재료를 준다.
+
+    **태그로 채점했으면 태그를 말한다.** 그 경로는 원문 인용을 들고 오지 않는데,
+    임베딩 인용을 대신 쓰면 "혼밥으로 뽑고 가족 외식 문장을 보여주는" 어긋남이
+    생긴다. 대신 몇 건의 후기가 그렇게 말했는지를 밝힌다 — 태그 하나가 문서
+    여러 건에서 나왔다는 사실 자체가 근거다(실측 중앙값 6건).
+
+    임베딩으로 채점했으면 예전처럼 원문을 인용한다. 원문이 없으면(검색은 됐지만
+    조각이 비어 있는 경우) 축만 언급한다.
     """
+    if evidence.taste_tag_label:
+        if evidence.taste_tag_documents > 0:
+            return (
+                f"후기 {evidence.taste_tag_documents}건에서 "
+                f'"{evidence.taste_tag_label}" 곳으로 언급돼요.'
+            )
+        return f'후기에서 "{evidence.taste_tag_label}" 곳으로 언급돼요.'
+
     text = evidence.taste_evidence_text
     if not text:
         return "말씀하신 분위기와 잘 맞는 곳이에요."
     quote = text.strip().replace("\n", " ")
     if len(quote) > _TASTE_QUOTE_MAX_CHARS:
         quote = quote[:_TASTE_QUOTE_MAX_CHARS].rstrip() + "…"
-    return f"방문 후기에 이런 얘기가 있어요 — \"{quote}\""
+    return f'방문 후기에 이런 얘기가 있어요 — "{quote}"'
 
 
 # co_visited Feature(D-092, RECOMMEND 2차 Scoring 전용)의 사실 문장.
