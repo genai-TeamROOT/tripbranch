@@ -78,6 +78,8 @@ export interface RecommendationItem {
   /** 임베딩 평균 유사도 → 환산점수 → 태그 가산 후 최종 취향점수. */
   taste_embedding_similarity?: number | null;
   taste_embedding_score?: number | null;
+  /** 임베딩 점수를 펼 때 쓴 만점 기준 = max(후보 중 1등 유사도, 0.60). */
+  taste_embedding_full_score?: number | null;
   taste_combined_score?: number | null;
   /** D가 전체 후보를 정렬했을 때의 순위. 개발자 화면 전용. */
   scoring_rank?: number | null;
@@ -150,6 +152,11 @@ export interface RecommendationsResponse {
   unverified_recommendations: RecommendationItem[];
   scoring_candidates?: RecommendationItem[];
   scoring_excluded_candidates?: ExcludedScoringCandidate[];
+  /** 후보 부족 원인을 C 검색과 D 필터로 구분하는 개발자 화면 전용 진단값. */
+  scoring_candidate_target?: number | null;
+  scoring_input_count?: number;
+  scoring_eligible_count?: number;
+  scoring_pool_exhausted?: boolean | null;
   travel_origin_toggle?: TravelOriginToggle | null;
   elapsed_ms: number;
 }

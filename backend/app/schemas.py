@@ -195,9 +195,11 @@ class RecommendationItem(BaseModel):
     taste_tag_documents: int = Field(default=0, ge=0)
     taste_tag_details: list[PreferenceTagScoreDetail] = Field(default_factory=list)
     # 취향 결합점수 계산 과정. embedding_similarity는 환산 전 평균 코사인
-    # 유사도이고, embedding_score는 0.43~0.65 구간을 0~1로 편 값이다.
+    # 유사도이고, embedding_score는 0.43~만점 기준 구간을 0~1로 편 값이다.
     taste_embedding_similarity: float | None = None
     taste_embedding_score: float | None = Field(default=None, ge=0, le=1)
+    # 이 요청에서 쓴 만점 기준 = max(후보 중 1등 유사도, 0.60).
+    taste_embedding_full_score: float | None = None
     taste_combined_score: float | None = Field(default=None, ge=0, le=1)
     # 개발자 패널의 전체 후보 목록에서 원래 D 순위를 보존한다.
     scoring_rank: int | None = Field(default=None, ge=1)
@@ -267,6 +269,12 @@ class RecommendationResponse(BaseModel):
     # 빠진 후보라 탈락 사유만 갖는다. 사용자 화면은 두 필드를 렌더링하지 않는다.
     scoring_candidates: list[RecommendationItem] = Field(default_factory=list)
     scoring_excluded_candidates: list[ExcludedScoringCandidate] = Field(default_factory=list)
+    # 후보 풀이 예상보다 작은 경우 개발자 화면에서 C 검색 부족과 D 하드 필터를
+    # 구분하기 위한 진단값. 사용자 응답에는 노출하지 않는다.
+    scoring_candidate_target: int | None = Field(default=None, ge=1)
+    scoring_input_count: int = Field(default=0, ge=0)
+    scoring_eligible_count: int = Field(default=0, ge=0)
+    scoring_pool_exhausted: bool | None = None
 
 
 class ScheduleItem(BaseModel):

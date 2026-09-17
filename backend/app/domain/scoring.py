@@ -51,7 +51,7 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
 # weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
 # feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
-SCORING_VERSION = "recommendation-scoring-1.10.0"
+SCORING_VERSION = "recommendation-scoring-1.11.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -150,6 +150,24 @@ TASTE_WEIGHTS: Mapping[str, float] = build_weights(("taste",))
 # 검색 결과로 오지 않는다.
 _TASTE_CUT = 0.43
 _TASTE_FULL_SCORE = 0.65
+# 만점 기준을 요청마다 정할 때 내려갈 수 있는 최저선(1.11.0 이후).
+#
+# 만점 기준 M = max(이번 요청 후보 중 1등 유사도, 이 값)이다. 1등이 0.65를 넘는
+# 날은 1등이 만점이 되어 0.65 이상이 모두 1.00으로 묶이던 동점이 풀리고, 1등이
+# 0.65에 못 미치는 날(질의가 후기와 약하게 맞는 날)은 만점 기준이 내려가 취향이
+# 순위에 반영된다. 고정 0.65일 때는 약한 질의에서 모든 후보의 취향 점수가 낮게
+# 모여, 근거가 없는 곳이 거리만으로 상위에 올랐다.
+#
+# 실측(2026-09-17, 용산·성동 골드셋 dev 16질의 × 2개 구 = 32회, 날씨·운영·거리를
+# 합친 최종 상위 5곳): 고정 0.65 정답률 88.1% → 최저선 0.60에서 90.0%. 0.50~0.58은
+# 90.6%로 같았지만 무관한 곳이 취향 0.9 이상을 받은 경우가 1곳 → 2곳으로 늘었다 —
+# 최저선이 낮을수록 약하게 맞은 곳이 만점에 가까워진다. 0.62는 88.8%로 효과가
+# 거의 사라졌다. 정답 등급은 AI 판정(codex_reviewed)이고 질의가 16개뿐이라,
+# 0.60이라는 정확한 값의 근거는 약하다.
+_TASTE_FULL_SCORE_FLOOR = 0.60
+# 임베딩 점수를 낼 때 보는 근거 칸 수. 검색 Provider가 장소당 남기는 근거 수
+# (place_evidence.DEFAULT_MATCH_COUNT)와 같아야 한다.
+_TASTE_EVIDENCE_SLOTS = 3
 
 # 태그는 임베딩을 대체하지 않고 남은 점수 여백만 일부 채운다. 같은 리뷰·블로그에서
 # 태그와 임베딩이 함께 만들어졌을 수 있어 단순 합산하면 근거를 두 번 세게 된다.
@@ -339,10 +357,12 @@ class RankedCandidate:
     taste_tag_score: float | None = None
     taste_tag_details: tuple[PreferenceTagScoreDetail, ...] = ()
     # 임베딩과 태그를 결합하기 전·후 값을 개발자 화면까지 보존한다. similarity는
-    # 검색 결과의 평균 코사인 유사도, embedding_score는 0.43~0.65를 0~1로 편 값,
+    # 근거 3칸 평균 유사도, embedding_score는 0.43~만점 기준을 0~1로 편 값,
     # combined_score는 실제 feature_scores["taste"]에 들어간 값이다.
     taste_embedding_similarity: float | None = None
     taste_embedding_score: float | None = None
+    # 이 요청에서 임베딩 점수를 펼 때 쓴 만점 기준(`taste_full_score`).
+    taste_embedding_full_score: float | None = None
     taste_combined_score: float | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
@@ -465,8 +485,32 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
 
 
-def _taste_score(match: PlaceEvidenceMatch | None) -> float:
-    """취향 근거의 평균 유사도를 0~1 점수로 편다.
+def _taste_evidence_similarity(match: PlaceEvidenceMatch) -> float:
+    """근거 칸 3개의 평균 유사도. 비어 있는 칸은 컷값(0점)으로 채운다.
+
+    살아남은 문장끼리만 평균 내면 **근거가 1개뿐인 장소가 유리하다.** 안국역 카페
+    50곳 실측(2026-09-17)에서 "전망 좋은 정말 멋진 카페!" 한 문장(0.648)뿐인 곳이
+    근거 3개를 가진 곳들을 제치고 1위였고, 식당 50곳에서도 근거 1개인 곳이 근거
+    3개·태그 21건인 곳과 1.00 동점이었다. 빈 칸을 컷값으로 채우면 여러 후기에서
+    반복해 언급된 곳이 올라간다 — 태그의 "긍정 문서 수"와 같은 방향이다.
+    골드셋(용산·성동 55곳 × dev 16질의)에서 nDCG@5 0.926 → 0.938,
+    Strict P@5 0.900 → 0.925였고 나빠진 질의는 없었다(0.529 → 0.529).
+
+    문장 없이 평균만 들어온 입력(오래된 테스트 데이터 등)은 칸 수를 알 수 없어
+    평균을 그대로 쓴다.
+    """
+    similarities = [snippet.similarity for snippet in match.snippets[:_TASTE_EVIDENCE_SLOTS]]
+    if not similarities:
+        return match.avg_similarity
+    empty_slots = _TASTE_EVIDENCE_SLOTS - len(similarities)
+    return (sum(similarities) + _TASTE_CUT * empty_slots) / _TASTE_EVIDENCE_SLOTS
+
+
+def _taste_score(
+    match: PlaceEvidenceMatch | None,
+    full_score: float = _TASTE_FULL_SCORE,
+) -> float:
+    """취향 근거의 칸 평균 유사도를 0~1 점수로 편다.
 
     근거가 없는 후보는 **0.0이지 결측이 아니다.** "계산하지 못했다"(날씨 조회
     실패)와 "안 맞는다"는 다르다 — 후보마다 결측 여부가 갈리면 한 순위 안에서
@@ -478,15 +522,24 @@ def _taste_score(match: PlaceEvidenceMatch | None) -> float:
     """
     if match is None:
         return 0.0
-    span = _TASTE_FULL_SCORE - _TASTE_CUT
+    span = full_score - _TASTE_CUT
     if span <= 0:
         return 0.0
-    return _clamp((match.avg_similarity - _TASTE_CUT) / span, 0.0, 1.0)
+    return _clamp((_taste_evidence_similarity(match) - _TASTE_CUT) / span, 0.0, 1.0)
+
+
+def taste_full_score(matches: Iterable[PlaceEvidenceMatch]) -> float:
+    """이번 요청의 만점 기준: 후보 중 1등 칸 평균 유사도와 최저선 중 큰 값.
+
+    최저선이 있어 근거가 약하게만 잡힌 날에도 1등이 곧바로 만점이 되지는 않는다.
+    """
+    top = max((_taste_evidence_similarity(match) for match in matches), default=_TASTE_CUT)
+    return max(top, _TASTE_FULL_SCORE_FLOOR)
 
 
 def _taste_similarity(match: PlaceEvidenceMatch | None) -> float | None:
-    """임베딩 점수 환산 전 평균 코사인 유사도를 디버그용으로 보존한다."""
-    return match.avg_similarity if match is not None else None
+    """임베딩 점수 환산 직전의 칸 평균 유사도를 디버그용으로 보존한다."""
+    return _taste_evidence_similarity(match) if match is not None else None
 
 
 def combine_taste_scores(
@@ -1014,6 +1067,12 @@ def score_prepared_candidates(
     uses_taste_tags = taste_tag_matches is not None
     uses_embedding_taste = taste_matches is not None
     uses_taste = uses_taste_tags or uses_embedding_taste
+    # 만점 기준은 채점 대상 후보 안에서만 정한다 — 검색 결과에 다른 장소가
+    # 섞여 들어와도 이 순위표의 자가 바뀌지 않게 한다.
+    candidate_ids = {prepared.candidate.place_id for prepared in candidates}
+    taste_full = taste_full_score(
+        match for place_id, match in taste_by_place_id.items() if place_id in candidate_ids
+    )
     default_weights = build_weights(("taste",) if uses_taste else ())
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(default_weights),
@@ -1116,7 +1175,7 @@ def score_prepared_candidates(
             # 둘 중 한쪽 근거가 없어도 다른 쪽은 그대로 살아 있다. 모두 없으면
             # 0.0이지 결측이 아니다 — 후보마다 가중치 세트가 달라지지 않게 한다.
             feature_scores["taste"] = combine_taste_scores(
-                _taste_score(taste_match) if uses_embedding_taste else None,
+                _taste_score(taste_match, taste_full) if uses_embedding_taste else None,
                 _taste_score_from_tags(taste_tag_match) if uses_taste_tags else None,
             )
 
@@ -1182,10 +1241,11 @@ def score_prepared_candidates(
                 else None
             ),
             taste_embedding_score=(
-                _taste_score(taste_by_place_id.get(candidate.place_id))
+                _taste_score(taste_by_place_id.get(candidate.place_id), taste_full)
                 if uses_embedding_taste
                 else None
             ),
+            taste_embedding_full_score=taste_full if uses_embedding_taste else None,
             taste_combined_score=(feature_scores.get("taste") if uses_taste else None),
         )
         for index, (

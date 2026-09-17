@@ -123,26 +123,53 @@ def test_ranked_candidate_carries_every_evidence_snippet_not_just_top1() -> None
 
 
 @pytest.mark.parametrize(
-    ("avg_similarity", "expected"),
+    ("top_similarity", "expected_full_score"),
     [
-        (0.43, 0.0),    # 컷값 = 0점
-        (0.54, 0.5),    # 구간 중앙
-        (0.65, 1.0),    # 관측 상한 = 만점
-        (0.813, 1.0),   # 관측 최대 — clipping (의도된 대가)
-        (0.30, 0.0),    # 컷 미만 (검색이 돌려주지 않는 값이지만 방어)
+        (0.57, 0.60),   # 약하게 맞은 날 — 최저선 0.60 아래로는 안 내려간다
+        (0.60, 0.60),   # 최저선과 같으면 그대로
+        (0.70, 0.70),   # 잘 맞은 날 — 1등 유사도가 만점 기준
+        (0.813, 0.813), # 관측 최대 — 더는 1.00으로 잘리지 않는다
     ],
 )
-def test_similarity_is_stretched_over_the_measured_range(
-    avg_similarity: float, expected: float
+def test_full_score_is_top_similarity_but_not_below_the_floor(
+    top_similarity: float, expected_full_score: float
 ) -> None:
-    """1.0으로 나누면 1등 후보조차 0.22점이다 — 실측 상한 0.65로 편다."""
+    """만점 기준 M = max(후보 중 1등 유사도, 0.60)."""
     result = _score(
-        [_prepared("a")], taste_matches={"a": _match("a", avg_similarity)}
+        [_prepared("top"), _prepared("other")],
+        taste_matches={
+            "top": _match("top", top_similarity),
+            "other": _match("other", 0.52),
+        },
     )
 
-    assert result.ranked[0].feature_scores["taste"] == pytest.approx(
-        expected
+    by_id = {r.place_id: r for r in result.ranked}
+    assert by_id["top"].taste_embedding_full_score == pytest.approx(expected_full_score)
+    assert by_id["top"].feature_scores["taste"] == pytest.approx(
+        min(1.0, (top_similarity - _TASTE_CUT) / (expected_full_score - _TASTE_CUT))
     )
+    assert by_id["other"].feature_scores["taste"] == pytest.approx(
+        (0.52 - _TASTE_CUT) / (expected_full_score - _TASTE_CUT)
+    )
+
+
+def test_strong_matches_above_old_cap_are_no_longer_tied() -> None:
+    """고정 0.65일 때는 0.70과 0.67이 모두 1.00 동점이었다."""
+    result = _score(
+        [_prepared("a"), _prepared("b")],
+        taste_matches={"a": _match("a", 0.70), "b": _match("b", 0.67)},
+    )
+
+    by_id = {r.place_id: r for r in result.ranked}
+    assert by_id["a"].feature_scores["taste"] == pytest.approx(1.0)
+    assert by_id["b"].feature_scores["taste"] == pytest.approx(0.24 / 0.27)
+
+
+def test_similarity_below_the_cut_scores_zero() -> None:
+    """검색이 돌려주지 않는 값이지만 방어한다."""
+    result = _score([_prepared("a")], taste_matches={"a": _match("a", 0.30)})
+
+    assert result.ranked[0].feature_scores["taste"] == 0.0
 
 
 def test_taste_can_flip_ranking_between_equal_candidates() -> None:
@@ -197,3 +224,48 @@ def test_similarity_just_above_the_cut_scores_above_zero() -> None:
     )
 
     assert result.ranked[0].feature_scores["taste"] > 0.0
+
+
+def _snippets(*similarities: float) -> tuple[PlaceEvidenceSnippet, ...]:
+    return tuple(
+        PlaceEvidenceSnippet(
+            source_text=f"근거 문장 {index}번은 충분히 긴 후기입니다",
+            source_url=None,
+            similarity=similarity,
+            published_at=None,
+        )
+        for index, similarity in enumerate(similarities)
+    )
+
+
+def test_empty_evidence_slots_count_as_the_cut() -> None:
+    """근거 1개로 0.648인 곳이 근거 3개가 고르게 좋은 곳을 이기면 안 된다.
+
+    안국역 카페 실측에서 한 문장뿐인 곳이 1위였다. 빈 칸은 컷값(0점)으로 채운다.
+    """
+    single = _match("single", 0.648, _snippets(0.648))
+    repeated = _match("repeated", 0.60, _snippets(0.62, 0.60, 0.58))
+
+    result = _score(
+        [_prepared("single"), _prepared("repeated")],
+        taste_matches={"single": single, "repeated": repeated},
+    )
+
+    by_id = {r.place_id: r for r in result.ranked}
+    single_similarity = (0.648 + _TASTE_CUT * 2) / 3
+    assert by_id["single"].taste_embedding_similarity == pytest.approx(single_similarity)
+    # 1등 칸 평균이 0.60이라 만점 기준은 max(0.60, 최저선 0.60) = 0.60이다.
+    assert by_id["single"].feature_scores["taste"] == pytest.approx(
+        (single_similarity - _TASTE_CUT) / (0.60 - _TASTE_CUT)
+    )
+    assert by_id["repeated"].feature_scores["taste"] > by_id["single"].feature_scores["taste"]
+
+
+def test_three_evidence_slots_keep_the_plain_average() -> None:
+    """칸이 다 차면 기존 평균과 같다 — 근거가 충분한 곳의 점수는 바뀌지 않는다."""
+    result = _score(
+        [_prepared("a")],
+        taste_matches={"a": _match("a", 0.60, _snippets(0.62, 0.60, 0.58))},
+    )
+
+    assert result.ranked[0].taste_embedding_similarity == pytest.approx(0.60)

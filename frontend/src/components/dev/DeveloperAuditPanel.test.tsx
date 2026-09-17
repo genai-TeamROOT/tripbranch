@@ -109,7 +109,9 @@ function scoringItem(overrides: Partial<RecommendationItem> = {}): Recommendatio
       taste: 0.15,
     },
     taste_evidence: [
-      { text: "혼자 편하게 식사하기 좋았어요.", similarity: 0.61 },
+      { text: "혼자 편하게 식사하기 좋았어요.", similarity: 0.63 },
+      { text: "1인석이 있어 혼밥하기 부담 없었어요.", similarity: 0.61 },
+      { text: "바 좌석에서 혼자 먹는 손님이 많았어요.", similarity: 0.59 },
     ],
     taste_tag_score: 0.5,
     taste_tag_label: "혼자 가기 좋은",
@@ -126,6 +128,7 @@ function scoringItem(overrides: Partial<RecommendationItem> = {}): Recommendatio
     ],
     taste_embedding_similarity: 0.61,
     taste_embedding_score: 0.82,
+    taste_embedding_full_score: 0.65,
     taste_combined_score: 0.85,
     scoring_rank: 1,
     preference_tags: [
@@ -161,6 +164,8 @@ it("D Scoring에서 원점수·가중치·기여점과 임베딩·태그 결합 
   await user.click(screen.getByRole("button", { name: "D Scoring" }));
 
   const card = within(screen.getByTestId("scoring-breakdown-place-score-1"));
+  expect(card.getByText("1. 혼밥 테스트 식당")).toBeInTheDocument();
+  await user.click(card.getByText("1. 혼밥 테스트 식당"));
   expect(card.getByText("총점")).toBeInTheDocument();
   expect(card.getByText("원점수")).toBeInTheDocument();
   expect(card.getByText("가중치")).toBeInTheDocument();
@@ -170,10 +175,15 @@ it("D Scoring에서 원점수·가중치·기여점과 임베딩·태그 결합 
   expect(card.getByText("0.82 + 0.35 × 0.50 × (1 - 0.82) = 0.85")).toBeInTheDocument();
   expect(card.getByText("태그 점수 0.50")).toBeInTheDocument();
   expect(card.getByText("임베딩 환산점수 0.82")).toBeInTheDocument();
-  expect(card.getByText("“혼자 편하게 식사하기 좋았어요.”")).toBeInTheDocument();
 
   await user.click(card.getByText("태그 계산 자세히 보기"));
   expect(card.getByText("4 / 8 = 0.50")).toBeInTheDocument();
+
+  await user.click(card.getByText("임베딩 계산·근거 자세히 보기"));
+  expect(card.getByText("“혼자 편하게 식사하기 좋았어요.”")).toBeInTheDocument();
+  expect(card.getByText(/\(0\.61 - 0\.43\) \/ \(0\.65 - 0\.43\) = 0\.82/)).toBeInTheDocument();
+  // 근거 3칸이 다 차 있으면 칸 평균 줄은 따로 보이지 않는다.
+  expect(card.queryByText(/칸 평균/)).not.toBeInTheDocument();
 
   await user.click(card.getByText("원본 점수 JSON 보기"));
   expect(card.getByText(/"taste_combined_score"/)).toBeInTheDocument();
@@ -188,11 +198,23 @@ it("추천되지 않은 채점 후보와 점수 계산 전 탈락 후보를 따�
     name: "채점만 된 식당",
     score: 0.41,
     scoring_rank: 6,
+    // 근거 1개(0.61) → 빈 두 칸을 0.43으로 채운 칸 평균 0.49.
+    // 이번 요청 1등이 0.58이라 만점 기준은 최저선 0.60 → (0.49 − 0.43) / 0.17 = 0.35.
+    taste_evidence: [{ text: "혼자 편하게 식사하기 좋았어요.", similarity: 0.61 }],
+    taste_embedding_similarity: 0.49,
+    taste_embedding_score: 0.35,
+    taste_embedding_full_score: 0.6,
+    taste_combined_score: 0.46,
+    feature_scores: { weather: 1, remaining_operating_time: 0.75, distance: 0.8, taste: 0.46 },
   });
   turn.recommendations = {
     recommendations: [shown],
     unverified_recommendations: [],
     scoring_candidates: [hidden, shown],
+    scoring_candidate_target: 30,
+    scoring_input_count: 8,
+    scoring_eligible_count: 7,
+    scoring_pool_exhausted: true,
     scoring_excluded_candidates: [
       {
         place_id: "place-closed",
@@ -208,11 +230,20 @@ it("추천되지 않은 채점 후보와 점수 계산 전 탈락 후보를 따�
   renderScoringTab(turn);
   await user.click(screen.getByRole("button", { name: "D Scoring" }));
 
+  expect(screen.getByText("C→D 전달")).toBeInTheDocument();
+  expect(screen.getByText(/후보 풀이 소진되어/)).toBeInTheDocument();
+
   expect(screen.queryByTestId("scoring-breakdown-place-score-2")).not.toBeVisible();
   await user.click(screen.getByText("추천되지 않은 채점 후보 1곳 점수 보기"));
   const hiddenCard = within(screen.getByTestId("scoring-breakdown-place-score-2"));
   expect(hiddenCard.getByText("6. 채점만 된 식당")).toBeInTheDocument();
-  expect(hiddenCard.getByText("채점 후 미노출")).toBeInTheDocument();
+  await user.click(hiddenCard.getByText("6. 채점만 된 식당"));
+  expect(hiddenCard.getByText("미노출")).toBeInTheDocument();
+  await user.click(hiddenCard.getByText("임베딩 계산·근거 자세히 보기"));
+  expect(hiddenCard.getByText("칸 평균 (0.61 + 0.43 + 0.43) / 3 = 0.49")).toBeInTheDocument();
+  expect(
+    hiddenCard.getByText(/\(0\.49 - 0\.43\) \/ \(0\.60 - 0\.43\) = 0\.35/),
+  ).toBeInTheDocument();
 
   await user.click(screen.getByText("점수 계산 전 탈락 후보 1곳 보기"));
   expect(screen.getByText("문 닫은 식당")).toBeInTheDocument();
@@ -424,7 +455,9 @@ it("소요시간 탭에서 답변 생성 호출의 재시도 여부와 소요 �
   await user.click(screen.getByRole("button", { name: "소요시간" }));
 
   // 예전에는 composing_message 단계에서 latency_ms를 아예 안 보여줬다 — 이제는 보인다.
-  expect(screen.getByText(/generate_compare_summary · gemini-3.5-flash · 13.2초/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/generate_compare_summary · gemini-3.5-flash · 13.2초/),
+  ).toBeInTheDocument();
   // retry_count=1(재시도 1회, 총 시도 2회)이면 "시도 2회"가 보인다.
   expect(screen.getByText("시도 2회")).toBeInTheDocument();
 });

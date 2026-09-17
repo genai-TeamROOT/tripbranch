@@ -797,12 +797,35 @@ function formatWeight(weight: number): string {
 }
 
 const TASTE_EMBEDDING_CUT = 0.43;
-const TASTE_EMBEDDING_FULL_SCORE = 0.65;
+/** 서버가 만점 기준을 보내지 않은 옛 응답용. 지금은 요청마다 max(1등 유사도, 0.60)이다. */
+const TASTE_EMBEDDING_FULL_SCORE_FALLBACK = 0.65;
+const TASTE_FULL_SCORE_FLOOR = 0.6;
 const TASTE_TAG_BONUS_FACTOR = 0.35;
+const TASTE_EVIDENCE_SLOTS = 3;
+const MIN_EVIDENCE_TEXT_LENGTH = 20;
+
+/** 접힌 비교 행은 화면 폭 안에 꼭 들어와야 한다. 날씨와 실내외는 한 요청에서
+ * 동시에 쓰이지 않으므로 첫 칸을 공유하고, 나머지 세 축을 고정 순서로 둔다. */
+const COMPACT_SCORING_FEATURE_SLOTS = [
+  ["weather", "environment"],
+  ["remaining_operating_time"],
+  ["distance"],
+  ["taste"],
+] as const;
+
+const COMPACT_SCORING_LABELS: Record<string, string> = {
+  weather: "날씨",
+  environment: "실내외",
+  remaining_operating_time: "운영",
+  distance: "거리",
+  taste: "취향",
+};
 
 function getScoringFeatureKeys(item: RecommendationItem): string[] {
   const weighted = Object.keys(item.weights_used);
-  const unweighted = Object.keys(item.feature_scores).filter((feature) => !weighted.includes(feature));
+  const unweighted = Object.keys(item.feature_scores).filter(
+    (feature) => !weighted.includes(feature),
+  );
   return [...weighted, ...unweighted];
 }
 
@@ -813,6 +836,11 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
   const hasTagScore = typeof tagScore === "number";
   const embeddingSimilarity = item.taste_embedding_similarity;
   const embeddingScore = item.taste_embedding_score;
+  const fullScore = item.taste_embedding_full_score ?? TASTE_EMBEDDING_FULL_SCORE_FALLBACK;
+  const rawEmbeddingScore =
+    typeof embeddingSimilarity === "number"
+      ? (embeddingSimilarity - TASTE_EMBEDDING_CUT) / (fullScore - TASTE_EMBEDDING_CUT)
+      : 0;
   const combinedScore = item.taste_combined_score ?? tasteScore;
 
   if (tasteScore === undefined) return null;
@@ -837,8 +865,9 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
         </div>
         {typeof combinedScore === "number" && (
           <p className="mt-2 rounded-md bg-white px-2.5 py-2 font-mono text-[11px] text-emerald-800 dark:bg-gray-900 dark:text-emerald-200">
-            {formatScore(embeddingScore ?? 0)} + {TASTE_TAG_BONUS_FACTOR} × {formatScore(tagScore ?? 0)} ×
-            (1 - {formatScore(embeddingScore ?? 0)}) = {formatScore(combinedScore)}
+            {formatScore(embeddingScore ?? 0)} + {TASTE_TAG_BONUS_FACTOR} ×{" "}
+            {formatScore(tagScore ?? 0)} × (1 - {formatScore(embeddingScore ?? 0)}) ={" "}
+            {formatScore(combinedScore)}
           </p>
         )}
       </div>
@@ -846,9 +875,12 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
       <div className="rounded-lg border border-violet-100 bg-violet-50/60 p-3 dark:border-violet-950 dark:bg-violet-950/20">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <div>
-            <h5 className="text-xs font-semibold text-violet-950 dark:text-violet-50">취향 태그 일치도</h5>
+            <h5 className="text-xs font-semibold text-violet-950 dark:text-violet-50">
+              취향 태그 일치도
+            </h5>
             <p className="mt-0.5 text-[11px] text-violet-700 dark:text-violet-300">
-              같은 후보군에서 해당 취향의 긍정 언급 문서가 가장 많은 장소를 1.00으로 둔 상대 점수예요.
+              같은 후보군에서 해당 취향의 긍정 언급 문서가 가장 많은 장소를 1.00으로 둔 상대
+              점수예요.
             </p>
           </div>
           <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-violet-800 shadow-sm dark:bg-gray-900 dark:text-violet-200">
@@ -863,7 +895,10 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
             </summary>
             <div className="divide-y divide-violet-100 border-t border-violet-100 dark:divide-violet-900 dark:border-violet-900">
               {item.taste_tag_details.map((detail) => (
-                <div key={detail.code} className="px-2.5 py-2 text-xs text-gray-700 dark:text-gray-200">
+                <div
+                  key={detail.code}
+                  className="px-2.5 py-2 text-xs text-gray-700 dark:text-gray-200"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold">{detail.label ?? detail.code}</span>
                     <span className="font-mono font-bold text-violet-800 dark:text-violet-200">
@@ -871,11 +906,16 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    긍정 문서 {detail.positive_document_count}건 / 후보군 최다 {detail.candidate_max_positive_document_count}건
-                    {detail.negative_document_count > 0 ? ` · 부정 문서 ${detail.negative_document_count}건` : ""}
+                    긍정 문서 {detail.positive_document_count}건 / 후보군 최다{" "}
+                    {detail.candidate_max_positive_document_count}건
+                    {detail.negative_document_count > 0
+                      ? ` · 부정 문서 ${detail.negative_document_count}건`
+                      : ""}
                   </p>
                   <p className="mt-0.5 font-mono text-[11px] text-violet-700 dark:text-violet-300">
-                    {detail.positive_document_count} / {detail.candidate_max_positive_document_count} = {formatScore(detail.relative_score)}
+                    {detail.positive_document_count} /{" "}
+                    {detail.candidate_max_positive_document_count} ={" "}
+                    {formatScore(detail.relative_score)}
                   </p>
                 </div>
               ))}
@@ -895,8 +935,10 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
               텍스트 임베딩 유사도
             </h5>
             <p className="mt-0.5 text-[11px] text-rose-700 dark:text-rose-300">
-              질의와 근거 문장의 평균 유사도를 {TASTE_EMBEDDING_CUT}~
-              {TASTE_EMBEDDING_FULL_SCORE} 구간에서 0~1 점수로 환산해요.
+              근거 {TASTE_EVIDENCE_SLOTS}칸의 평균 유사도(빈 칸은 {TASTE_EMBEDDING_CUT})를{" "}
+              {TASTE_EMBEDDING_CUT}~만점 기준 구간에서 0~1 점수로 환산해요. 만점 기준은 이번 후보 중
+              1등 유사도이고, {TASTE_FULL_SCORE_FLOOR.toFixed(2)}보다 낮게는 안 내려가요.
+              {MIN_EVIDENCE_TEXT_LENGTH}자 미만 문장은 근거에서 빠져요.
             </p>
           </div>
           {typeof embeddingScore === "number" && (
@@ -906,45 +948,75 @@ function TasteEvidencePanel({ item }: { item: RecommendationItem }) {
           )}
         </div>
 
-        {typeof embeddingSimilarity === "number" && typeof embeddingScore === "number" && (
-          <p className="mt-2 rounded-md bg-white px-2.5 py-2 font-mono text-[11px] text-rose-800 dark:bg-gray-900 dark:text-rose-200">
-            ({formatScore(embeddingSimilarity)} - {TASTE_EMBEDDING_CUT}) / (
-            {TASTE_EMBEDDING_FULL_SCORE} - {TASTE_EMBEDDING_CUT}) = {formatScore(embeddingScore)}
-          </p>
-        )}
-
-        {hasEvidence ? (
-          <ul className="mt-2 space-y-2">
-            {item.taste_evidence.map((evidence, index) => (
-              <li
-                key={`${evidence.similarity}-${evidence.text.slice(0, 24)}`}
-                className="rounded-md border border-rose-100 bg-white p-2 dark:border-rose-900 dark:bg-gray-900"
-              >
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="font-semibold text-rose-800 dark:text-rose-200">
-                    근거 {index + 1} · 유사도 원점수
-                  </span>
-                  <span className="font-mono font-bold text-rose-950 dark:text-rose-50">
-                    {formatScore(evidence.similarity)}
-                  </span>
-                </div>
-                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-rose-100 dark:bg-rose-950">
-                  <div
-                    className="h-full rounded-full bg-rose-400 dark:bg-rose-500"
-                    style={{ width: `${Math.max(0, Math.min(100, evidence.similarity * 100))}%` }}
-                  />
-                </div>
-                <p className="mt-1.5 line-clamp-3 text-xs leading-5 text-gray-700 dark:text-gray-300">
-                  “{evidence.text}”
+        <details className="mt-2 rounded-md border border-rose-100 bg-white dark:border-rose-900 dark:bg-gray-900">
+          <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-rose-800 marker:text-rose-400 dark:text-rose-200">
+            임베딩 계산·근거 자세히 보기
+          </summary>
+          <div className="border-t border-rose-100 px-2.5 py-2 dark:border-rose-900">
+            {typeof embeddingSimilarity === "number" &&
+              typeof embeddingScore === "number" &&
+              item.taste_evidence.length > 0 &&
+              item.taste_evidence.length < TASTE_EVIDENCE_SLOTS && (
+                <p className="font-mono text-[11px] text-rose-700 dark:text-rose-300">
+                  칸 평균 (
+                  {item.taste_evidence
+                    .map((evidence) => formatScore(evidence.similarity))
+                    .join(" + ")}
+                  {" + "}
+                  {Array(TASTE_EVIDENCE_SLOTS - item.taste_evidence.length)
+                    .fill(TASTE_EMBEDDING_CUT)
+                    .join(" + ")}
+                  ) / {TASTE_EVIDENCE_SLOTS} = {formatScore(embeddingSimilarity)}
                 </p>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-2 text-xs text-rose-700 dark:text-rose-300">
-            임베딩 검색은 실행됐지만 표시 기준을 넘는 근거 문장을 찾지 못했습니다.
-          </p>
-        )}
+              )}
+            {typeof embeddingSimilarity === "number" && typeof embeddingScore === "number" && (
+              <p className="mt-2 rounded-md bg-rose-50 px-2.5 py-2 font-mono text-[11px] text-rose-800 dark:bg-rose-950/30 dark:text-rose-200">
+                ({formatScore(embeddingSimilarity)} - {TASTE_EMBEDDING_CUT}) / (
+                {formatScore(fullScore)} - {TASTE_EMBEDDING_CUT}) = {formatScore(rawEmbeddingScore)}
+                {rawEmbeddingScore > 1
+                  ? " → 1 초과라 1.00"
+                  : rawEmbeddingScore < 0
+                    ? " → 0 미만이라 0.00"
+                    : ""}
+              </p>
+            )}
+
+            {hasEvidence ? (
+              <ul className="mt-2 space-y-2">
+                {item.taste_evidence.map((evidence, index) => (
+                  <li
+                    key={`${evidence.similarity}-${evidence.text.slice(0, 24)}`}
+                    className="rounded-md border border-rose-100 bg-rose-50/40 p-2 dark:border-rose-900 dark:bg-rose-950/20"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-semibold text-rose-800 dark:text-rose-200">
+                        근거 {index + 1} · 유사도 원점수
+                      </span>
+                      <span className="font-mono font-bold text-rose-950 dark:text-rose-50">
+                        {formatScore(evidence.similarity)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-rose-100 dark:bg-rose-950">
+                      <div
+                        className="h-full rounded-full bg-rose-400 dark:bg-rose-500"
+                        style={{
+                          width: `${Math.max(0, Math.min(100, evidence.similarity * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1.5 line-clamp-3 text-xs leading-5 text-gray-700 dark:text-gray-300">
+                      “{evidence.text}”
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-rose-700 dark:text-rose-300">
+                임베딩 검색은 실행됐지만 표시 기준을 넘는 근거 문장을 찾지 못했습니다.
+              </p>
+            )}
+          </div>
+        </details>
       </div>
     </section>
   );
@@ -960,6 +1032,12 @@ function ScoringBreakdownCard({
   selected?: boolean;
 }) {
   const featureKeys = getScoringFeatureKeys(item);
+  const compactFeatures = COMPACT_SCORING_FEATURE_SLOTS.map((slot) =>
+    slot.find((feature) => featureKeys.includes(feature)),
+  );
+  // 추천 카드의 1~5위는 사용자에게 표시된 순서다. D의 원래 정렬 순위는
+  // 상세에서만 보조 정보로 남겨, 재정렬 뒤 1·4·5처럼 보이는 혼동을 막는다.
+  const displayRank = selected ? index + 1 : (item.scoring_rank ?? index + 1);
   const totalContribution = featureKeys.reduce((sum, feature) => {
     const score = item.feature_scores[feature];
     const weight = item.weights_used[feature];
@@ -967,115 +1045,146 @@ function ScoringBreakdownCard({
   }, 0);
 
   return (
-    <section
+    <details
       data-testid={`scoring-breakdown-${item.place_id}`}
-      className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+      className="group rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="truncate text-sm font-semibold text-gray-950 dark:text-gray-50">
-            {item.scoring_rank ?? index + 1}. {item.name}
-          </h4>
-          <p className="mt-0.5 text-xs text-gray-500">
-            {item.category_label ?? PLACE_CATEGORY_LABELS[item.category] ?? item.category} · {item.distance_km}km
-          </p>
-          <span
-            className={`mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-              selected
-                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-                : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-            }`}
-          >
-            {selected ? "사용자에게 추천" : "채점 후 미노출"}
-          </span>
-        </div>
-        <div className="shrink-0 rounded-lg bg-gray-950 px-2.5 py-1.5 text-right text-white dark:bg-gray-100 dark:text-gray-950">
-          <span className="block text-[10px] font-medium opacity-70">총점</span>
-          <span className="block text-base font-bold leading-5">{formatScore(item.score)}</span>
-        </div>
-      </div>
-
-      <div className="mt-3 overflow-hidden rounded-lg border border-gray-100 dark:border-gray-800">
-        <div className="grid grid-cols-[minmax(0,1fr)_48px_44px_54px] gap-1 border-b border-gray-100 bg-gray-50 px-2 py-1.5 text-[10px] font-semibold text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
-          <span>평가 항목</span>
-          <span className="text-right">원점수</span>
-          <span className="text-right">가중치</span>
-          <span className="text-right">기여점</span>
-        </div>
-        <div className="divide-y divide-gray-100 dark:divide-gray-800">
-          {featureKeys.map((feature) => {
-            const score = item.feature_scores[feature];
-            const weight = item.weights_used[feature];
+      <summary className="cursor-pointer list-none px-3 py-2.5 marker:hidden [&::-webkit-details-marker]:hidden">
+        <div className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.58fr))_minmax(0,0.68fr)] items-center gap-1">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-400 transition-transform group-open:rotate-90">
+                ▶
+              </span>
+              <h4 className="truncate text-sm font-semibold text-gray-950 dark:text-gray-50">
+                {displayRank}. {item.name}
+              </h4>
+            </div>
+            <p className="mt-0.5 truncate pl-4 text-[10px] text-gray-500">
+              {item.category_label ?? PLACE_CATEGORY_LABELS[item.category] ?? item.category} ·{" "}
+              {item.distance_km}km ·{" "}
+              <span
+                className={
+                  selected
+                    ? "text-emerald-700 dark:text-emerald-300"
+                    : "text-gray-600 dark:text-gray-300"
+                }
+              >
+                {selected ? "추천" : "미노출"}
+              </span>
+            </p>
+          </div>
+          {compactFeatures.map((feature, slotIndex) => {
+            const score = feature ? item.feature_scores[feature] : undefined;
+            const weight = feature ? item.weights_used[feature] : undefined;
             const contribution =
               typeof score === "number" && typeof weight === "number" ? score * weight : null;
-            const presentation = SCORING_FEATURES[feature];
             return (
-              <div
-                key={feature}
-                className="grid grid-cols-[minmax(0,1fr)_48px_44px_54px] items-center gap-1 px-2 py-2 text-xs"
-              >
-                <div className="min-w-0">
-                  <span
-                    className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-                      presentation?.tone ?? "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200"
-                    }`}
-                  >
-                    {presentation?.label ?? feature}
-                  </span>
-                  <p className="mt-0.5 truncate text-[10px] text-gray-500" title={presentation?.description}>
-                    {presentation?.description ?? "서버가 추가한 평가 항목"}
-                  </p>
-                </div>
-                <span className="text-right font-mono text-gray-700 dark:text-gray-200">
-                  {typeof score === "number" ? formatScore(score) : "-"}
-                </span>
-                <span className="text-right font-mono text-gray-600 dark:text-gray-300">
-                  {typeof weight === "number" ? formatWeight(weight) : "미반영"}
-                </span>
-                <span className="text-right font-mono font-semibold text-gray-950 dark:text-gray-50">
+              <div key={feature ?? slotIndex} className="min-w-0 text-right">
+                <p className="truncate text-[10px] text-gray-500">
+                  {feature ? (COMPACT_SCORING_LABELS[feature] ?? feature) : "-"}
+                </p>
+                <p className="font-mono text-sm font-semibold leading-4 text-gray-800 dark:text-gray-100">
                   {contribution === null ? "-" : formatScore(contribution)}
-                </span>
+                </p>
               </div>
             );
           })}
+          <div className="rounded-md bg-gray-950 px-1 py-1 text-right text-white dark:bg-gray-100 dark:text-gray-950">
+            <p className="text-[10px] font-medium opacity-70">총점</p>
+            <p className="font-mono text-sm font-bold leading-4">{formatScore(item.score)}</p>
+          </div>
         </div>
-        <div className="flex items-center justify-between bg-gray-50 px-2 py-2 text-xs dark:bg-gray-950">
-          <span className="font-medium text-gray-600 dark:text-gray-300">가중치 기여점 합계</span>
-          <span className="font-mono font-bold text-gray-950 dark:text-gray-50">
-            {formatScore(totalContribution)}
-          </span>
+      </summary>
+
+      <div className="border-t border-gray-100 p-3 dark:border-gray-800">
+        <div className="overflow-hidden rounded-lg border border-gray-100 dark:border-gray-800">
+          <div className="grid grid-cols-[minmax(0,1fr)_48px_44px_54px] gap-1 border-b border-gray-100 bg-gray-50 px-2 py-1.5 text-[10px] font-semibold text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
+            <span>평가 항목</span>
+            <span className="text-right">원점수</span>
+            <span className="text-right">가중치</span>
+            <span className="text-right">기여점</span>
+          </div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            {featureKeys.map((feature) => {
+              const score = item.feature_scores[feature];
+              const weight = item.weights_used[feature];
+              const contribution =
+                typeof score === "number" && typeof weight === "number" ? score * weight : null;
+              const presentation = SCORING_FEATURES[feature];
+              return (
+                <div
+                  key={feature}
+                  className="grid grid-cols-[minmax(0,1fr)_48px_44px_54px] items-center gap-1 px-2 py-2 text-xs"
+                >
+                  <div className="min-w-0">
+                    <span
+                      className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                        presentation?.tone ??
+                        "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                      }`}
+                    >
+                      {presentation?.label ?? feature}
+                    </span>
+                    <p
+                      className="mt-0.5 truncate text-[10px] text-gray-500"
+                      title={presentation?.description}
+                    >
+                      {presentation?.description ?? "서버가 추가한 평가 항목"}
+                    </p>
+                  </div>
+                  <span className="text-right font-mono text-gray-700 dark:text-gray-200">
+                    {typeof score === "number" ? formatScore(score) : "-"}
+                  </span>
+                  <span className="text-right font-mono text-gray-600 dark:text-gray-300">
+                    {typeof weight === "number" ? formatWeight(weight) : "미반영"}
+                  </span>
+                  <span className="text-right font-mono font-semibold text-gray-950 dark:text-gray-50">
+                    {contribution === null ? "-" : formatScore(contribution)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between bg-gray-50 px-2 py-2 text-xs dark:bg-gray-950">
+            <span className="font-medium text-gray-600 dark:text-gray-300">가중치 기여점 합계</span>
+            <span className="font-mono font-bold text-gray-950 dark:text-gray-50">
+              {formatScore(totalContribution)}
+            </span>
+          </div>
         </div>
+
+        <TasteEvidencePanel item={item} />
+
+        <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-600 marker:text-gray-400 dark:text-gray-300">
+            원본 점수 JSON 보기
+          </summary>
+          <div className="border-t border-gray-200 p-2 dark:border-gray-800">
+            <JsonBlock
+              value={{
+                feature_scores: item.feature_scores,
+                weights_used: item.weights_used,
+                score: item.score,
+                explanations: item.explanations,
+                warnings: item.warnings,
+                taste_evidence: item.taste_evidence,
+                taste_tag_score: item.taste_tag_score,
+                taste_tag_label: item.taste_tag_label,
+                taste_tag_documents: item.taste_tag_documents,
+                taste_tag_details: item.taste_tag_details,
+                taste_embedding_similarity: item.taste_embedding_similarity,
+                taste_embedding_score: item.taste_embedding_score,
+                taste_embedding_full_score: item.taste_embedding_full_score,
+                taste_combined_score: item.taste_combined_score,
+                scoring_rank: item.scoring_rank,
+                preference_tags: item.preference_tags,
+              }}
+            />
+          </div>
+        </details>
       </div>
-
-      <TasteEvidencePanel item={item} />
-
-      <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950">
-        <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-600 marker:text-gray-400 dark:text-gray-300">
-          원본 점수 JSON 보기
-        </summary>
-        <div className="border-t border-gray-200 p-2 dark:border-gray-800">
-          <JsonBlock
-            value={{
-              feature_scores: item.feature_scores,
-              weights_used: item.weights_used,
-              score: item.score,
-              explanations: item.explanations,
-              warnings: item.warnings,
-              taste_evidence: item.taste_evidence,
-              taste_tag_score: item.taste_tag_score,
-              taste_tag_label: item.taste_tag_label,
-              taste_tag_documents: item.taste_tag_documents,
-              taste_tag_details: item.taste_tag_details,
-              taste_embedding_similarity: item.taste_embedding_similarity,
-              taste_embedding_score: item.taste_embedding_score,
-              taste_combined_score: item.taste_combined_score,
-              scoring_rank: item.scoring_rank,
-              preference_tags: item.preference_tags,
-            }}
-          />
-        </div>
-      </details>
-    </section>
+    </details>
   );
 }
 
@@ -1095,6 +1204,12 @@ function RecommendationScoringPanel({ turn }: { turn: DeveloperAuditTurn }) {
     : shownItems;
   const hiddenItems = scoredItems.filter((item) => !shownIds.has(item.place_id));
   const excludedItems = turn.recommendations?.scoring_excluded_candidates ?? [];
+  const candidateTarget = turn.recommendations?.scoring_candidate_target ?? null;
+  const inputCount =
+    turn.recommendations?.scoring_input_count ?? scoredItems.length + excludedItems.length;
+  const eligibleCount = turn.recommendations?.scoring_eligible_count ?? scoredItems.length;
+  const poolExhausted = turn.recommendations?.scoring_pool_exhausted;
+  const receivedTooFew = candidateTarget !== null && inputCount < candidateTarget;
 
   if (shownItems.length === 0 && scoredItems.length === 0 && excludedItems.length === 0) {
     return (
@@ -1106,6 +1221,54 @@ function RecommendationScoringPanel({ turn }: { turn: DeveloperAuditTurn }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <section className="rounded-lg border border-sky-200 bg-sky-50/60 p-3 dark:border-sky-900 dark:bg-sky-950/20">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <h4 className="text-xs font-semibold text-sky-950 dark:text-sky-50">후보 풀 흐름</h4>
+            <p className="mt-0.5 text-[11px] text-sky-700 dark:text-sky-300">
+              후보가 적을 때 검색 부족인지, 하드 필터 제외인지 구분합니다.
+            </p>
+          </div>
+          {candidateTarget !== null && (
+            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:bg-gray-900 dark:text-sky-200">
+              목표 {candidateTarget}곳
+            </span>
+          )}
+        </div>
+        <div className="mt-2 grid grid-cols-4 gap-1.5 text-center">
+          {[
+            ["C→D 전달", inputCount],
+            ["하드 필터 통과", eligibleCount],
+            ["실제 채점", scoredItems.length],
+            ["사용자 노출", shownItems.length],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="rounded-md bg-white px-1.5 py-1.5 dark:bg-gray-900">
+              <p className="text-[9px] text-gray-500">{label}</p>
+              <p className="font-mono text-sm font-bold text-sky-950 dark:text-sky-100">{value}</p>
+            </div>
+          ))}
+        </div>
+        {receivedTooFew && (
+          <p className="mt-2 rounded-md bg-white px-2 py-1.5 text-[11px] text-sky-800 dark:bg-gray-900 dark:text-sky-200">
+            {poolExhausted
+              ? `C 검색이 이 조건에서 ${inputCount}곳을 모두 찾아 후보 풀이 소진되어, 보충 조회를 멈췄습니다.`
+              : `목표 ${candidateTarget}곳보다 ${candidateTarget - inputCount}곳 적게 D에 전달됐습니다. C Tool 탭에서 검색·보충 조회 상태를 확인하세요.`}
+          </p>
+        )}
+        {!receivedTooFew && eligibleCount < inputCount && (
+          <p className="mt-2 rounded-md bg-white px-2 py-1.5 text-[11px] text-sky-800 dark:bg-gray-900 dark:text-sky-200">
+            D에 전달된 {inputCount}곳 중 {inputCount - eligibleCount}곳은 운영시간·이전 노출·사용자
+            제외 조건으로 점수 계산 전에 탈락했습니다.
+          </p>
+        )}
+        {eligibleCount > scoredItems.length && (
+          <p className="mt-2 rounded-md bg-white px-2 py-1.5 text-[11px] text-sky-800 dark:bg-gray-900 dark:text-sky-200">
+            통과 후보 중 일부만 이동시간 실측 재정렬 대상으로 다시 채점됐습니다. 이 화면의 “실제
+            채점” 목록은 최종 순위에 사용한 대상입니다.
+          </p>
+        )}
+      </section>
+
       <div className="grid grid-cols-3 gap-2 rounded-lg border border-gray-200 bg-white p-3 text-center dark:border-gray-800 dark:bg-gray-900">
         <div>
           <p className="text-[10px] text-gray-500">사용자 추천</p>
@@ -1153,13 +1316,16 @@ function RecommendationScoringPanel({ turn }: { turn: DeveloperAuditTurn }) {
             {excludedItems.map((item) => (
               <div key={item.place_id} className="px-3 py-2.5 text-xs">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold text-gray-900 dark:text-gray-100">{item.name}</span>
+                  <span className="font-semibold text-gray-900 dark:text-gray-100">
+                    {item.name}
+                  </span>
                   <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-gray-900 dark:text-amber-200">
                     {EXCLUSION_REASON_LABELS[item.reason] ?? item.reason}
                   </span>
                 </div>
                 <p className="mt-1 text-gray-500">
-                  {PLACE_CATEGORY_LABELS[item.category] ?? item.category} · {item.distance_km}km · 취향·총점 미계산
+                  {PLACE_CATEGORY_LABELS[item.category] ?? item.category} · {item.distance_km}km ·
+                  취향·총점 미계산
                 </p>
               </div>
             ))}
