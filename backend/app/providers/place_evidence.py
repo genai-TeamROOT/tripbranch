@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Protocol
 
 from app.domain.models import PlaceEvidenceMatch
@@ -40,8 +41,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_SIMILARITY = 0.43
 
 # 장소당 남길 근거 문장 수. 근거 문장 한 줄을 만들기에 3개면 충분하고, 늘리면
-# jsonb 응답만 커진다.
+# jsonb 응답만 커진다. 채점의 근거 칸 수(scoring._TASTE_EVIDENCE_SLOTS)와 같다.
 DEFAULT_MATCH_COUNT = 3
+
+# 짧은 문장을 걸러낸 뒤에도 3칸을 채울 수 있게 RPC에서는 넉넉히 받아 온다.
+EVIDENCE_POOL_COUNT = 10
+
+# 이 글자 수(앞뒤 공백 제외) 미만인 문장은 추천 근거로 쓰지 않는다.
+#
+# "아주 좋은 카페입니다." 같은 짧은 칭찬은 취향 단어 없이 질의의 "좋은 카페"
+# 부분과 겹쳐 높은 유사도를 받는다. 안국역 카페 50곳 "카공하기 좋은 카페" 실측
+# (2026-09-17)에서 1·2위 근거가 둘 다 이런 문장(11자·12자)이었고, 걸러내자 카공
+# 언급이 있는 곳이 1위로 올라왔다(후기 키워드 기준 대리 nDCG@5 0.22 → 0.41).
+# 골드셋(용산·성동 55곳 × dev 16질의)에서는 순위가 하나도 바뀌지 않았다.
+# 대가로 "혼자 조용히 있기 좋았다"처럼 짧지만 맞는 문장도 빠진다. 20은 한 값만
+# 재 본 것이라 조정할 여지가 있다.
+MIN_EVIDENCE_TEXT_LENGTH = 20
 
 
 def _search_summary(
@@ -76,6 +91,35 @@ def _search_summary(
         "min_similarity": min_similarity,
         "match_count": match_count,
     }
+
+
+def _without_short_evidence(
+    matches: Sequence[PlaceEvidenceMatch],
+    *,
+    keep: int,
+) -> tuple[PlaceEvidenceMatch, ...]:
+    """짧은 문장을 뺀 뒤 장소마다 유사도 상위 `keep`개만 남기고 평균을 다시 낸다.
+
+    RPC가 유사도 내림차순으로 돌려주므로 앞에서부터 자르면 된다. 남는 문장이
+    없는 장소는 근거가 없는 것으로 보고 결과에서 뺀다 — 채점에서 0점이 된다.
+    """
+    kept: list[PlaceEvidenceMatch] = []
+    for match in matches:
+        snippets = tuple(
+            snippet
+            for snippet in match.snippets
+            if len(snippet.source_text.strip()) >= MIN_EVIDENCE_TEXT_LENGTH
+        )[:keep]
+        if not snippets:
+            continue
+        kept.append(
+            replace(
+                match,
+                snippets=snippets,
+                avg_similarity=sum(snippet.similarity for snippet in snippets) / len(snippets),
+            )
+        )
+    return tuple(kept)
 
 
 class PlaceEvidenceEncoder(Protocol):
@@ -126,12 +170,14 @@ class PlaceEvidenceProvider:
         # 질의 원문은 싣지 않는다 — 사용자 발화에서 뽑은 문장이다.
         with observe_step("taste_evidence_search", kind="retriever") as step:
             embedding = await self._encode(query)
-            matches = await self._repository.search_place_evidence(
+            # 짧은 문장을 뺀 뒤에도 칸을 채우려고 넉넉히 받아 여기서 줄인다.
+            pool = await self._repository.search_place_evidence(
                 embedding,
                 candidate_content_ids,
-                match_count=self._match_count,
+                match_count=max(self._match_count, EVIDENCE_POOL_COUNT),
                 min_similarity=self._min_similarity,
             )
+            matches = _without_short_evidence(pool, keep=self._match_count)
             try:
                 summary = _search_summary(
                     candidate_content_ids,

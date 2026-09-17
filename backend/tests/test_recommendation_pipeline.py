@@ -1570,6 +1570,7 @@ async def test_reranks_carry_every_recommendation_item_field() -> None:
         ],
         "taste_embedding_similarity": 0.61,
         "taste_embedding_score": 0.82,
+        "taste_embedding_full_score": 0.66,
         "taste_combined_score": 0.85,
     }
     base = _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)

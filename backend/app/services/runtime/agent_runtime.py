@@ -4861,6 +4861,19 @@ async def _score_recommendations(
         recommendation_provider=recommendation_provider,
     )
 
+    # D가 실제로 받은 후보 수와 C 보충 종료 상태를 최종 응답에도 남긴다. 실측
+    # 경로 재정렬은 상위 후보만 다시 채점할 수 있으므로, 그 뒤의 응답만 보면
+    # "처음부터 후보가 적었다"고 오해하기 쉽다. 이 값들은 개발자 화면 진단용이다.
+    if isinstance(recommendation_provider, StagedRecommendationProvider):
+        recommendations = recommendations.model_copy(
+            update={
+                "scoring_candidate_target": candidate_target,
+                "scoring_input_count": merged_prepared.preparation.input_count,
+                "scoring_eligible_count": merged_prepared.preparation.eligible_count,
+                "scoring_pool_exhausted": candidate_pool_exhausted,
+            }
+        )
+
     # 6-1) A → B: D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id를 기록한다
     #      (TP-82). 이 후보들은 recommendations/unverified_recommendations
     #      어디에도 담기지 않아 아래 record_recommendation()의 노출 이력 경로를
