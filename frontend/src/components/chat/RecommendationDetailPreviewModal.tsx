@@ -952,17 +952,17 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
   const address = item.details["주소"];
 
   return (
-    <article className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+    <article className="rounded-xl border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <span className="inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+          <span className="inline-flex rounded-md border border-border px-1.5 py-0.5 text-[11px] font-semibold text-label">
             {parkingItem.category}
           </span>
-          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100">
+          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-ink">
             {item.title}
           </h4>
           <p
-            className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400"
+            className="mt-1 truncate text-xs text-muted"
             title={address ?? item.details["거리"] ?? undefined}
           >
             {address ?? item.details["거리"] ?? "주소 정보 미제공"}
@@ -976,19 +976,19 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <div className="min-w-0 rounded-lg bg-sky-50 px-2.5 py-2 dark:bg-sky-950/30">
-          <p className="whitespace-nowrap text-[11px] text-sky-700 dark:text-sky-300">가능 주차</p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">가능 주차</p>
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {availableSpaces === null
               ? "잔여 정보 미제공"
               : `${new Intl.NumberFormat("ko-KR").format(availableSpaces)}대 가능`}
           </p>
         </div>
-        <div className="min-w-0 rounded-lg bg-gray-50 px-2.5 py-2 dark:bg-gray-800">
-          <p className="whitespace-nowrap text-[11px] text-gray-500 dark:text-gray-400">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">
             주차 규모
           </p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {capacity === null
               ? "총 대수 미제공"
               : `총 ${new Intl.NumberFormat("ko-KR").format(capacity)}대`}
@@ -996,25 +996,25 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600 dark:text-gray-300">
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted">
         {currentParkedCount !== null && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {new Intl.NumberFormat("ko-KR").format(currentParkedCount)}대 주차 중
           </span>
         )}
         {item.details["거리"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["거리"]}
           </span>
         )}
         {item.details["요금"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["요금"]}
           </span>
         )}
       </div>
       {item.details["기준 시각"] && (
-        <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+        <p className="mt-2 text-[11px] text-muted">
           {item.details["기준 시각"]} 기준
         </p>
       )}
@@ -1022,7 +1022,7 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         <button
           type="button"
           onClick={() => openNaverMapSearch(address)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/60"
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-brand px-3 py-2 text-xs font-semibold text-brand transition-colors hover:bg-sky-light focus:outline-none focus:ring-2 focus:ring-brand"
         >
           <span aria-hidden="true">🧭</span>
           네이버 지도로 길찾기
@@ -1090,14 +1090,14 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
   const totalCapacity = items.reduce((sum, item) => sum + (item.capacity ?? 0), 0);
 
   return (
-    <section className="rounded-2xl border border-sky-100 bg-gradient-to-b from-sky-50 to-white p-4 shadow-sm dark:border-sky-900/60 dark:from-sky-950/30 dark:to-gray-900">
+    <section className="rounded-2xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-sky-700 dark:text-sky-300">
+          <p className="text-xs font-semibold tracking-wide text-brand">
             REALTIME PARKING
           </p>
-          <h3 className="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">주차장 현황</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+          <h3 className="mt-0.5 text-lg font-bold text-ink">주차장 현황</h3>
+          <p className="mt-1 text-sm text-muted">
             {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
             {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
           </p>
@@ -1106,39 +1106,39 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-xl bg-blue-600 px-3 py-3 text-white shadow-sm">
-          <p className="whitespace-nowrap text-xs font-medium text-blue-100">현재 가능한 주차</p>
+        <div className="rounded-xl bg-brand px-3 py-3 text-white">
+          <p className="whitespace-nowrap text-xs font-medium text-white">현재 가능한 주차</p>
           <p className="mt-1 whitespace-nowrap text-xl font-bold">
             {realtimeItems.length > 0
               ? `${new Intl.NumberFormat("ko-KR").format(totalAvailable)}대`
               : "정보 없음"}
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">실시간 제공</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">실시간 제공</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {realtimeItems.length}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">공영 주차장</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">공영 주차장</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {tabCounts["공영"]}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">목록 총 수용</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">목록 총 수용</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {formatParkingCount(totalCapacity)}
           </p>
         </div>
       </div>
 
-      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+      <p className="mt-2 text-xs text-muted">
         가능한 주차 대수는 실시간 정보가 제공된 주차장만 합산합니다.
       </p>
 
-      <div className="mt-4 grid grid-cols-4 rounded-xl border border-sky-100 bg-white p-1 dark:border-sky-900/60 dark:bg-gray-900">
+      <div className="mt-4 grid grid-cols-4 rounded-xl border border-border p-1">
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -1148,8 +1148,8 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             aria-pressed={activeTab === tab}
             className={`rounded-lg px-2 py-2 text-xs font-semibold transition sm:text-sm ${
               activeTab === tab
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-500 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-gray-300 dark:text-gray-400 dark:hover:bg-sky-950/30"
+                ? "bg-brand text-white"
+                : "text-muted hover:bg-chip disabled:cursor-not-allowed disabled:opacity-40"
             }`}
           >
             {tab} {tabCounts[tab]}
@@ -1163,11 +1163,11 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             <div className="mb-2 flex items-center justify-between">
               <h4
                 id="realtime-parking-available-heading"
-                className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                className="text-sm font-semibold text-ink"
               >
                 실시간 주차 가능
               </h4>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-muted">
                 {visibleRealtimeItems.length}곳
               </span>
             </div>
@@ -1184,12 +1184,12 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
 
         {visibleUnavailableItems.length > 0 && (
           <details
-            className="rounded-xl border border-gray-200 bg-gray-50 p-2 dark:border-gray-800 dark:bg-gray-950/40"
+            className="rounded-xl border border-border p-2"
             open={visibleRealtimeItems.length === 0}
           >
-            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-white dark:text-gray-200 dark:hover:bg-gray-900">
+            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-label hover:bg-chip">
               <span>실시간 잔여 현황 미제공</span>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              <span className="text-xs font-medium text-muted">
                 {visibleUnavailableItems.length}곳 보기
               </span>
             </summary>
@@ -1204,7 +1204,7 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
           </details>
         )}
         {visibleItems.length === 0 && (
-          <p className="rounded-xl bg-white px-3 py-4 text-center text-sm text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+          <p className="rounded-xl border border-border px-3 py-4 text-center text-sm text-muted">
             이 유형의 주차장 정보는 제공되지 않습니다.
           </p>
         )}
