@@ -1,0 +1,19 @@
+# 시크릿 — 이미지에 절대 굽지 않는다. 런타임에 --env-file로 주입한다.
+.env
+.env.*
+!.env.example
+
+# 런타임에 쓰지 않는 것
+tests/
+test_results/
+scripts/
+docs/
+.venv/
+*.egg-info/
+
+# 캐시·로컬 부산물
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
