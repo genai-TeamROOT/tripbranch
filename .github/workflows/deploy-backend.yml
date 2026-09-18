@@ -56,20 +56,40 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           IMAGE="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+          # 스크립트를 base64로 싸서 보낸다. 셸 문법을 그대로 SSM 파라미터에 넣으면
+          # YAML -> bash -> JSON -> 원격 셸까지 네 단계를 거치며 이스케이프가 깨진다
+          # ($(...), 리다이렉션, 중괄호가 특히). base64는 그 단계들에 안전한 문자만 쓴다.
+          SCRIPT=$(cat <<SCRIPT_END
+          set -euo pipefail
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+          docker pull $IMAGE
+          docker rm -f $CONTAINER_NAME 2>/dev/null || true
+          docker run -d --name $CONTAINER_NAME --restart unless-stopped \
+            -p 127.0.0.1:8000:8000 --env-file /opt/tripbranch/.env $IMAGE
+          for i in \$(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
+              echo "health ok after \${i} tries"
+              docker image prune -af --filter until=72h >/dev/null
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "health check failed"
+          docker logs --tail 50 $CONTAINER_NAME
+          exit 1
+          SCRIPT_END
+          )
+          ENCODED=$(printf '%s' "$SCRIPT" | base64 | tr -d '\n')
+
+          # base64의 '=' 패딩이 --parameters 축약 문법(key=value)을 깨뜨리므로 JSON 파일로 넘긴다.
+          printf '{"commands":["echo %s | base64 -d | bash"]}' "$ENCODED" > /tmp/ssm-params.json
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "deploy $IMAGE_TAG" \
-            --parameters commands="[
-              \"set -euo pipefail\",
-              \"aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY\",
-              \"docker pull $IMAGE\",
-              \"docker rm -f $CONTAINER_NAME 2>/dev/null || true\",
-              \"docker run -d --name $CONTAINER_NAME --restart unless-stopped -p 127.0.0.1:8000:8000 --env-file /opt/tripbranch/.env $IMAGE\",
-              \"for i in \\$(seq 1 30); do curl -fsS http://127.0.0.1:8000/api/health >/dev/null && echo health-ok && break; sleep 5; done\",
-              \"curl -fsS http://127.0.0.1:8000/api/health >/dev/null || { docker logs --tail 50 $CONTAINER_NAME; exit 1; }\",
-              \"docker image prune -af --filter until=72h >/dev/null\"
-            ]" \
+            --parameters file:///tmp/ssm-params.json \
             --query Command.CommandId --output text)
 
           echo "SSM command: $COMMAND_ID"
