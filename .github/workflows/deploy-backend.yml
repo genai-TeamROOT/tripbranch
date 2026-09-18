@@ -2,8 +2,8 @@ name: Deploy backend
 
 on:
   push:
-    # feature/docker-deploy는 첫 배포를 검증하는 동안만 둔다. 머지 후에는 지운다.
-    branches: [main, feature/docker-deploy]
+    # main은 develop이 안정됐을 때 승격하는 브랜치다 — 승격 = 배포로 둔다.
+    branches: [main]
     paths:
       - "backend/**"
       - ".github/workflows/deploy-backend.yml"
