@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -2583,6 +2584,107 @@ async def test_schedule_then_reject_specific_modify_keeps_other_items() -> None:
     assert history is not None
     rejected_ids = {item.place_id for item in history.rejected}
     assert rejected_ids == {first_by_order[2]}
+
+
+@pytest.mark.asyncio
+async def test_schedule_reject_specific_fills_images_of_kept_items() -> None:
+    """"두 번째는 별로야" 뒤에도 유지한 1번·3번 자리에 사진이 남는다.
+
+    유지한 장소는 B에 저장된 직전 일정으로 다시 만드는데 거기에는 사진 주소가
+    없고, 편성은 이번 턴 후보에서만 사진을 찾는다. 장소 DB에서 다시 조회하지
+    않으면 새로 고른 자리만 사진이 나오고 나머지는 자리표시로 바뀐다(실사용 재현).
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.schedule is not None
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+    kept_ids = [first_by_order[1], first_by_order[3]]
+    repository = _FakePlaceDetailsRepository(
+        {
+            place_id: replace(
+                _stored_detail(place_id),
+                thumbnail_url=f"https://tong.visitkorea.or.kr/{place_id}.jpg",
+                first_image_url=f"https://tong.visitkorea.or.kr/{place_id}-big.jpg",
+            )
+            for place_id in kept_ids
+        }
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="두 번째는 별로야",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert second.schedule is not None
+    by_order = {item.order: item for item in second.schedule.items}
+    # 부분 재편성 경로를 탔는지부터 본다 — 전체 재편성으로 빠지면 아래 검사는 의미가 없다.
+    assert [by_order[1].place_id, by_order[3].place_id] == kept_ids
+    for place_id in kept_ids:
+        assert place_id in repository.requested_ids
+    for order in (1, 3):
+        place_id = by_order[order].place_id
+        assert by_order[order].image_url == f"https://tong.visitkorea.or.kr/{place_id}.jpg"
+        assert (
+            by_order[order].image_url_fallback
+            == f"https://tong.visitkorea.or.kr/{place_id}-big.jpg"
+        )
+
+
+@pytest.mark.asyncio
+async def test_schedule_reject_specific_survives_image_lookup_failure() -> None:
+    """유지한 장소의 사진 조회가 실패해도 일정은 그대로 나간다. 사진만 빠진다."""
+
+    class _FailingRepository:
+        async def get_active_place_details(self, content_ids, *, include_barrier_free=False):
+            raise RuntimeError("조회 실패")
+
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.schedule is not None
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="두 번째는 별로야",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        place_details_repository=_FailingRepository(),
+        **providers,
+    )
+
+    assert second.schedule is not None
+    by_order = {item.order: item for item in second.schedule.items}
+    assert by_order[1].place_id == first_by_order[1]
+    assert by_order[3].place_id == first_by_order[3]
+    assert by_order[1].image_url is None
 
 
 @pytest.mark.asyncio

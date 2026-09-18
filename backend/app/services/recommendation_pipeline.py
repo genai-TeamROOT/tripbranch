@@ -386,6 +386,8 @@ async def score_prepared_recommendation(
             "elapsed_ms": round((timer() - started_at) * 1000, 2),
             "scoring_candidates": scoring_candidates,
             "scoring_excluded_candidates": scoring_excluded_candidates,
+            "scoring_input_count": prepared.preparation.input_count,
+            "scoring_eligible_count": prepared.preparation.eligible_count,
         }
     )
 
@@ -580,6 +582,7 @@ async def rerank_with_concentration(
             taste_tag_score=item.taste_tag_score,
             taste_embedding_similarity=item.taste_embedding_similarity,
             taste_embedding_score=item.taste_embedding_score,
+            taste_embedding_full_score=item.taste_embedding_full_score,
             taste_combined_score=item.taste_combined_score,
             concentration_level=concentration_level,
         )
@@ -630,6 +633,7 @@ async def rerank_with_concentration(
             taste_tag_details=item.taste_tag_details,
             taste_embedding_similarity=item.taste_embedding_similarity,
             taste_embedding_score=item.taste_embedding_score,
+            taste_embedding_full_score=item.taste_embedding_full_score,
             taste_combined_score=item.taste_combined_score,
             scoring_rank=rank,
             preference_tags=item.preference_tags,
@@ -800,6 +804,7 @@ async def rerank_with_co_visited(
             taste_tag_score=item.taste_tag_score,
             taste_embedding_similarity=item.taste_embedding_similarity,
             taste_embedding_score=item.taste_embedding_score,
+            taste_embedding_full_score=item.taste_embedding_full_score,
             taste_combined_score=item.taste_combined_score,
             co_visited_place_names=partner_names,
         )
@@ -839,6 +844,7 @@ async def rerank_with_co_visited(
             taste_tag_details=item.taste_tag_details,
             taste_embedding_similarity=item.taste_embedding_similarity,
             taste_embedding_score=item.taste_embedding_score,
+            taste_embedding_full_score=item.taste_embedding_full_score,
             taste_combined_score=item.taste_combined_score,
             scoring_rank=rank,
             preference_tags=item.preference_tags,
@@ -1081,6 +1087,7 @@ def _build_response(
             ],
             taste_embedding_similarity=ranked_item.taste_embedding_similarity,
             taste_embedding_score=ranked_item.taste_embedding_score,
+            taste_embedding_full_score=ranked_item.taste_embedding_full_score,
             taste_combined_score=ranked_item.taste_combined_score,
             scoring_rank=ranked_item.rank,
         )

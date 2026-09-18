@@ -2465,13 +2465,23 @@ class Test일정_항목의_사진:
         assert result.items[1].image_url_fallback is None
 
     @pytest.mark.asyncio
-    async def test_유지된_항목은_후보에_없어_사진이_없다(self) -> None:
+    async def test_유지된_항목은_자기가_들고_온_사진을_쓴다(self) -> None:
         """부분 재편성의 pinned 항목은 후보 목록에 없다.
 
-        operating_hours_display와 같은 취급이다 — 없는 키를 물어도 터지지 않고
-        None이 나와야 한다. 새로 채운 자리만 후보에서 사진을 받는다.
+        그래서 후보에서 사진을 찾으면 유지한 자리가 전부 자리표시로 바뀐다(실사용
+        재현 — "특정 장소 빼고 다시 짜줘" 뒤 새로 고른 자리만 사진이 나왔다).
+        호출부가 pinned 항목에 채워 보낸 사진을 그대로 실어야 한다. 사진이 없는
+        pinned 항목은 None 그대로다.
         """
-        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        pinned = [
+            _pinned("place-1", 1).model_copy(
+                update={
+                    "image_url": "https://tong.visitkorea.or.kr/a.jpg",
+                    "image_url_fallback": "https://tong.visitkorea.or.kr/a-big.jpg",
+                }
+            ),
+            _pinned("place-3", 3),
+        ]
         llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)]))
         request = SchedulePartialFillRequest(
             pinned_items=pinned,
@@ -2486,9 +2496,35 @@ class Test일정_항목의_사진:
 
         by_id = {item.place_id: item for item in result.items}
         assert by_id["place-2"].image_url == "https://tong.visitkorea.or.kr/b.jpg"
-        # 유지된 두 곳은 후보에 없다 — KeyError 없이 None 이어야 한다.
-        assert by_id["place-1"].image_url is None
+        assert by_id["place-1"].image_url == "https://tong.visitkorea.or.kr/a.jpg"
+        assert by_id["place-1"].image_url_fallback == "https://tong.visitkorea.or.kr/a-big.jpg"
         assert by_id["place-3"].image_url is None
+        assert by_id["place-3"].image_url_fallback is None
+
+    @pytest.mark.asyncio
+    async def test_채울_후보가_없어도_유지된_항목의_사진은_남는다(self) -> None:
+        """새로 채울 후보가 없어 유지 항목만으로 결과를 만드는 경로도 같다."""
+        pinned = [
+            _pinned("place-1", 1).model_copy(
+                update={"image_url": "https://tong.visitkorea.or.kr/a.jpg"}
+            ),
+            _pinned("place-3", 3),
+        ]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        by_id = {item.place_id: item for item in result.items}
+        assert set(by_id) == {"place-1", "place-3"}
+        assert by_id["place-1"].image_url == "https://tong.visitkorea.or.kr/a.jpg"
 
 
 class Test붙어_있는_곳은_짧게_머문다:
