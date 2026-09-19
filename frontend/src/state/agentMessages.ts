@@ -114,12 +114,14 @@ export function buildRecommendationMessages({
   recommendations,
   unverifiedRecommendations,
   travelOriginToggle,
+  tasteQuery,
   elapsedMsClient,
   serverElapsedMs,
 }: {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
   travelOriginToggle?: TravelOriginToggle | null;
+  tasteQuery?: string | null;
   elapsedMsClient: number;
   serverElapsedMs: number;
 }): ChatMessage[] {
@@ -130,6 +132,7 @@ export function buildRecommendationMessages({
       recommendations,
       unverified_recommendations: unverifiedRecommendations,
       travel_origin_toggle: travelOriginToggle,
+      taste_query: tasteQuery,
       elapsed_ms: elapsedMsClient,
       server_elapsed_ms: serverElapsedMs,
     },
@@ -248,6 +251,7 @@ export function buildAgentMessages(
         recommendations: response.recommendations.recommendations,
         unverifiedRecommendations: response.recommendations.unverified_recommendations,
         travelOriginToggle: response.recommendations.travel_origin_toggle,
+        tasteQuery: response.state.user_conditions.taste_query,
         elapsedMsClient,
         serverElapsedMs: response.recommendations.elapsed_ms,
       }),

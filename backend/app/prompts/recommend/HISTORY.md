@@ -5,10 +5,38 @@
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
 | recommend.extract | 2.11.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
-| recommend.summary | 1.3.0 | summary_instruction.md | persona |
-| recommend.place_reason | 1.2.0 | place_reason_instruction.md | — |
+| recommend.summary | 1.5.0 | summary_instruction.md | persona |
+| recommend.place_reason | 1.5.0 | place_reason_instruction.md | — |
 
 ## Draft
+
+- 2026-09-18(recommend.summary v1.5.0): **추천 요약은 이번 취향 발화와 가장 가까운
+  임베딩 후기 근거를 먼저 설명합니다.** `review_evidence`가 단순한 장소 후기 모음이
+  아니라 현재 취향 질의로 검색한 근거임을 명시하고, 태그나 일반 특징보다 앞세우게
+  했습니다. 취향 근거가 적을 때의 안내 문구도 "충분히 찾지 못했어요" 대신
+  "뚜렷한 곳이 많지 않아요"로 완화했습니다.
+
+- 2026-09-18(recommend.place_reason v1.5.0): **상세 카드도 현재 취향 발화에 맞춘
+  임베딩 후기 근거를 우선 사용합니다.** 화면은 `taste_query`만 보내고, 서버가
+  해당 장소의 저장된 후기에서 문장을 다시 검색해 `query_taste_evidence`로 LLM에
+  전달합니다. 따라서 화면이 임의의 원문을 주입하지 않으며, 근거가 없을 때만 기존의
+  취향 태그·태그 후기 중심으로 생성합니다.
+
+- 2026-09-18(recommend.place_reason v1.4.0): **상세 카드 추천 이유를 최대 세 문장으로
+  늘렸습니다.** 취향 태그의 성격과 실제 후기 출처를 충분히 설명하되, 주차·웨이팅
+  주의까지 필요한 경우에도 문장이 지나치게 압축되지 않게 했습니다.
+
+- 2026-09-18(recommend.summary v1.4.0): **취향 근거가 부족한 추천을 숨기지 않고,
+  대안인 이유를 함께 안내합니다.** 카드 후보 전체에 태그·임베딩 근거가 하나도 없으면
+  `preference_fallback`을 넘겨 "이번에 확인된 후보에서는 취향 후기 근거가 충분하지
+  않다"고 먼저 밝히고, 카드에 실제로 있는 거리·운영시간·후기만으로 대안을 설명하게
+  했습니다. 후보 풀이 목표보다 작거나 폐점 후보가 많이 빠진 경우도 별도 신호로
+  전달하되, 후보 수·점수·API 같은 구현 용어는 사용자에게 말하지 않습니다.
+
+- 2026-09-18(recommend.place_reason v1.3.0): **상세 카드의 단점 고지를 안전한 범위로
+  좁히고 말투를 밝게 정리했습니다.** 맛·가격·서비스의 부정 후기는 추천 이유에 섞지
+  않고, 명시적인 주차·대기 관련 주의만 방문 전 확인 안내로 제한했습니다. 태그 집계와
+  그 태그의 실제 후기 문장을 근거로 쓰는 방식은 유지했습니다.
 
 - 2026-09-17(recommend.extract v2.11.0): **"식당"·"카페"·"술집"이라고 말한 요청이
   음식점 전체로 넓어지던 것을 막았습니다.** `restaurant`는 TourAPI 음식점 대분류라

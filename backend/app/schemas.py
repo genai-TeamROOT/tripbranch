@@ -1636,6 +1636,9 @@ class PlaceReasonRequest(BaseModel):
     place_id: str = Field(min_length=1, max_length=100)
     place_name: str = Field(min_length=1, max_length=200)
     category_label: str | None = Field(default=None, max_length=100)
+    # 이번 추천에서 실제 벡터 검색에 쓴 사용자 취향 발화. 서버가 이 문장으로 같은
+    # 장소 안의 후기만 다시 검색하므로, 화면이 근거 원문을 LLM에 주입하지 않는다.
+    taste_query: str | None = Field(default=None, max_length=500)
     # 이번 추천에서 **사용자 취향과 일치한** 태그 코드들. 화면이 이미 들고 있는
     # `RecommendationItem.preference_tags[].is_query_match`가 그대로 여기로 온다.
     #
@@ -1665,6 +1668,14 @@ class PlaceReasonRequest(BaseModel):
         if not normalized:
             raise ValueError("장소 정보는 비어 있을 수 없습니다.")
         return normalized
+
+    @field_validator("taste_query")
+    @classmethod
+    def normalize_taste_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class PlaceReasonResponse(BaseModel):

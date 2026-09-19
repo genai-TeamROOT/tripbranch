@@ -61,6 +61,8 @@ import { HomepageLink } from "./HomepageLink";
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
   item?: RecommendationItem;
+  /** 이번 추천의 취향 발화. 서버가 같은 장소의 임베딩 후기 근거를 다시 찾는 데 쓴다. */
+  tasteQuery?: string | null;
   /** INFO 카드에서 열면 답변 요약을 즉시 표시한다. */
   card?: InfoPlaceCard;
   /**
@@ -1596,6 +1598,7 @@ function PlacePhotoGallery({
 /** 추천/INFO 어디서 열어도 같은 모양으로 PlaceDetails를 보여주는 상세 모달이다. */
 export function RecommendationDetailPreviewModal({
   item,
+  tasteQuery,
   card,
   placeId: placeIdProp,
   placeName: placeNameProp,
@@ -1799,6 +1802,7 @@ export function RecommendationDetailPreviewModal({
         matched_preference_codes: (item?.preference_tags ?? [])
           .filter((tag) => tag.is_query_match)
           .map((tag) => tag.code),
+        ...(tasteQuery ? { taste_query: tasteQuery } : {}),
       })
         .then((response) => {
           if (!cancelled) setAiReason(response.ai_reason ?? "");

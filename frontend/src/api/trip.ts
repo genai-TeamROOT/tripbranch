@@ -136,6 +136,7 @@ export function fetchPlaceAiReason(request: {
   place_name: string;
   category_label?: string | null;
   matched_preference_codes?: string[];
+  taste_query?: string | null;
 }) {
   return apiClient.post<PlaceReasonResponse>("/chat/place-details/reason", request);
 }
