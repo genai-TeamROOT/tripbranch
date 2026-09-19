@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pandas as pd
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 EVAL_DIR = BACKEND_DIR / "test_results" / "preference_retrieval"
 SPLIT_PATHS = {
@@ -98,7 +97,9 @@ def _dataset_digest(paths: list[Path]) -> str:
     return digest.hexdigest()[:12]
 
 
-def load_and_validate(split: str, limit: int | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+def load_and_validate(
+    split: str, limit: int | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     queries_path = SPLIT_PATHS[split]
     queries = _read_csv(queries_path, required=QUERY_COLUMNS)
     if queries.empty:
@@ -148,7 +149,9 @@ def load_and_validate(split: str, limit: int | None = None) -> tuple[pd.DataFram
         if len(group) != expected_count
     }
     if incomplete:
-        raise ValueError(f"취향별 qrels가 후보 {expected_count}곳을 모두 덮지 못합니다: {incomplete}")
+        raise ValueError(
+            f"취향별 qrels가 후보 {expected_count}곳을 모두 덮지 못합니다: {incomplete}"
+        )
 
     if CORPUS_PATH.exists():
         corpus_ids = set(
@@ -218,7 +221,7 @@ def evaluate_rankings(
             raise ValueError(f"조합 {combo_id}가 질의를 누락했습니다: {missing_cases}")
 
     truth = {
-        preference: dict(zip(group.content_id, group.relevance_grade_final))
+        preference: dict(zip(group.content_id, group.relevance_grade_final, strict=True))
         for preference, group in qrels.groupby("preference_code")
     }
     query_by_id = queries.set_index("case_id")
@@ -268,7 +271,11 @@ def _merge_timings(
     if search_path:
         search = pd.read_csv(search_path)
         if {"combo_id", "search_seconds"}.issubset(search.columns):
-            timing = search.groupby("combo_id").search_seconds.agg(["mean", lambda s: s.quantile(0.95)]).reset_index()
+            timing = (
+                search.groupby("combo_id")
+                .search_seconds.agg(["mean", lambda s: s.quantile(0.95)])
+                .reset_index()
+            )
             timing.columns = ["combo_id", "mean_search_seconds", "p95_search_seconds"]
             result = result.merge(timing, on="combo_id", how="left")
     return result
@@ -313,14 +320,19 @@ def _report_markdown(
         f"3. Strict Precision@{top_k}: 상위 {top_k}곳 중 2점 장소의 비율",
         "4. 품질 차이가 작으면 구축 시간과 평균·P95 검색 시간을 함께 비교",
         "",
-        "> 이 평가는 용산·성동 55개 후보만 대상으로 한 폐쇄형 비교입니다. 서울 전체의 절대 성능으로 해석하지 않습니다.",
+        "> 이 평가는 용산·성동 55개 후보만 대상으로 한 폐쇄형 비교입니다. "
+        "서울 전체의 절대 성능으로 해석하지 않습니다.",
         "",
     ]
     return "\n".join(lines)
 
 
 def _append_history(row: dict[str, object]) -> None:
-    current = pd.read_csv(HISTORY_PATH, dtype=str, keep_default_na=False) if HISTORY_PATH.exists() else pd.DataFrame(columns=HISTORY_COLUMNS)
+    current = (
+        pd.read_csv(HISTORY_PATH, dtype=str, keep_default_na=False)
+        if HISTORY_PATH.exists()
+        else pd.DataFrame(columns=HISTORY_COLUMNS)
+    )
     current = pd.concat([current, pd.DataFrame([row])], ignore_index=True)
     current = current.reindex(columns=HISTORY_COLUMNS)
     current.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
@@ -339,7 +351,9 @@ def main() -> None:
         print("골드셋 검증 통과")
         return
     if args.results is None:
-        raise ValueError("평가하려면 --results에 Colab 결과 ZIP·폴더·rankings_top5.csv를 지정하세요")
+        raise ValueError(
+            "평가하려면 --results에 Colab 결과 ZIP·폴더·rankings_top5.csv를 지정하세요"
+        )
 
     with tempfile.TemporaryDirectory(prefix="tripbranch-preference-eval-") as temp:
         rankings_path, build_path, search_path = _locate_result_files(args.results, Path(temp))
@@ -368,7 +382,9 @@ def main() -> None:
         "candidate_count": len(candidates),
         "results_source": str(args.results.expanduser().resolve()),
     }
-    (run_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "config.json").write_text(
+        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (run_dir / "summary.json").write_text(
         json.dumps({**config, "metrics": summary.to_dict("records")}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -377,7 +393,11 @@ def main() -> None:
         _report_markdown(run_id, args.split, digest, summary, args.top_k), encoding="utf-8"
     )
 
-    metric_names = [f"precision_at_{args.top_k}", f"strict_precision_at_{args.top_k}", f"ndcg_at_{args.top_k}"]
+    metric_names = [
+        f"precision_at_{args.top_k}",
+        f"strict_precision_at_{args.top_k}",
+        f"ndcg_at_{args.top_k}",
+    ]
     best = summary.sort_values(f"ndcg_at_{args.top_k}", ascending=False).iloc[0]
     history_row = {
         "run_id": run_id,
