@@ -251,7 +251,8 @@ export function buildAgentMessages(
         recommendations: response.recommendations.recommendations,
         unverifiedRecommendations: response.recommendations.unverified_recommendations,
         travelOriginToggle: response.recommendations.travel_origin_toggle,
-        tasteQuery: response.state.user_conditions.taste_query,
+        // 지난 대화를 복원하면 user_conditions가 없는 예전 기록이 올 수 있다.
+        tasteQuery: response.state.user_conditions?.taste_query,
         elapsedMsClient,
         serverElapsedMs: response.recommendations.elapsed_ms,
       }),
