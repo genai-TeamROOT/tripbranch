@@ -6,9 +6,14 @@
 | --- | --- | --- | --- |
 | recommend.extract | 2.11.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
 | recommend.summary | 1.5.0 | summary_instruction.md | persona |
-| recommend.place_reason | 1.5.0 | place_reason_instruction.md | — |
+| recommend.place_reason | 1.5.1 | place_reason_instruction.md | — |
 
 ## Draft
+
+- 2026-09-20(recommend.place_reason v1.5.1): **중간 문장이 "~습니다"로 끝나던 것을
+  막았습니다.** 실제 호출에서 "…이야기도 자주 보입니다"처럼 한 문장만 격식체로 튀는
+  일이 반복돼, 마지막 문장뿐 아니라 **모든 문장**이 "~해요"체여야 한다고 못 박았습니다.
+  같은 입력으로 다시 호출해 세 문장 모두 "~해요"체로 나오는 것을 확인했습니다.
 
 - 2026-09-18(recommend.summary v1.5.0): **추천 요약은 이번 취향 발화와 가장 가까운
   임베딩 후기 근거를 먼저 설명합니다.** `review_evidence`가 단순한 장소 후기 모음이
