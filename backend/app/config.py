@@ -335,7 +335,7 @@ class Settings(BaseSettings):
     llm_generation_model_name: str = "gemini-3.5-flash"
     llm_generation_fallback_model_names: str = "gemini-3.5-flash-lite"
 
-    # 장소 상세 카드의 "AI가 추천하는 이유" 1~2문장 생성 전용 모델 묶음.
+    # 장소 상세 카드의 "AI가 추천하는 이유" 1~3문장 생성 전용 모델 묶음.
     #
     # **세 번째 티어를 만든 이유**는 이 호출이 fast·generation 어느 쪽 특성도 아니기
     # 때문이다. 판단이 아니라 문장 생성이라 fast(구조화 판단)가 아니고, 사용자가

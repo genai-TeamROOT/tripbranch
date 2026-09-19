@@ -34,6 +34,7 @@ from app.providers.factory import (
     get_google_translate_provider,
     get_llm_provider,
     get_place_details_repository,
+    get_place_evidence_provider,
 )
 from app.schemas import (
     AgentRequest,
@@ -246,6 +247,24 @@ async def _place_preference_insights(place_id: str) -> list[PlacePreferenceInsig
             return []
 
 
+async def _place_reason_taste_evidence(place_id: str, taste_query: str | None) -> list[str]:
+    """현재 취향 발화와 가장 가까운, 해당 장소의 검증된 후기 문장만 다시 찾는다."""
+
+    if not taste_query:
+        return []
+    async with create_external_client() as client:
+        provider = get_place_evidence_provider(client)
+        if provider is None:
+            return []
+        try:
+            result = await provider.search(taste_query, [place_id])
+            match = result.data.get(place_id)
+            return [snippet.source_text for snippet in match.snippets] if match else []
+        except Exception:
+            logger.exception("상세 카드 취향 임베딩 근거 조회 실패 — 태그 근거만 사용한다")
+            return []
+
+
 @router.post("/chat/place-details/reason", response_model=PlaceReasonResponse)
 async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReasonResponse:
     """상세 카드의 "AI가 추천하는 이유" 문장을 만든다. 못 만들면 ai_reason이 None이다.
@@ -256,16 +275,19 @@ async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReaso
     통째로 멈춘다. 화면이 카드를 먼저 그리고 문장은 도착하는 대로 채우도록,
     기다리는 쪽을 이 호출 하나로 좁혔다.
 
-    **사용자 취향과 맞은 태그를 먼저 말한다.** 화면이 추천 카드에서 이미 들고 있던
+    **사용자 취향과 가까운 임베딩 후기 문장을 먼저 말한다.** 화면은 취향 발화 원문만
+    보내고, 서버가 같은 장소 안에서 후기 근거를 다시 검색한다. 즉 화면이 문장 원문을
+    LLM에 주입하지 않으며, 현재 질문과 가장 가까운 실제 후기만 문장 생성에 쓴다.
+    그 근거가 없을 때에는 사용자 취향과 맞은 태그를 먼저 말한다. 화면이 추천 카드에서 이미 들고 있던
     일치 표시(`preference_tags[].is_query_match`)를 `matched_preference_codes`로
     받아, 저장소가 준 태그 중 어느 것을 넘길지 고르는 데 쓴다. 저장소 순서는 그
     장소에서 많이 언급된 순서라, 그대로 상위 3개만 자르면 사용자가 말한 취향에
     걸린 태그가 아예 빠질 수 있다. 문장에 실리는 라벨·후기는 여전히 전부 저장소
     조회 결과다 — 화면이 준 것은 고르는 기준뿐이다.
 
-    **취향 태그가 있는 장소에만 만든다.** 근거로 쓸 것이 태그 집계와 후기 문장뿐이라
-    태그가 없으면 쓸 재료가 없고, 그때 억지로 부르면 카드에 없는 사실을 지어낼 여지만
-    준다. 태그 미수집 장소는 화면이 이 절을 통째로 접는다.
+    **태그 또는 임베딩 후기 근거가 있는 장소에만 만든다.** 둘 다 없으면 쓸 재료가 없고,
+    그때 억지로 부르면 카드에 없는 사실을 지어낼 여지만 준다. 그 경우 화면은 이 절을
+    통째로 접는다.
 
     **실패를 오류 응답으로 만들지 않는다.** 이 문장이 없어도 절이 성립하도록 화면을
     만들었으므로(문장이 없으면 화면이 절을 접는다), LLM이 죽어도 카드는 지금까지처럼
@@ -275,8 +297,11 @@ async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReaso
 
     if not settings.place_reason_enabled:
         return PlaceReasonResponse()
-    insights = await _place_preference_insights(request.place_id)
-    if not insights:
+    insights, taste_evidence = await asyncio.gather(
+        _place_preference_insights(request.place_id),
+        _place_reason_taste_evidence(request.place_id, request.taste_query),
+    )
+    if not insights and not taste_evidence:
         return PlaceReasonResponse()
     try:
         result = await get_llm_provider().generate_place_reason(
@@ -284,6 +309,8 @@ async def recommendation_place_reason(request: PlaceReasonRequest) -> PlaceReaso
             category_label=request.category_label,
             insights=insights,
             matched_preference_codes=request.matched_preference_codes,
+            taste_query=request.taste_query,
+            taste_evidence=taste_evidence,
         )
     except Exception:
         logger.warning("상세 카드 추천 이유 생성 실패 — 그 절을 접는다", exc_info=True)

@@ -544,6 +544,7 @@ export function ChatMessageList({
               key={message.id}
               recommendations={message.recommendations}
               unverifiedRecommendations={message.unverified_recommendations}
+              tasteQuery={message.taste_query}
               elapsedMs={message.elapsed_ms}
               serverElapsedMs={message.server_elapsed_ms}
               showElapsedTime={isDeveloperView}
