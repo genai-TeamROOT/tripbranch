@@ -52,8 +52,8 @@ from app.schemas import (
     RecommendationResponse,
     UserConditions,
 )
-from app.services.runtime.recommendation_transform import to_search_radius_km
 from app.services.runtime.llm_execution import record_llm_call
+from app.services.runtime.recommendation_transform import to_search_radius_km
 
 T = TypeVar("T", bound=BaseModel)
 
