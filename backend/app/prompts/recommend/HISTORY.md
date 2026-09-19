@@ -5,10 +5,17 @@
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
 | recommend.extract | 2.11.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
-| recommend.summary | 1.5.0 | summary_instruction.md | persona |
+| recommend.summary | 1.6.0 | summary_instruction.md | persona |
 | recommend.place_reason | 1.5.1 | place_reason_instruction.md | — |
 
 ## Draft
+
+- 2026-09-20(recommend.summary v1.6.0): **엉뚱한 지역 이름을 말하던 것을 막았습니다.**
+  "강남역 근처 맛집"에 "사당역 근처에서 골라보았어요"라고 답한 일이 있었습니다. 조건
+  해석은 강남역으로 정확했지만, 말풍선을 쓰는 단계에 지역이 전달되지 않았고 카드 설명의
+  "사당역 4호선에서 대중교통 19분"만 보였기 때문입니다. 조건 요약 맨 앞에 검색 지역을
+  넣고(`_stated_conditions_line`), **이동 출발점 이름을 지역처럼 말하지 말라**는 규칙을
+  더했습니다.
 
 - 2026-09-20(recommend.place_reason v1.5.1): **중간 문장이 "~습니다"로 끝나던 것을
   막았습니다.** 실제 호출에서 "…이야기도 자주 보입니다"처럼 한 문장만 격식체로 튀는
