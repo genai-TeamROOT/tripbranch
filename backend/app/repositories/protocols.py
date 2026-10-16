@@ -238,8 +238,9 @@ class BarrierFreePlaceSearchRepository(Protocol):
 class PlaceEvidenceRepository(Protocol):
     """취향 근거를 벡터 검색으로 찾는 읽기 전용 계약.
 
-    후보를 반드시 좁혀서 부른다 — RPC가 후보 상한(500)을 강제하고, 좁히지 않으면
-    40,389행 전체를 훑어 6~9초가 걸린다(2026-08-18 실측).
+    후보를 반드시 좁혀서 부른다 — 구현체가 후보 상한(500)을 강제한다. 결과 규칙(컷 →
+    글당 1문장 → 장소당 상위 `match_count`개 평균)은 Supabase `search_place_evidence`
+    RPC가 정했고, Pinecone 구현(`PineconeEvidenceRepository`)이 같은 규칙을 따른다.
     """
 
     async def search_place_evidence(
