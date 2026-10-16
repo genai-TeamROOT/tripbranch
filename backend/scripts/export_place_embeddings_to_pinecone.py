@@ -39,14 +39,14 @@ _ENV_FILE = BACKEND_DIR / ".env"
 
 # 데이터 평면 호출에 쓰는 API 버전. Pinecone은 이 헤더가 없으면 가장 오래된 계약으로
 # 응답하므로 명시한다 — 나중에 계약이 바뀌어도 이 값을 올릴 때까지 동작이 고정된다.
-_PINECONE_API_VERSION = "2026-07"
+PINECONE_API_VERSION = "2026-07"
 _CONTROL_PLANE = "https://api.pinecone.io"
 
 # Pinecone upsert 한 요청의 상한은 레코드 1,000개 또는 **2MB**다. 우리 레코드는
 # 768개 float이 JSON 숫자로 풀리면서 9KB를 넘고 메타데이터가 1KB 가까이 붙어
 # 레코드당 약 10KB다. 1,000개를 담으면 10MB로 상한을 훌쩍 넘으므로 개수가 아니라
 # 크기가 실질 제약이다. 100개면 약 1MB로 절반쯤 여유가 남는다.
-_UPSERT_BATCH_SIZE = 100
+UPSERT_BATCH_SIZE = 100
 _UPSERT_TIMEOUT_SECONDS = 120.0
 _UPSERT_MAX_ATTEMPTS = 5
 
@@ -141,8 +141,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=_UPSERT_BATCH_SIZE,
-        help=f"upsert 한 요청에 담는 레코드 수 (기본 {_UPSERT_BATCH_SIZE}, 요청 상한 2MB)",
+        default=UPSERT_BATCH_SIZE,
+        help=f"upsert 한 요청에 담는 레코드 수 (기본 {UPSERT_BATCH_SIZE}, 요청 상한 2MB)",
     )
     parser.add_argument(
         "--start-after-id",
@@ -202,7 +202,7 @@ async def describe_index(client: httpx.AsyncClient, api_key: str, name: str) -> 
     """
     response = await client.get(
         f"{_CONTROL_PLANE}/indexes/{name}",
-        headers={"Api-Key": api_key, "X-Pinecone-Api-Version": _PINECONE_API_VERSION},
+        headers={"Api-Key": api_key, "X-Pinecone-Api-Version": PINECONE_API_VERSION},
         timeout=30.0,
     )
     if response.status_code == 404:
@@ -315,8 +315,12 @@ def _record_id(row: dict[str, Any]) -> str | None:
     return None
 
 
-def _to_record(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Supabase 행 하나를 Pinecone 레코드로 바꾼다. 못 쓰는 행은 None."""
+def to_record(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Supabase 행 하나를 Pinecone 레코드로 바꾼다. 못 쓰는 행은 None.
+
+    새 임베딩 적재(import_place_embeddings)도 이 함수로 레코드를 만든다. 두 경로가
+    같은 ID·같은 메타데이터를 써야 다시 넣었을 때 같은 문장이 덮어써진다.
+    """
     record_id = _record_id(row)
     if record_id is None:
         # ID를 만들 수 없는 행. 건너뛰고 수만 센다 — 여기서 죽이면 22만 행 중 한 행
@@ -354,23 +358,24 @@ def _to_record(row: dict[str, Any]) -> dict[str, Any] | None:
 
 async def upsert_batch(
     client: httpx.AsyncClient,
-    index: PineconeIndex,
+    host: str,
     api_key: str,
     namespace: str,
     records: list[dict[str, Any]],
 ) -> None:
+    """레코드 묶음을 upsert한다. 적재 스크립트(import_place_embeddings)도 같이 쓴다."""
     body = {"vectors": records, "namespace": namespace}
     last_error: Exception | None = None
 
     for attempt in range(1, _UPSERT_MAX_ATTEMPTS + 1):
         try:
             response = await client.post(
-                f"https://{index.host}/vectors/upsert",
+                f"https://{host}/vectors/upsert",
                 json=body,
                 headers={
                     "Api-Key": api_key,
                     "Content-Type": "application/json",
-                    "X-Pinecone-Api-Version": _PINECONE_API_VERSION,
+                    "X-Pinecone-Api-Version": PINECONE_API_VERSION,
                 },
                 timeout=_UPSERT_TIMEOUT_SECONDS,
             )
@@ -453,7 +458,7 @@ async def run(args: argparse.Namespace) -> ExportStats:
             stats.last_id = after_id
 
             for row in rows:
-                record = _to_record(row)
+                record = to_record(row)
                 if record is None:
                     stats.skipped += 1
                     continue
@@ -461,7 +466,7 @@ async def run(args: argparse.Namespace) -> ExportStats:
 
                 if len(pending) >= args.batch_size:
                     if index is not None:
-                        await upsert_batch(client, index, api_key, namespace, pending)
+                        await upsert_batch(client, index.host, api_key, namespace, pending)
                     stats.sent += len(pending)
                     stats.batches += 1
                     pending.clear()
@@ -472,7 +477,7 @@ async def run(args: argparse.Namespace) -> ExportStats:
 
         if pending:
             if index is not None:
-                await upsert_batch(client, index, api_key, namespace, pending)
+                await upsert_batch(client, index.host, api_key, namespace, pending)
             stats.sent += len(pending)
             stats.batches += 1
             pending.clear()
