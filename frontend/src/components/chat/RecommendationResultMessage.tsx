@@ -30,6 +30,7 @@ import { TourApiSourceNote } from "./SourceNotes";
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
+  tasteQuery?: string | null;
   elapsedMs: number;
   serverElapsedMs: number;
   showElapsedTime?: boolean;
@@ -46,6 +47,7 @@ function formatDuration(milliseconds: number | undefined) {
 export function RecommendationResultMessage({
   recommendations,
   unverifiedRecommendations,
+  tasteQuery,
   elapsedMs,
   serverElapsedMs,
   showElapsedTime = false,
@@ -140,6 +142,7 @@ export function RecommendationResultMessage({
       {selectedRecommendation && (
         <RecommendationDetailPreviewModal
           item={selectedRecommendation}
+          tasteQuery={tasteQuery}
           onClose={() => setSelectedRecommendation(null)}
         />
       )}

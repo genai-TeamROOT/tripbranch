@@ -155,6 +155,87 @@ def test_recommendation_summary_item_includes_limited_review_evidence() -> None:
     assert "similarity" not in item
 
 
+def test_recommendation_summary_payload_marks_preference_fallback() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    item = _recommendation_item()
+    response = RecommendationResponse(
+        recommendations=[item],
+        unverified_recommendations=[],
+        scoring_candidates=[item],
+        scoring_candidate_target=30,
+        scoring_input_count=3,
+        scoring_pool_exhausted=True,
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response,
+        UserConditions(
+            search_center="강남역",
+            taste_query="카공하기 좋은",
+        ),
+    )
+
+    assert payload["selection_context"] == {
+        "guidance": "preference_fallback",
+        "taste_query": "카공하기 좋은",
+        "search_scope_label": "강남역 반경 2km 이내",
+        "place_type_label": None,
+        "candidate_pool_limited": True,
+        "operating_hours_limited": False,
+    }
+    assert payload["recommendations"] == [provider._recommendation_summary_item(item)]
+
+
+def test_recommendation_summary_payload_marks_limited_pool_without_taste_request() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    item = _recommendation_item()
+    response = RecommendationResponse(
+        recommendations=[item],
+        unverified_recommendations=[],
+        scoring_candidates=[item],
+        scoring_candidate_target=30,
+        scoring_input_count=3,
+        scoring_pool_exhausted=True,
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response, UserConditions(search_center="강남역")
+    )
+
+    assert payload["selection_context"] == {
+        "guidance": None,
+        "taste_query": None,
+        "search_scope_label": "강남역 반경 2km 이내",
+        "place_type_label": None,
+        "candidate_pool_limited": True,
+        "operating_hours_limited": False,
+    }
+
+
+def test_recommendation_summary_payload_marks_preference_tradeoff() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    shown = _recommendation_item()
+    matched = _recommendation_item("p2").model_copy(
+        update={
+            "taste_evidence": [TasteEvidenceQuote(text="창가에서 작업하기 좋아요.", similarity=0.7)]
+        }
+    )
+    response = RecommendationResponse(
+        recommendations=[shown],
+        unverified_recommendations=[],
+        scoring_candidates=[shown, matched],
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response, UserConditions(taste_query="카공하기 좋은")
+    )
+
+    assert payload["selection_context"]["guidance"] == "preference_tradeoff"
+
+
 @pytest.mark.asyncio
 async def test_generate_retries_on_transient_5xx_then_succeeds() -> None:
     provider = RealGeminiProvider(
@@ -1164,6 +1245,27 @@ def test_place_reason_payload_keeps_mention_order_without_user_preference() -> N
     )
 
 
+def test_place_reason_payload_separates_current_taste_embedding_evidence() -> None:
+    """상세 카드가 현재 발화와 가까운 후기 문장을 태그와 섞지 않고 우선 전달한다."""
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="테스트 카페",
+        category_label="카페",
+        insights=[],
+        taste_query="카공하기 좋은",
+        taste_evidence=[
+            "  콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요.  ",
+            "콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요.",
+        ],
+    )
+
+    assert payload["taste_query"] == "카공하기 좋은"
+    assert payload["query_taste_evidence"] == [
+        "콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요."
+    ]
+    assert payload["preference_tags"] == []
+
+
 def test_place_reason_payload_drops_evidence_repeated_across_tags() -> None:
     """후기 한 문장이 여러 태그에 걸리면 한 번만 넘긴다.
 
@@ -1711,6 +1813,22 @@ def test_summary_instruction_omits_the_conditions_block_when_nothing_was_stated(
         )
         # 규칙 본문에도 같은 낱말이 나오므로 동적으로 삽입되는 줄만 본다.
         assert "사용자가 말한 조건: " not in instruction
+
+
+def test_summary_instruction_carries_the_search_center() -> None:
+    """검색 지역이 말풍선 프롬프트에 실린다.
+
+    카드 설명은 이동 출발점(현재 위치)을 이름으로 부른다. 이 줄에 지역이 없으면
+    말풍선이 그 출발점을 지역으로 착각한다 — "강남역 근처 맛집"에 "사당역
+    근처에서 골라보았어요"라고 답했다(2026-09-20 실사용).
+    """
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.MODIFY,
+        conditions=UserConditions(search_center="강남역"),
+    )
+
+    assert "사용자가 말한 조건: 강남역 근처" in instruction
 
 
 def test_summary_instruction_carries_the_stated_companion() -> None:

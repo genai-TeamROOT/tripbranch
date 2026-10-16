@@ -384,7 +384,14 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
 
     class FakeLLM:
         async def generate_place_reason(
-            self, *, place_name, category_label, insights, matched_preference_codes=()
+            self,
+            *,
+            place_name,
+            category_label,
+            insights,
+            matched_preference_codes=(),
+            taste_query=None,
+            taste_evidence=(),
         ):
             seen.append(
                 {
@@ -392,6 +399,8 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
                     "category_label": category_label,
                     "labels": [insight.label for insight in insights],
                     "matched": list(matched_preference_codes),
+                    "taste_query": taste_query,
+                    "taste_evidence": list(taste_evidence),
                 }
             )
             return provider_result(
@@ -422,6 +431,8 @@ def test_place_reason_generates_sentence(monkeypatch) -> None:
             "labels": ["자연을 즐기기 좋은"],
             # 중복과 빈 값은 스키마가 걸러 낸다.
             "matched": ["nature"],
+            "taste_query": None,
+            "taste_evidence": [],
         }
     ]
 
