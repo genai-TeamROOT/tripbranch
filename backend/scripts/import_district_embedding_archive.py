@@ -1,8 +1,8 @@
-"""Colab에서 받은 지역구 임베딩 압축 파일을 검증하고 Supabase에 적재한다.
+"""Colab에서 받은 지역구 임베딩 압축 파일을 검증하고 Pinecone 취향 근거 인덱스에 적재한다.
 
 실제 검증·적재 규칙은 같은 폴더의 import_place_embeddings.py를 호출해 한 곳에서
 관리한다. 기본 실행은 항상 dry-run을 먼저 수행하며, 사용자가 지역구 확인 문구를
-입력해야 실제 DB를 변경한다.
+입력해야 실제 인덱스를 변경한다. 장소 확인에는 Supabase `places`를 읽는다.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Colab에서 다운로드한 지역구 임베딩 .jsonl.gz를 dry-run으로 검증한 "
-            "뒤 팀 Supabase에 적재합니다."
+            "뒤 팀 Pinecone 인덱스에 적재합니다."
         )
     )
     parser.add_argument(
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run-only",
         action="store_true",
-        help="검증만 수행하고 실제 DB는 변경하지 않음",
+        help="검증만 수행하고 Pinecone에는 보내지 않음",
     )
     parser.add_argument(
         "--replace-existing",
@@ -146,7 +146,7 @@ def run_importer(
             ["--replace-existing", "--scope-content-ids", str(scope_catalog)]
         )
 
-    label = "DRY-RUN 검증" if dry_run else "실제 DB 적재"
+    label = "DRY-RUN 검증" if dry_run else "실제 Pinecone 적재"
     print(f"\n=== {label} 시작 ===")
     child_env = os.environ.copy()
     existing_pythonpath = child_env.get("PYTHONPATH", "")
@@ -168,7 +168,7 @@ def main() -> int:
     env_path = BACKEND_DIR / ".env"
     if not env_path.is_file():
         raise FileNotFoundError(
-            f"팀 Supabase 접속 정보가 있는 파일을 찾지 못했습니다: {env_path}"
+            f"팀 Supabase·Pinecone 접속 정보가 있는 파일을 찾지 못했습니다: {env_path}"
         )
 
     district = district_from_filename(archive)
@@ -183,10 +183,10 @@ def main() -> int:
     print(f"  입력 파일: {archive}")
     print(f"  환경설정: {env_path} (비밀값은 출력하지 않음)")
     print(f"  기존 버전 교체: {args.replace_existing}")
-    print("  적재 방식: PostgREST 200행 배치 / 요청 제한 120초")
+    print("  적재 방식: Pinecone upsert 100개 배치 / 요청 제한 120초")
     print(
-        "  주의: 전체 대량 적재 전 place_embeddings HNSW 인덱스를 한 번 제거하고, "
-        "모든 구 적재 후 한 번 재생성하세요."
+        "  주의: Pinecone Starter는 쓰기 한도가 월 200만 WU입니다. 문장 1개가 약 4 WU라 "
+        "구 하나(평균 약 9천 개)는 2% 안팎이지만, 전 구를 다시 넣으면 40%를 넘습니다."
     )
 
     with tempfile.TemporaryDirectory(prefix=f"tripbranch_{district}_") as temp:
@@ -201,13 +201,13 @@ def main() -> int:
         )
 
         if args.dry_run_only:
-            print("\n검증만 완료했습니다. DB는 변경하지 않았습니다.")
+            print("\n검증만 완료했습니다. Pinecone은 변경하지 않았습니다.")
             return 0
 
         if not args.yes:
             expected = f"IMPORT {district}"
             answer = input(
-                "\n실제 팀 Supabase DB에 적재하려면 "
+                "\n실제 팀 Pinecone 인덱스에 적재하려면 "
                 f"'{expected}'를 정확히 입력하세요: "
             ).strip()
             if answer != expected:
