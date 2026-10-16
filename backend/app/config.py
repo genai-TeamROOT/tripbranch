@@ -415,6 +415,15 @@ class Settings(BaseSettings):
     kakao_map_rest_api_key: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
+    # 취향 근거 벡터 검색 저장소(Pinecone). Supabase를 무료 플랜 용량 안에 넣으려고
+    # place_embeddings를 옮겼다(2026-10, 팀 합의). 인덱스 이름이 아니라 호스트를 받는
+    # 이유는, 이름만 있으면 호스트를 알아내려고 관리 API를 한 번 더 불러야 하기
+    # 때문이다. 호스트는 Pinecone 콘솔의 인덱스 화면에 있다.
+    pinecone_api_key: str = Field(default="", repr=False, exclude=True)
+    pinecone_index_host: str = ""
+    # 비우면 기본 네임스페이스. 적재 스크립트(export_place_embeddings_to_pinecone)가
+    # 넣은 곳과 같아야 한다 — 다르면 오류 없이 검색 결과가 0건이 된다.
+    pinecone_namespace: str = ""
 
     # Real provider HTTP behavior (ignored by fake providers).
     external_api_timeout_seconds: float = 10.0

@@ -1,14 +1,14 @@
 """사용자 발화로 취향 근거 문장을 벡터 검색하는 Provider.
 
-역할: 발화를 임베딩해 `search_place_evidence` RPC를 부르고, 후보별 근거를
-      돌려준다. 추천 점수에 "취향" 축을 더하기 위한 입력이다.
+역할: 발화를 임베딩해 근거 저장소(`PlaceEvidenceRepository`, 지금은 Pinecone)에서
+      후보별 근거를 찾아 돌려준다. 추천 점수에 "취향" 축을 더하기 위한 입력이다.
 
 입력: 취향 질의 문장, 하드 필터를 통과한 후보 content_id 목록.
 출력: content_id를 키로 하는 PlaceEvidenceMatch dict.
 호출 시점: 하드 필터 이후, 채점 전.
 
-**후보를 반드시 좁혀서 부른다.** RPC가 500건 상한을 강제하고, 좁히지 않으면
-40,389행을 전부 훑어 6~9초가 걸린다(2026-08-18 실측).
+**후보를 반드시 좁혀서 부른다.** 저장소가 500건 상한을 강제한다. 후보가 많을수록
+컷을 넘는 문장이 늘어 받아 오는 양이 커진다(pinecone_evidence 모듈 설명).
 
 임베딩 인코더는 Protocol로 주입받는다. `sentence-transformers`가 선택
 의존성(`pip install -e ".[embeddings]"`)이라 기본 설치에는 없고, 모델을 서버에
@@ -44,7 +44,7 @@ DEFAULT_MIN_SIMILARITY = 0.43
 # jsonb 응답만 커진다. 채점의 근거 칸 수(scoring._TASTE_EVIDENCE_SLOTS)와 같다.
 DEFAULT_MATCH_COUNT = 3
 
-# 짧은 문장을 걸러낸 뒤에도 3칸을 채울 수 있게 RPC에서는 넉넉히 받아 온다.
+# 짧은 문장을 걸러낸 뒤에도 3칸을 채울 수 있게 저장소에서는 넉넉히 받아 온다.
 EVIDENCE_POOL_COUNT = 10
 
 # 이 글자 수(앞뒤 공백 제외) 미만인 문장은 추천 근거로 쓰지 않는다.
