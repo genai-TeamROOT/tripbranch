@@ -667,6 +667,8 @@ export type ChatMessage =
       type: "recommendation_result";
       recommendations: RecommendationItem[];
       unverified_recommendations: RecommendationItem[];
+      /* 이번 추천에서 벡터 검색에 쓴 취향 발화. 상세 카드 추천 이유의 서버 재검색에만 쓴다. */
+      taste_query?: string | null;
       /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
       travel_origin_toggle?: TravelOriginToggle | null;
       /* 추천 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms). */

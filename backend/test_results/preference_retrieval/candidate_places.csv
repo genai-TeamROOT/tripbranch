@@ -1,0 +1,56 @@
+﻿content_id,place_title,district_code,district_folder,seed_preference_codes,seed_preference_labels,seed_ranks_json,naver_document_count,google_document_count,candidate_pool_version
+2855454,mtl 효창,170,170_yongsan,"[""quiet""]","[""조용한 곳""]","{""quiet"":3}",20,6,preference-closed-pool-v2
+1177980,국립중앙박물관 어린이박물관,170,170_yongsan,"[""with_kids""]","[""아이와 함께""]","{""with_kids"":5}",20,6,preference-closed-pool-v2
+142733,그랜드 하얏트 서울,170,170_yongsan,"[""healing""]","[""힐링하기 좋은""]","{""healing"":4}",20,9,preference-closed-pool-v2
+131519,그랜드하얏트 서울 아이스링크,170,170_yongsan,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":5}",20,6,preference-closed-pool-v2
+2029960,기와,170,170_yongsan,"[""with_parents""]","[""부모님과 함께""]","{""with_parents"":3}",8,8,preference-closed-pool-v2
+2717322,꾸에바마테라,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":1}",20,8,preference-closed-pool-v2
+1603482,남산 야외식물원,170,170_yongsan,"[""healing""]","[""힐링하기 좋은""]","{""healing"":5}",19,8,preference-closed-pool-v2
+2638475,노들섬,170,170_yongsan,"[""healing""]","[""힐링하기 좋은""]","{""healing"":3}",19,7,preference-closed-pool-v2
+3013134,노들섬 라이브하우스,170,170_yongsan,"[""healing""]","[""힐링하기 좋은""]","{""healing"":8}",20,6,preference-closed-pool-v2
+135683,더플레이스다이닝,170,170_yongsan,"[""date""]","[""데이트 코스""]","{""date"":1}",20,9,preference-closed-pool-v2
+3046985,데이블러,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":3}",20,8,preference-closed-pool-v2
+2809943,도깨비코티지,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":2}",20,7,preference-closed-pool-v2
+2733960,맥심플랜트,170,170_yongsan,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":1}",20,9,preference-closed-pool-v2
+2758116,메종 한남,170,170_yongsan,"[""date""]","[""데이트 코스""]","{""date"":2}",20,7,preference-closed-pool-v2
+2806716,미미옥,170,170_yongsan,"[""with_parents""]","[""부모님과 함께""]","{""with_parents"":6}",20,9,preference-closed-pool-v2
+2856443,백년손님,170,170_yongsan,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":5}",20,5,preference-closed-pool-v2
+2860400,베라 한남점,170,170_yongsan,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":8}",20,7,preference-closed-pool-v2
+402929,부다스벨리 이태원,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":8}",20,10,preference-closed-pool-v2
+3339374,북파크라운지,170,170_yongsan,"[""healing"",""quiet""]","[""힐링하기 좋은"",""조용한 곳""]","{""healing"":6,""quiet"":5}",20,5,preference-closed-pool-v2
+2816502,서울서커스페스티벌,170,170_yongsan,"[""with_kids""]","[""아이와 함께""]","{""with_kids"":7}",20,0,preference-closed-pool-v2
+1987566,서해금빛열차,170,170_yongsan,"[""healing""]","[""힐링하기 좋은""]","{""healing"":7}",20,7,preference-closed-pool-v2
+2809941,알페도,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":5}",20,10,preference-closed-pool-v2
+135684,엔그릴,170,170_yongsan,"[""date""]","[""데이트 코스""]","{""date"":6}",20,10,preference-closed-pool-v2
+2783317,용산공원 부분개방부지,170,170_yongsan,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":1}",20,6,preference-closed-pool-v2
+3013174,용산아트홀,170,170_yongsan,"[""with_parents""]","[""부모님과 함께""]","{""with_parents"":8}",19,6,preference-closed-pool-v2
+3400843,용산어린이정원,170,170_yongsan,"[""with_kids""]","[""아이와 함께""]","{""with_kids"":4}",20,9,preference-closed-pool-v2
+2545035,챔피언1250X 아이파크몰 용산점,170,170_yongsan,"[""with_kids"",""with_parents""]","[""아이와 함께"",""부모님과 함께""]","{""with_kids"":3,""with_parents"":5}",20,8,preference-closed-pool-v2
+2451912,크라운해태 키즈뮤지엄,170,170_yongsan,"[""with_kids"",""with_parents""]","[""아이와 함께"",""부모님과 함께""]","{""with_kids"":2,""with_parents"":2}",20,8,preference-closed-pool-v2
+2860077,크레이트커피,170,170_yongsan,"[""quiet"",""spacious""]","[""조용한 곳"",""넓고 쾌적한""]","{""quiet"":4,""spacious"":3}",20,6,preference-closed-pool-v2
+3081190,팝콘D스퀘어,170,170_yongsan,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":4}",20,7,preference-closed-pool-v2
+2899584,페트라,170,170_yongsan,"[""unique""]","[""색다른 경험""]","{""unique"":4}",20,9,preference-closed-pool-v2
+135131,한쿡 N서울타워,170,170_yongsan,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":3}",20,8,preference-closed-pool-v2
+2901550,기미사 성수,200,200_seongdong,"[""quiet""]","[""조용한 곳""]","{""quiet"":8}",20,7,preference-closed-pool-v2
+2850356,리얼월드 성수,200,200_seongdong,"[""unique""]","[""색다른 경험""]","{""unique"":7}",20,9,preference-closed-pool-v2
+2900364,마를리,200,200_seongdong,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":2}",20,10,preference-closed-pool-v2
+2938669,맥파이앤타이거 성수티룸,200,200_seongdong,"[""quiet""]","[""조용한 곳""]","{""quiet"":2}",20,9,preference-closed-pool-v2
+2899830,비아트 성수,200,200_seongdong,"[""photo_spot"",""healing"",""quiet"",""date""]","[""사진 명소"",""힐링하기 좋은"",""조용한 곳"",""데이트 코스""]","{""photo_spot"":8,""healing"":1,""quiet"":7,""date"":8}",20,10,preference-closed-pool-v2
+753994,살곶이체육공원,200,200_seongdong,"[""with_kids""]","[""아이와 함께""]","{""with_kids"":8}",20,8,preference-closed-pool-v2
+2837773,성수다락,200,200_seongdong,"[""date""]","[""데이트 코스""]","{""date"":4}",20,9,preference-closed-pool-v2
+2707938,성수동 대림창고 갤러리,200,200_seongdong,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":4}",20,8,preference-closed-pool-v2
+2900081,성수지앵협동조합,200,200_seongdong,"[""quiet""]","[""조용한 곳""]","{""quiet"":1}",20,4,preference-closed-pool-v2
+2899661,세디치,200,200_seongdong,"[""date""]","[""데이트 코스""]","{""date"":5}",20,10,preference-closed-pool-v2
+2674989,송정제방길,200,200_seongdong,"[""photo_spot"",""quiet""]","[""사진 명소"",""조용한 곳""]","{""photo_spot"":6,""quiet"":6}",20,0,preference-closed-pool-v2
+2453996,수도박물관,200,200_seongdong,"[""with_kids""]","[""아이와 함께""]","{""with_kids"":6}",19,10,preference-closed-pool-v2
+2835889,어니언 성수,200,200_seongdong,"[""unique""]","[""색다른 경험""]","{""unique"":6}",19,9,preference-closed-pool-v2
+2845133,옥수해물찜칼국수,200,200_seongdong,"[""with_parents""]","[""부모님과 함께""]","{""with_parents"":7}",20,7,preference-closed-pool-v2
+2894964,유즈풀 아뜰리에,200,200_seongdong,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":7}",20,9,preference-closed-pool-v2
+2845592,진작다이닝,200,200_seongdong,"[""date""]","[""데이트 코스""]","{""date"":3}",20,9,preference-closed-pool-v2
+2900424,카페 이페메라 LCDC SEOUL,200,200_seongdong,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":7}",20,6,preference-closed-pool-v2
+2894983,코너룸,200,200_seongdong,"[""date""]","[""데이트 코스""]","{""date"":7}",20,9,preference-closed-pool-v2
+2894997,퀴버 서울숲,200,200_seongdong,"[""spacious""]","[""넓고 쾌적한""]","{""spacious"":6}",20,7,preference-closed-pool-v2
+2899031,폴인레미유,200,200_seongdong,"[""photo_spot""]","[""사진 명소""]","{""photo_spot"":2}",20,9,preference-closed-pool-v2
+3444690,플래드카페 서울숲,200,200_seongdong,"[""healing""]","[""힐링하기 좋은""]","{""healing"":2}",20,8,preference-closed-pool-v2
+2895145,할머니의 레시피,200,200_seongdong,"[""with_parents""]","[""부모님과 함께""]","{""with_parents"":1}",20,9,preference-closed-pool-v2
+2488585,헬로우뮤지움,200,200_seongdong,"[""with_kids"",""with_parents""]","[""아이와 함께"",""부모님과 함께""]","{""with_kids"":1,""with_parents"":4}",20,10,preference-closed-pool-v2

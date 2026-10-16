@@ -533,6 +533,11 @@ def _stated_conditions_line(conditions: UserConditions | None) -> str:
         return ""
 
     parts: list[str] = []
+    # **지역이 제일 앞이다.** 카드의 설명문은 이동 출발점(현재 위치)을 이름으로 부르는데,
+    # 이 줄에 검색 지역이 없으면 말풍선이 그 출발점을 지역으로 착각한다 — "강남역 근처
+    # 맛집"에 "사당역 근처에서 골라보았어요"라고 답했다(2026-09-20 실사용).
+    if conditions.search_center:
+        parts.append(f"{conditions.search_center} 근처")
     if conditions.companion is not None:
         parts.append(_COMPANION_LABELS.get(conditions.companion.value, conditions.companion.value))
     if conditions.place_tags:
@@ -580,7 +585,7 @@ def build_recommendation_summary_instruction(
 
 
 def build_place_reason_instruction() -> str:
-    """상세 카드 "AI가 추천하는 이유" 1~2문장 생성용 system instruction.
+    """상세 카드 "AI가 추천하는 이유" 1~3문장 생성용 system instruction.
 
     **페르소나 파일을 꽂지 않는다.** 다른 생성 슬롯과 다른 유일한 점이고 의도다 —
     trivi.md는 886자라 이 호출의 입력을 700토큰가량 늘리는데, 이 슬롯이 클릭당
