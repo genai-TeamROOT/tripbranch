@@ -258,6 +258,13 @@ supabase migration list
   다음 사람이 `db push`를 돌리면 미적용으로 보고 다시 실행하려 할 수 있는데,
   `create table`이라 재실행하면 오류가 난다. 그때는 실행하지 말고 이 줄을 근거로
   건너뛴다.
+- `202610190001_drop_place_embeddings.sql`도 적용 완료 상태다(2026-10-19, MCP
+  `apply_migration`, 원격 이력에는 `20261019222052_drop_place_embeddings`로 기록).
+  취향 근거 벡터를 Pinecone 인덱스 `place-evidence`로 옮긴 뒤(#453·#454·#455)
+  `search_place_evidence` 함수와 `place_embeddings` 테이블(1,117MB, 220,670행)을
+  지웠다. DB 전체가 1,340MB에서 222MB로 줄었다. `place_mood_vectors`와 pgvector
+  확장은 남아 있다. 그래서 `202608180001`~`202609070004` 중 `place_embeddings`·
+  `search_place_evidence`를 만드는 파일들은 이제 기록으로만 남는다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP
