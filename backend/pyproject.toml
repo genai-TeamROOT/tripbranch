@@ -44,7 +44,7 @@ dev = [
   # 기본 의존성에는 넣지 않는다.
   "pyyaml>=6.0",
 ]
-# package_D 취향 근거 RAG 스크립트 전용(scripts/measure_similarity_distribution.py).
+# 취향 근거 검색의 질의 인코더(app/providers/place_evidence_encoder.py) 전용.
 # torch를 끌고 와 설치가 무거워 기본 설치·dev extras에는 안 넣는다. 모델 가중치
 # (jhgan/ko-sroberta-multitask)는 첫 실행 시 Hugging Face Hub에서 자동 다운로드된다.
 embeddings = [

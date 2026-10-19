@@ -2,7 +2,7 @@
 
 적재와 **같은 모델·같은 정규화**를 써야 유사도가 의미를 갖는다. 적재는
 `jhgan/ko-sroberta-multitask`(768차원)로 `normalize_embeddings=True` 상태에서
-했다(scripts/measure_similarity_distribution.py와 동일).
+했다.
 
 `sentence-transformers`는 선택 의존성이다(`pip install -e ".[embeddings]"`).
 torch를 끌고 와 설치가 무겁고, 모델을 서버에 상주시키면 RSS가 약 1.2GB 늘어
