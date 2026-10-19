@@ -1132,7 +1132,7 @@ test("사이드바에서 일정을 열면 전체 페이지로 뜬다", async () 
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "일정" }));
 
-  expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
+  expect(await screen.findByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).toBeInTheDocument();
   // 새 페이지로 갈아치운 것이라 밑에 깔린 홈이 DOM에서 빠진다.
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
   // 뒤로가기 화살표는 그리지 않는다(2026-09-07) — 돌아가는 길은 브라우저

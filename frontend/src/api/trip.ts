@@ -124,11 +124,19 @@ export function fetchRecommendationPlaceDetails(request: {
  * `place_id`가 필수인 것은 서버가 문장의 근거(취향 태그·후기)를 그 id로 다시 읽기
  * 때문이다. `category_label`은 문장이 장소 종류를 잘못 말하지 않게 넘기는 값으로,
  * 카드만 알고 있다(서버가 읽는 상세에는 분류 필드가 없다).
+ *
+ * `matched_preference_codes`는 이번 추천에서 사용자 취향과 맞은 태그 코드
+ * (`preference_tags[].is_query_match`)다. 서버가 상위 3태그만 문장 근거로 넘기는데
+ * 그 순서가 "이 장소에서 많이 언급된 순서"라, 이 값이 없으면 사용자가 말한 취향에
+ * 걸린 태그가 근거에서 통째로 빠질 수 있다. 라벨이나 후기 문장은 보내지 않는다 —
+ * 서버가 저장소에서 다시 읽고, 화면이 주는 것은 고르는 기준(코드)뿐이다.
  */
 export function fetchPlaceAiReason(request: {
   place_id: string;
   place_name: string;
   category_label?: string | null;
+  matched_preference_codes?: string[];
+  taste_query?: string | null;
 }) {
   return apiClient.post<PlaceReasonResponse>("/chat/place-details/reason", request);
 }
@@ -291,6 +299,18 @@ export function fetchFavorites() {
 
 export function replaceFavorites(items: readonly FavoritePlaceItem[]) {
   return apiClient.put<FavoritesResponse>("/favorites", { items });
+}
+
+/*
+ * 회원 탈퇴. **본문이 없는 것이 핵심이다** — 누구를 지울지는 서버가 토큰에서만
+ * 읽는다(backend/app/routes/account.py). 여기서 user_id를 실어 보낼 수 있게
+ * 만들면 그 값이 어딘가에서 바뀌는 순간 남의 계정을 지우게 된다.
+ *
+ * 응답의 건수는 화면에 쓰지 않는다. 사용자에게 "대화 7개를 지웠어요"라고 알릴
+ * 이유가 없고, 실패 조사용으로만 서버가 돌려준다.
+ */
+export function deleteAccount() {
+  return apiClient.del<{ deleted_sessions: number; deleted_schedules: number }>("/account");
 }
 
 /*

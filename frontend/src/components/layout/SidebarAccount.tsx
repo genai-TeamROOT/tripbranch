@@ -42,9 +42,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { LogIn, LogOut, Pencil } from "lucide-react";
+import { LogIn, LogOut, Pencil, UserX } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { identityDisplay, isGuestSession, type IdentityDisplay } from "../../auth/identityLabel";
+import { deleteAccount } from "../../api/trip";
 import { clearLocalUserData } from "../../state/localUserData";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 
@@ -127,6 +128,11 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [nicknameError, setNicknameError] = useState<string | null>(null);
+  /* 탈퇴는 되돌릴 수 없다. 메뉴에서 바로 실행하지 않고 확인 단계를 한 번 거친다 —
+     로그아웃과 같은 자리에 있어서 잘못 누르기 쉽다. */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   /* SavedScheduleList의 이름 바꾸기와 같은 동작이다 — 입력칸이 뜨면 바로 입력할
@@ -146,6 +152,8 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
     setMenuOpen(false);
     setRenaming(false);
     setNicknameError(null);
+    setConfirmingDelete(false);
+    setDeleteError(null);
   }
 
   function startRenaming() {
@@ -176,6 +184,39 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
             : "닉네임을 바꾸지 못했어요.",
       );
     }
+  }
+
+  /*
+   * **서버에서 지운 뒤 반드시 signOut까지 한다.** 토큰 검증은 서명과 만료만 보고
+   * 계정이 아직 있는지는 묻지 않아서(backend/app/auth/verify.py), 계정을 지워도
+   * 이 브라우저의 토큰은 만료까지 그대로 통한다. 그 사이에 요청이 한 번이라도
+   * 나가면 방금 지운 user_id로 행이 다시 생긴다.
+   *
+   * 실패하면 아무것도 정리하지 않는다. 서버가 데이터를 먼저 지우고 계정을 마지막에
+   * 지우므로, 여기서 실패했다면 계정은 살아 있고 다시 누르면 이어서 마칠 수 있다.
+   */
+  async function handleDeleteAccount() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAccount();
+    } catch (accountDeletionError) {
+      setDeleteError(
+        accountDeletionError instanceof Error && accountDeletionError.message
+          ? accountDeletionError.message
+          : isEn
+            ? "Couldn't delete your account."
+            : "탈퇴를 마치지 못했어요.",
+      );
+      setDeleting(false);
+      return;
+    }
+    await signOut();
+    clearLocalUserData();
+    dispatch({ type: "RESET" });
+    setDeleting(false);
+    closeMenu();
+    onNavigate?.();
   }
 
   async function handleSignOut() {
@@ -308,6 +349,57 @@ export function SidebarAccount({ onNavigate, compact = false }: SidebarAccountPr
                     <LogOut size={15} aria-hidden />
                     {isEn ? "Sign out" : "로그아웃"}
                   </button>
+                  {/* 탈퇴는 로그아웃보다 아래, 구분선 뒤에 둔다 — 두 줄이 붙어 있으면
+                      로그아웃을 누르려다 탈퇴를 누른다. */}
+                  <div className="mx-2 my-1 h-px bg-border" />
+                  {confirmingDelete ? (
+                    <div className="flex flex-col gap-2 px-3 py-2">
+                      <p className="text-xs leading-relaxed text-muted">
+                        {isEn
+                          ? "Your account, chats, schedules, preferences and favorites are deleted. This can't be undone."
+                          : "계정과 대화·일정·취향·즐겨찾기가 모두 지워져요. 되돌릴 수 없어요."}
+                      </p>
+                      {deleteError ? (
+                        <p role="alert" className="text-xs leading-relaxed text-rust">
+                          {deleteError}
+                        </p>
+                      ) : null}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingDelete(false)}
+                          disabled={deleting}
+                          className="flex-1 rounded-full border border-border px-3 py-1.5 text-xs font-bold text-ink transition-colors hover:bg-chip disabled:opacity-50"
+                        >
+                          {isEn ? "Cancel" : "취소"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteAccount()}
+                          disabled={deleting}
+                          className="flex-1 rounded-full bg-rust px-3 py-1.5 text-xs font-bold text-white transition-colors disabled:opacity-50"
+                        >
+                          {deleting
+                            ? isEn
+                              ? "Deleting…"
+                              : "탈퇴하는 중…"
+                            : isEn
+                              ? "Delete account"
+                              : "탈퇴하기"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => setConfirmingDelete(true)}
+                      className={`${MENU_ITEM_CLASS} text-muted hover:bg-chip`}
+                    >
+                      <UserX size={15} aria-hidden />
+                      {isEn ? "Delete account" : "회원 탈퇴"}
+                    </button>
+                  )}
                 </div>
               </>
             )}

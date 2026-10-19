@@ -126,21 +126,26 @@ function renderList() {
 }
 
 /*
- * 저장한 일정이 없으면 **아무것도 그리지 않는다.**
+ * 저장한 일정이 없어도 **검색바와 달력은 그린다**(2026-09-16). 저장이 하나 생기는
+ * 순간 이 요소들이 갑자기 나타나면 화면이 다른 구조로 바뀐다 — 틀은 늘 두고
+ * 내용만 비운다.
  *
- * 예전에는 "아직 저장한 일정이 없어요"를 냈는데, 일정도 없고 저장한 것도 없는 첫
- * 화면에서 그 문장이 "아직 짠 일정이 없어요" 바로 아래 붙어 **비었다는 안내가 두
- * 개** 보였다. 비었을 때 무엇을 안내할지는 SchedulePage가 정한다 — 거기만 "지금
- * 일정"과 "저장한 일정"을 둘 다 알고 있다.
+ * **같이 지키는 것이 더 중요하다**: 이때 "조건에 맞는 …이 없어요"는 내지 않는다.
+ * 저장이 0건이라는 안내는 화면(SchedulePage)이 "홈에서 일정 짜기"와 함께 내므로,
+ * 여기서 또 내면 **비었다는 안내가 두 개 겹쳐 보인다** — 예전에 실제로 그랬다.
  */
-test("저장한 일정이 없으면 구획을 통째로 그리지 않는다", async () => {
-  const { container } = renderList();
+test("저장한 일정이 없어도 검색바와 달력은 보이고, 빈 안내는 겹치지 않는다", async () => {
+  renderList();
 
-  /* 위치 표시기(LocationProbe)만 남는다 — 목록 구획은 없다. */
-  await waitFor(() =>
-    expect(screen.queryByRole("textbox", { name: "저장한 일정 검색" })).not.toBeInTheDocument(),
-  );
-  expect(container.querySelector("section")).toBeNull();
+  expect(
+    await screen.findByRole("textbox", { name: "저장한 일정 검색" }),
+  ).toBeInTheDocument();
+  /* 달력 띠가 함께 있는지는 주 이동 버튼으로 본다. */
+  expect(screen.getByRole("button", { name: "지난 주" })).toBeInTheDocument();
+
+  /* 필터 안내는 저장이 있을 때만 낸다. */
+  expect(screen.queryByText("조건에 맞는 저장한 일정이 없어요.")).not.toBeInTheDocument();
+  expect(screen.queryAllByRole("listitem")).toHaveLength(0);
 });
 
 test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", async () => {
@@ -228,7 +233,10 @@ test("대화 목록 없이도 저장한 일정만으로 그려진다", async () 
   server.schedules = [{ ...SEED[0], session_id: null }];
   renderList();
 
-  const list = await screen.findByRole("list");
+  /* 빈 목록일 때도 <ul>은 그려지므로(2026-09-16) findByRole("list")를 로딩
+     대기로 쓸 수 없다 — 데이터가 온 것을 텍스트로 먼저 확인한다. */
+  await screen.findByText("종로 반나절");
+  const list = screen.getByRole("list");
   expect(within(list).getByText("종로 반나절")).toBeInTheDocument();
 });
 

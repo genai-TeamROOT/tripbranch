@@ -236,7 +236,10 @@ function RoadIncidentCountGrid({ counts }: { counts: RoadIncidentCategoryCount[]
   return (
     <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
       {counts.map((item) => (
-        <div key={item.label} className="rounded-xl border border-border/70 bg-chip px-3 py-2.5">
+        /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 같은 카드의 실시간 인구
+           칸(SeoulRealtimeSummarySection)과 같은 규칙이다. 값이 있는 분류는
+           숫자를 rust로 물들여 알리므로, 칸까지 채우면 그 강조가 묻힌다. */
+        <div key={item.label} className="rounded-xl border border-border px-3 py-2.5">
           <p className="truncate text-[11px] font-medium text-muted">{item.label}</p>
           <p
             className={`mt-1 text-lg font-bold leading-tight ${

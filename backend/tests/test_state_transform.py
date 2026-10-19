@@ -6,6 +6,8 @@ docs/design/test-cases.md의 TC-07~09와 conditions-schema.md §5 예시5(place_
 
 from __future__ import annotations
 
+import pytest
+
 from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
@@ -15,6 +17,7 @@ from app.schemas import (
     ModifyPayload,
     ModifyType,
     OutputStatus,
+    PlaceTag,
     RecommendPayload,
     UserConditions,
     WeatherIntent,
@@ -103,16 +106,72 @@ def test_modify_category_replacement_updates_place_types_and_tags_together() -> 
             ),
         ),
         _context(
-            user_conditions=StateUserConditions(
-                place_types=["restaurant"], place_tags=["카페"]
-            )
+            user_conditions=StateUserConditions(place_types=["restaurant"], place_tags=["카페"])
         ),
         "공원도 추천해줘",
     )
 
     operations = {
-        (operation.op, operation.field): operation.value
-        for operation in request.operations
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_types")] == ["attraction"]
+    assert operations[("Update", "place_tags")] == ["공원"]
+
+
+def test_modify_dining_word_narrows_subcategory_even_when_llm_clears_tags() -> None:
+    """앞 턴이 카페여도 "맛집"이라고 말하면 식당으로 좁힌다.
+
+    MODIFY 추출이 place_tags를 비운 채 place_types=[restaurant]만 주면 음식점
+    대분류 전체가 후보가 돼 직전 카페가 다시 올라온다(2026-09-20 실사용:
+    "강남역 근처 맛집"에 빌즈 강남·썸띵어바웃커피가 재등장).
+    """
+
+    request = transform(
+        LLMOutput(
+            intent=Intent.MODIFY,
+            status=OutputStatus.COMPLETE,
+            modify=ModifyPayload(
+                modify_type=ModifyType.CHANGE_CONDITION,
+                condition_changes=UserConditions(
+                    search_center="강남역", place_types=["restaurant"], place_tags=[]
+                ),
+                changed_fields=["search_center", "place_types", "place_tags"],
+            ),
+        ),
+        _context(
+            user_conditions=StateUserConditions(place_types=["restaurant"], place_tags=["카페"])
+        ),
+        "강남역 근처 맛집 추천해줘",
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_types")] == ["restaurant"]
+    assert operations[("Update", "place_tags")] == [PlaceTag.RESTAURANT]
+
+
+def test_modify_without_food_words_keeps_the_extracted_tags() -> None:
+    """음식 업종을 말하지 않은 MODIFY는 보정이 끼어들지 않는다."""
+
+    request = transform(
+        LLMOutput(
+            intent=Intent.MODIFY,
+            status=OutputStatus.COMPLETE,
+            modify=ModifyPayload(
+                modify_type=ModifyType.CHANGE_CONDITION,
+                condition_changes=UserConditions(place_types=["attraction"], place_tags=["공원"]),
+                changed_fields=["place_types", "place_tags"],
+            ),
+        ),
+        _context(
+            user_conditions=StateUserConditions(place_types=["restaurant"], place_tags=["카페"])
+        ),
+        "조용한 곳으로 바꿔줘",
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
     }
     assert operations[("Update", "place_types")] == ["attraction"]
     assert operations[("Update", "place_tags")] == ["공원"]
@@ -183,6 +242,48 @@ def test_recommend_still_uses_update_for_place_types_and_place_tags() -> None:
     ops = {(op.op, op.field): op.value for op in request.operations}
     assert ops[("Update", "place_types")] == ["restaurant"]
     assert ops[("Update", "place_tags")] == ["카페"]
+
+
+@pytest.mark.parametrize("phrase", ["식당 추천해줘", "맛집 찾아줘", "혼밥하기 좋은 곳"])
+def test_explicit_dining_words_are_narrowed_to_dining_subcategory(phrase: str) -> None:
+    request = transform(
+        LLMOutput(
+            intent=Intent.RECOMMEND,
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(conditions=UserConditions(place_types=["restaurant"])),
+        ),
+        _context(),
+        phrase,
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_types")] == ["restaurant"]
+    assert operations[("Update", "place_tags")] == [PlaceTag.RESTAURANT]
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected_tag"),
+    [("카페 추천해줘", PlaceTag.CAFE), ("술집 추천해줘", PlaceTag.BAR)],
+)
+def test_explicit_cafe_and_bar_words_are_narrowed_even_when_llm_omits_tag(
+    phrase: str, expected_tag: PlaceTag
+) -> None:
+    request = transform(
+        LLMOutput(
+            intent=Intent.RECOMMEND,
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(conditions=UserConditions(place_types=["restaurant"])),
+        ),
+        _context(),
+        phrase,
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value for operation in request.operations
+    }
+    assert operations[("Update", "place_tags")] == [expected_tag]
 
 
 def test_recommend_skips_null_and_empty_fields() -> None:
@@ -682,14 +783,11 @@ def _modify_exclude_tags(final: list[str], current: list[str]) -> list[tuple]:
         _context(user_conditions=StateUserConditions(exclude_tags=current)),
         "박물관도 포함해줘",
     )
-    return [
-        (op.op, op.field, op.value if op.has_value else None)
-        for op in request.operations
-    ]
+    return [(op.op, op.field, op.value if op.has_value else None) for op in request.operations]
 
 
 def test_exclude_tags_partial_removal_becomes_remove_operation() -> None:
-    """"박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
+    """ "박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
 
     assert _modify_exclude_tags(["카페"], ["박물관", "카페"]) == [
         ("Remove", "exclude_tags", ["박물관"])
@@ -718,6 +816,4 @@ def test_exclude_tags_unchanged_produces_no_operation() -> None:
 def test_exclude_tags_cleared_still_uses_valueless_remove() -> None:
     """전체 해제는 기존 동작(값 없는 Remove)을 그대로 유지한다."""
 
-    assert _modify_exclude_tags([], ["박물관", "카페"]) == [
-        ("Remove", "exclude_tags", None)
-    ]
+    assert _modify_exclude_tags([], ["박물관", "카페"]) == [("Remove", "exclude_tags", None)]

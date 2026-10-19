@@ -95,17 +95,23 @@ class StateStore(Protocol):
     def delete_saved_places(self, session_id: str) -> None: ...
 
     # -- UserPreferenceList (계정 단위) --
-    # 이 둘만 session_id가 아니라 user_id로 조회한다. 삭제 메서드를 두지 않은
-    # 이유는 "취향을 비운다"가 빈 목록 저장이기 때문이다 — 행을 지우면 다음
-    # 조회에서 "아직 고른 적 없음"과 "다 지웠음"이 구분되지 않는다.
+    # 이 둘만 session_id가 아니라 user_id로 조회한다. **"취향을 비운다"는 여전히
+    # 빈 목록 저장이다** — 행을 지우면 다음 조회에서 "아직 고른 적 없음"과
+    # "다 지웠음"이 구분되지 않기 때문이다.
+    #
+    # delete_preferences는 그 예외다. **탈퇴에는 "다음 조회"가 없다.** 구분할
+    # 주체인 계정이 사라지므로 빈 목록으로 덮으면 user_id만 행에 남는다.
+    # 그래서 화면이 아니라 탈퇴 경로에서만 쓴다(routes/account.py).
     def get_preferences(self, user_id: str) -> UserPreferenceList | None: ...
     def save_preferences(self, preferences: UserPreferenceList) -> None: ...
+    def delete_preferences(self, user_id: str) -> None: ...
 
     # -- UserFavoriteList (계정 단위) --
-    # 취향과 같은 자리의 값이라 같은 모양으로 둔다. 삭제 메서드가 없는 이유도
-    # 같다 — "즐겨찾기를 비운다"는 빈 목록 저장이다.
+    # 취향과 같은 자리의 값이라 같은 모양으로 둔다. 비우기와 삭제를 가르는 이유도
+    # 같다 — "즐겨찾기를 비운다"는 빈 목록 저장이고, delete_favorites는 탈퇴 전용이다.
     def get_favorites(self, user_id: str) -> UserFavoriteList | None: ...
     def save_favorites(self, favorites: UserFavoriteList) -> None: ...
+    def delete_favorites(self, user_id: str) -> None: ...
 
     # -- 사용자의 대화 목록 --
     # 사이드바 채팅 히스토리가 쓴다. 제목이 없는 세션(대화를 시작하지 않고
@@ -116,6 +122,13 @@ class StateStore(Protocol):
     # 버렸다"는 뜻이지 "그 대화가 없었다"는 뜻이 아니고, 지난 대화를 열어
     # 이어가는 것이 이 목록의 목적이다. 거르면 오래된 대화일수록 안 보인다.
     def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]: ...
+
+    # -- 탈퇴용 세션 id 조회 --
+    # 위 목록과 달리 **제목이 없는 세션도 담는다.** 저쪽은 "사용자가 보기에 대화인
+    # 것"을 고르지만, 탈퇴는 남는 행이 없어야 하므로 기준이 다르다. 제목 없는 세션도
+    # user_conditions·recent_turns를 들고 있어 지우지 않으면 개인정보가 남는다.
+    # (2026-09-15 실측: user_id가 붙은 451건 중 200건이 제목이 없다.)
+    def list_session_ids_for_user(self, user_id: str) -> list[str]: ...
 
     # --- ConditionChangeLog (append-only)
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
@@ -243,6 +256,13 @@ class InMemoryStateStore:
         owned.sort(key=lambda state: state.last_active_at, reverse=True)
         return [state.model_copy(deep=True) for state in owned[:limit]]
 
+    def list_session_ids_for_user(self, user_id: str) -> list[str]:
+        return [
+            session_id
+            for session_id, state in self._states.items()
+            if state.user_id == user_id
+        ]
+
     def get_preferences(self, user_id: str) -> UserPreferenceList | None:
         preferences = self._preferences.get(user_id)
         return preferences.model_copy(deep=True) if preferences else None
@@ -250,12 +270,18 @@ class InMemoryStateStore:
     def save_preferences(self, preferences: UserPreferenceList) -> None:
         self._preferences[preferences.user_id] = preferences.model_copy(deep=True)
 
+    def delete_preferences(self, user_id: str) -> None:
+        self._preferences.pop(user_id, None)
+
     def get_favorites(self, user_id: str) -> UserFavoriteList | None:
         favorites = self._favorites.get(user_id)
         return favorites.model_copy(deep=True) if favorites else None
 
     def save_favorites(self, favorites: UserFavoriteList) -> None:
         self._favorites[favorites.user_id] = favorites.model_copy(deep=True)
+
+    def delete_favorites(self, user_id: str) -> None:
+        self._favorites.pop(user_id, None)
 
     # ------------------------------------------------------------ ChangeLog
 

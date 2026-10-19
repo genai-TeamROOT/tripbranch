@@ -1145,7 +1145,7 @@ it("상세 카드는 문장을 기다리지 않는다 — 문장이 오기 전�
   expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
 });
 
-it("AI가 추천하는 이유는 고정 문장 아래에 LLM 문장을 함께 보여준다", async () => {
+it("AI가 추천하는 이유는 LLM 문장만 보여준다 — 고정 문장은 쓰지 않는다", async () => {
   mockedFetch.mockResolvedValue({
     status: "success",
     requested_place_id: "126508",
@@ -1163,13 +1163,48 @@ it("AI가 추천하는 이유는 고정 문장 아래에 LLM 문장을 함께 �
     { wrapper: TripProvider },
   );
 
-  // 고정 문장은 카드가 이미 들고 있어 조회를 기다리지 않는다.
+  // 고정 문장("<축들> 조건을 종합한 N순위 추천이에요.")은 2026-09-16부터 쓰지 않는다.
   expect(
-    screen.getByText("날씨·운영시간·취향 조건을 종합한 4순위 추천이에요."),
-  ).toBeInTheDocument();
+    screen.queryByText("날씨·운영시간·취향 조건을 종합한 4순위 추천이에요."),
+  ).not.toBeInTheDocument();
   expect(
     await screen.findByText("후기에서 고즈넉한 산책로가 자주 언급돼요."),
   ).toBeInTheDocument();
+});
+
+it("사용자 취향과 맞은 태그 코드를 함께 보낸다 — 문장이 그 후기부터 말하도록", async () => {
+  /* 서버는 상위 3태그만 문장 근거로 넘기는데 그 순서가 "이 장소에서 많이 언급된
+     순서"다. 일치 표시를 안 보내면 사용자가 말한 취향에 걸린 태그가 근거에서
+     통째로 빠진다. 추천 카드가 이미 들고 있는 값이라 조회가 더 붙지 않는다. */
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ place_id: "126508", place_name: "경복궁" }),
+  });
+
+  render(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({
+        category_label: "고궁",
+        preference_tags: [
+          { code: "quiet", label: "조용한", mention_count: 5, is_query_match: true },
+          { code: "photo", label: "사진 찍기 좋은", mention_count: 30 },
+        ],
+      })}
+      onClose={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByText("경복궁");
+  await waitFor(() => {
+    expect(mockedReason).toHaveBeenCalledWith({
+      place_id: "126508",
+      place_name: "경복궁",
+      category_label: "고궁",
+      matched_preference_codes: ["quiet"],
+    });
+  });
 });
 
 it("추천 카드로 열 때만 문장을 요청한다", async () => {
@@ -1194,6 +1229,8 @@ it("추천 카드로 열 때만 문장을 요청한다", async () => {
       place_id: "126508",
       place_name: "경복궁",
       category_label: "고궁",
+      // 취향이 안 걸린 턴에서는 빈 목록이다 — 서버가 언급 수 순서를 그대로 쓴다.
+      matched_preference_codes: [],
     });
   });
 });
@@ -1223,10 +1260,12 @@ it("문장이 없는 장소는 그 줄을 접는다 — 자리표시자가 남�
     { wrapper: TripProvider },
   );
 
-  await screen.findByText("거리 조건을 종합한 1순위 추천이에요.");
+  await screen.findByText("경복궁");
   await waitFor(() => {
     expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(0);
   });
+  // 남길 문장이 없으면 제목까지 접는다 — 빈 절이 남지 않는다.
+  expect(screen.queryByText("AI가 추천하는 이유")).not.toBeInTheDocument();
 });
 
 it("문장 생성이 실패해도 그 줄만 접고 카드는 그대로 둔다", async () => {
@@ -1275,7 +1314,7 @@ it("문장이 도착하기 전에는 같은 높이의 자리를 잡아 둔다", 
     { wrapper: TripProvider },
   );
 
-  expect(screen.getByText("거리 조건을 종합한 1순위 추천이에요.")).toBeInTheDocument();
+  expect(screen.queryByText("거리 조건을 종합한 1순위 추천이에요.")).not.toBeInTheDocument();
   await waitFor(() => {
     expect(screen.queryAllByTestId("ai-reason-placeholder")).toHaveLength(1);
   });

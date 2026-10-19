@@ -134,7 +134,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--models", default=None,
-        help="쉼표로 구분한 GENERATION 모델. 비우면 .env의 운영값을 쓴다",
+        help="쉼표로 구분한 판정 모델. 비우면 .env의 운영값(MODE_JUDGE → GENERATION)을 쓴다",
     )
     parser.add_argument(
         "--only", default=None,
@@ -162,7 +162,7 @@ async def main() -> None:
     models = (
         [m.strip() for m in args.models.split(",") if m.strip()]
         if args.models
-        else list(settings.resolved_llm_generation_models)
+        else list(settings.resolved_mode_judge_models)
     )
     segments = _segments()
     baseline = _rule_baseline()
@@ -218,10 +218,13 @@ async def main() -> None:
         print(f"[{model}]")
         provider = RealGeminiProvider(
             api_key=settings.llm_api_key,
-            # 이 호출은 GENERATION만 쓴다(gemini.py::judge_travel_modes).
+            # 이 호출은 판정 전용 묶음만 쓴다(gemini.py::judge_travel_modes,
+            # config.py `mode_judge_model_name`). 생성 묶음에도 같은 모델을 넣어 두는
+            # 것은 판정 묶음을 안 넘긴 옛 호출과 결과가 같게 하려는 것이다.
             # FAST는 운영값 그대로 둔다 — 변수는 하나여야 한다(RULES 함정 48).
             fast_model_names=settings.resolved_llm_fast_models,
             generation_model_names=[model],
+            mode_judge_model_names=[model],
         )
         for name, base_context in _CONDITIONS.items():
             for sequential in (True, False):

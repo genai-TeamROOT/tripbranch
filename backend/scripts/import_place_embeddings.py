@@ -1,4 +1,15 @@
-"""package_D의 place_embeddings.jsonl을 Supabase place_embeddings에 적재한다."""
+"""place_embeddings.jsonl을 검증해 Pinecone 취향 근거 인덱스에 적재한다.
+
+원래는 Supabase `place_embeddings`에 썼다. Supabase를 무료 플랜 용량 안에 넣으려고
+근거 벡터를 Pinecone으로 옮겼고(2026-10, 팀 합의), 서비스도 Pinecone을 읽으므로
+적재도 Pinecone으로 한다. 장소가 활성 상태인지는 여전히 Supabase `places`로 확인한다.
+
+레코드 형식(ID = `chunk_id`, 메타데이터 열)은 `pinecone_records.py`의 `to_record`가
+정한다. Supabase에서 옮겨 온 22만 개와 같은 형식이라, 다시 넣으면 같은 문장이 덮어써진다.
+
+설정: `backend/.env`의 SUPABASE_URL·SUPABASE_SECRET_KEY(장소 확인),
+PINECONE_API_KEY·PINECONE_INDEX_HOST·PINECONE_NAMESPACE(적재).
+"""
 
 from __future__ import annotations
 
@@ -14,15 +25,20 @@ from pathlib import Path
 import httpx
 
 from app.config import Settings
+from scripts.pinecone_records import (
+    PINECONE_API_VERSION,
+    UPSERT_BATCH_SIZE,
+    to_record,
+    upsert_batch,
+)
 
-_UPSERT_CHUNK_SIZE = 200
-# 분산 임베딩 전체 적재 기간에는 HNSW 인덱스를 한 번 제거한 상태에서 200행씩
-# 보낸다. 2026-09-09 서초구 v8 실측에서 HNSW가 있으면 200행 요청이 DB의
-# statement_timeout(57014)으로 11.08초 만에 실패했지만, 인덱스 제거 후에는
-# 같은 요청이 2.36초에 성공했다. 전체 적재가 끝난 뒤 HNSW를 한 번 재생성한다.
-_UPSERT_TIMEOUT_SECONDS = 120.0
-_UPSERT_MAX_ATTEMPTS = 5
+_REQUEST_TIMEOUT_SECONDS = 120.0
 _EMBEDDING_DIM = 768
+# 옛 버전 정리 때 한 번에 조건으로 묶는 장소 수. 장소당 문장이 최대 100여 개라
+# 50곳이면 5,000개 안쪽이다 — 지우기 전에 개수를 세는 질의(topK 상한 10,000)가
+# 한 번에 다 셀 수 있는 크기로 잡았다.
+_REPLACE_PLACE_BATCH = 50
+_PINECONE_TOP_K_LIMIT = 10_000
 # tour_overview는 202609070001 마이그레이션으로 허용됐다(TripBranch 분산
 # 임베딩, 2026-09-07). published_at이 항상 비어 있어(overview는 작성일 개념이
 # 없음) 아래 _parse_published_at은 raw가 없으면 그냥 None을 반환하는 기존
@@ -66,6 +82,7 @@ class PlaceEmbeddingImportResult:
     dry_run: bool
     conflict_key: str
     skipped_existing: int = 0
+    deleted_superseded: int = 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="jsonl과 장소 참조만 검증하고 테이블은 수정하지 않음",
+        help="jsonl과 장소 참조만 검증하고 Pinecone에는 보내지 않음",
     )
     parser.add_argument(
         "--replace-existing",
@@ -326,27 +343,101 @@ async def _validate_active_places(
         )
 
 
+def _check_chunk_ids_unique_across_places(payloads: Sequence[dict[str, object]]) -> None:
+    """같은 chunk_id가 서로 다른 장소에 나오면 멈춘다.
+
+    Supabase는 (content_id, chunk_id) 쌍이 고유했지만 Pinecone 레코드 ID는 chunk_id
+    하나다. 겹치면 나중에 보낸 장소의 문장이 앞 장소의 문장을 오류 없이 덮어쓴다.
+    (2026-10-16 확인: 이관한 220,670행에는 겹침이 없었다.)
+    """
+    owner: dict[str, str] = {}
+    conflicts: list[str] = []
+    for payload in payloads:
+        chunk_id = str(payload["chunk_id"])
+        content_id = str(payload["content_id"])
+        previous = owner.setdefault(chunk_id, content_id)
+        if previous != content_id:
+            conflicts.append(f"{chunk_id}({previous}, {content_id})")
+    if conflicts:
+        raise ValueError(
+            "서로 다른 장소에 같은 chunk_id가 있습니다: " + ", ".join(conflicts[:20])
+            + (f" 외 {len(conflicts) - 20}건" if len(conflicts) > 20 else "")
+        )
+
+
+def _superseded_filter(content_ids: Sequence[str], embedding_version: str) -> dict[str, object]:
+    """이 장소들 가운데 새 버전이 아닌 문장을 고르는 조건.
+
+    `embedding_version`이 없는 문장(종로구 구버전 40,389행)도 옛 버전이다. Pinecone
+    문서는 `$ne`가 필드 없는 레코드에 걸리는지 밝히지 않아서 `$exists: false`를
+    따로 건다. Supabase 시절 조건 `embedding_version.is.null or neq`와 같은 뜻이다.
+    """
+    return {
+        "$and": [
+            {"content_id": {"$in": list(content_ids)}},
+            {
+                "$or": [
+                    {"embedding_version": {"$exists": False}},
+                    {"embedding_version": {"$ne": embedding_version}},
+                ]
+            },
+        ]
+    }
+
+
+def _pinecone_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Api-Key": api_key,
+        "Content-Type": "application/json",
+        "X-Pinecone-Api-Version": PINECONE_API_VERSION,
+    }
+
+
 async def _delete_superseded_versions(
     client: httpx.AsyncClient,
     *,
+    host: str,
+    api_key: str,
+    namespace: str,
     content_ids: Sequence[str],
-    model_name: str,
     embedding_version: str,
-) -> None:
-    """새 적재 성공 뒤 해당 구·모델의 과거 버전만 작은 배치로 제거한다."""
-    for start in range(0, len(content_ids), 100):
-        chunk = content_ids[start : start + 100]
-        quoted = ",".join(f'"{value}"' for value in chunk)
-        response = await client.delete(
-            "/rest/v1/place_embeddings",
-            params={
-                "content_id": f"in.({quoted})",
-                "model_name": f"eq.{model_name}",
-                "or": f"(embedding_version.is.null,embedding_version.neq.{embedding_version})",
+) -> int:
+    """새 적재 성공 뒤 해당 구의 과거 버전만 지운다. 지운 문장 수를 돌려준다.
+
+    지우기 전에 같은 조건으로 질의해 개수를 센다. 조건이 생각과 다르게 걸리면(예:
+    새 버전까지 걸리면) 숫자로 바로 드러나게 하려는 것이다.
+    """
+    # 질의에는 벡터가 꼭 필요하다. 개수만 세므로 어느 방향이든 상관없고, 코사인은
+    # 영벡터를 받지 않으므로 단위 벡터를 쓴다.
+    probe = [1 / _EMBEDDING_DIM**0.5] * _EMBEDDING_DIM
+    deleted = 0
+    for start in range(0, len(content_ids), _REPLACE_PLACE_BATCH):
+        chunk = content_ids[start : start + _REPLACE_PLACE_BATCH]
+        flt = _superseded_filter(chunk, embedding_version)
+        response = await client.post(
+            f"https://{host}/query",
+            json={
+                "vector": probe,
+                "topK": _PINECONE_TOP_K_LIMIT,
+                "filter": flt,
+                "includeMetadata": False,
+                "includeValues": False,
+                "namespace": namespace,
             },
-            headers={"Prefer": "return=minimal"},
+            headers=_pinecone_headers(api_key),
         )
         response.raise_for_status()
+        matched = len(response.json().get("matches") or [])
+        if matched == 0:
+            continue
+        response = await client.post(
+            f"https://{host}/vectors/delete",
+            json={"filter": flt, "namespace": namespace},
+            headers=_pinecone_headers(api_key),
+        )
+        response.raise_for_status()
+        deleted += matched
+    return deleted
 
 
 async def run(
@@ -357,10 +448,27 @@ async def run(
         raise ValueError("SUPABASE_URL이 필요합니다.")
     if not settings.supabase_secret_key:
         raise ValueError("SUPABASE_SECRET_KEY가 필요합니다.")
+    # dry-run은 Pinecone에 보내지 않으므로 키 없이도 검증할 수 있어야 한다.
+    if not args.dry_run:
+        if not settings.pinecone_api_key:
+            raise ValueError("PINECONE_API_KEY가 필요합니다.")
+        if not settings.pinecone_index_host:
+            raise ValueError("PINECONE_INDEX_HOST가 필요합니다.")
 
     payloads, row_count, duplicate_count, published_at_nulled = load_embedding_payloads(
         args.jsonl
     )
+    _check_chunk_ids_unique_across_places(payloads)
+    records = []
+    for payload in payloads:
+        record = to_record(payload)
+        if record is None:
+            # load_embedding_payloads가 chunk_id·content_id·768차원을 이미 검사했으므로
+            # 여기 오면 두 스크립트의 레코드 규칙이 어긋난 것이다.
+            label = f"{payload['content_id']}/{payload['chunk_id']}"
+            raise ValueError(f"{label}: Pinecone 레코드로 바꿀 수 없습니다.")
+        records.append(record)
+
     headers = {
         "apikey": settings.supabase_secret_key,
         "Authorization": f"Bearer {settings.supabase_secret_key}",
@@ -368,100 +476,69 @@ async def run(
     async with httpx.AsyncClient(
         base_url=settings.supabase_url.rstrip("/"),
         headers=headers,
-        timeout=_UPSERT_TIMEOUT_SECONDS,
+        timeout=_REQUEST_TIMEOUT_SECONDS,
     ) as client:
         await _validate_active_places(client, payloads)
-        if not args.dry_run:
-            conflict_key = "content_id,chunk_id"
-            replace_scope_ids: list[str] | None = None
-            replace_model_name: str | None = None
-            replace_embedding_version: str | None = None
-            if args.replace_existing:
-                if args.scope_content_ids is None:
-                    raise ValueError(
-                        "--replace-existing에는 --scope-content-ids "
-                        "place_catalog.csv가 필요합니다."
-                    )
-                model_names = {str(payload["model_name"]) for payload in payloads}
-                if len(model_names) != 1:
-                    raise ValueError("교체 적재 파일에는 model_name이 하나만 있어야 합니다.")
-                embedding_versions = {
-                    str(payload.get("embedding_version") or "") for payload in payloads
-                }
-                if len(embedding_versions) != 1 or not next(iter(embedding_versions)):
-                    raise ValueError(
-                        "교체 적재 파일에는 비어 있지 않은 "
-                        "embedding_version 하나가 필요합니다."
-                    )
-                replace_scope_ids = _load_scope_content_ids(args.scope_content_ids)
-                replace_model_name = next(iter(model_names))
-                replace_embedding_version = next(iter(embedding_versions))
-            total_chunks = (len(payloads) + _UPSERT_CHUNK_SIZE - 1) // _UPSERT_CHUNK_SIZE
-            for chunk_index, start in enumerate(
-                range(0, len(payloads), _UPSERT_CHUNK_SIZE), start=1
+
+    replace_scope_ids: list[str] | None = None
+    replace_embedding_version: str | None = None
+    if not args.dry_run and args.replace_existing:
+        if args.scope_content_ids is None:
+            raise ValueError(
+                "--replace-existing에는 --scope-content-ids place_catalog.csv가 필요합니다."
+            )
+        model_names = {str(payload["model_name"]) for payload in payloads}
+        if len(model_names) != 1:
+            raise ValueError("교체 적재 파일에는 model_name이 하나만 있어야 합니다.")
+        embedding_versions = {str(payload.get("embedding_version") or "") for payload in payloads}
+        if len(embedding_versions) != 1 or not next(iter(embedding_versions)):
+            raise ValueError(
+                "교체 적재 파일에는 비어 있지 않은 embedding_version 하나가 필요합니다."
+            )
+        replace_scope_ids = _load_scope_content_ids(args.scope_content_ids)
+        replace_embedding_version = next(iter(embedding_versions))
+
+    deleted_count = 0
+    if not args.dry_run:
+        host = settings.pinecone_index_host.strip().removeprefix("https://").rstrip("/")
+        api_key = settings.pinecone_api_key
+        namespace = settings.pinecone_namespace
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
+            total_batches = (len(records) + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
+            for batch_index, start in enumerate(
+                range(0, len(records), UPSERT_BATCH_SIZE), start=1
             ):
-                chunk = payloads[start : start + _UPSERT_CHUNK_SIZE]
-                for attempt in range(1, _UPSERT_MAX_ATTEMPTS + 1):
-                    response = await client.post(
-                        "/rest/v1/place_embeddings",
-                        params={"on_conflict": conflict_key},
-                        headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
-                        json=chunk,
-                    )
-                    if response.status_code < 400:
-                        break
-
-                    # HNSW 인덱스 갱신 중 Postgres statement_timeout(57014)이
-                    # 간헐적으로 발생할 수 있다. 같은 upsert는 chunk_id 기준으로
-                    # 멱등이므로 짧게 기다린 뒤 해당 배치만 안전하게 재시도한다.
-                    statement_timeout = (
-                        response.status_code >= 500
-                        and ("57014" in response.text or "statement timeout" in response.text)
-                    )
-                    if statement_timeout and attempt < _UPSERT_MAX_ATTEMPTS:
-                        wait_seconds = min(2**attempt, 10)
-                        print(
-                            f"  배치 {chunk_index}/{total_chunks} statement timeout — "
-                            f"{wait_seconds}초 후 재시도 "
-                            f"({attempt}/{_UPSERT_MAX_ATTEMPTS})"
-                        )
-                        await asyncio.sleep(wait_seconds)
-                        continue
-
-                    # PostgREST 오류 본문에는 실제 원인(제약 이름, 타입 불일치 등)이
-                    # 담겨 있는데 raise_for_status()만 부르면 그 내용이 사라진다.
-                    print(
-                        f"  배치 {chunk_index}/{total_chunks} 실패 "
-                        f"(HTTP {response.status_code}, 시도 {attempt})"
-                    )
-                    print(f"  응답 본문: {response.text[:2000]}")
-                    response.raise_for_status()
-                else:  # pragma: no cover - 마지막 실패는 위에서 예외 처리된다.
-                    raise RuntimeError(f"배치 {chunk_index}/{total_chunks} 적재 실패")
-                if chunk_index % 20 == 0 or chunk_index == total_chunks:
-                    print(f"  적재 {chunk_index}/{total_chunks} 배치 완료")
+                # upsert_batch가 429·5xx를 재시도하고, 그 밖의 오류는 응답 본문과 함께 멈춘다.
+                await upsert_batch(
+                    client, host, api_key, namespace, records[start : start + UPSERT_BATCH_SIZE]
+                )
+                if batch_index % 20 == 0 or batch_index == total_batches:
+                    print(f"  적재 {batch_index}/{total_batches} 배치 완료")
             # 새 버전 전체가 정상 적재된 뒤에만 과거 버전을 제거한다. 선삭제 후
             # 적재 실패로 검색 데이터가 비는 상황을 피한다.
             if replace_scope_ids is not None:
-                await _delete_superseded_versions(
+                deleted_count = await _delete_superseded_versions(
                     client,
+                    host=host,
+                    api_key=api_key,
+                    namespace=namespace,
                     content_ids=replace_scope_ids,
-                    model_name=replace_model_name or "",
                     embedding_version=replace_embedding_version or "",
                 )
-                print(f"  과거 임베딩 버전 정리 완료: {len(replace_scope_ids)}개 장소")
-
-    if args.dry_run:
-        conflict_key = "content_id,chunk_id"
+                print(
+                    f"  과거 임베딩 버전 정리 완료: {len(replace_scope_ids)}개 장소, "
+                    f"{deleted_count}개 문장 삭제"
+                )
 
     return PlaceEmbeddingImportResult(
         jsonl_row_count=row_count,
         payload_count=len(payloads),
         duplicate_keys=duplicate_count,
         published_at_nulled=published_at_nulled,
-        imported_count=0 if args.dry_run else len(payloads),
+        imported_count=0 if args.dry_run else len(records),
         dry_run=args.dry_run,
-        conflict_key=conflict_key,
+        conflict_key="pinecone:chunk_id",
+        deleted_superseded=deleted_count,
     )
 
 

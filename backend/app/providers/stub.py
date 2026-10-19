@@ -1154,6 +1154,9 @@ class FakeLLMProvider:
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
+        taste_query: str | None = None,
+        taste_evidence: Sequence[str] = (),
     ) -> ProviderResult[str]:
         """결정적 한 문장. 상위 태그 라벨을 그대로 이어 붙인다.
 
@@ -1162,7 +1165,17 @@ class FakeLLMProvider:
         태그가 실제로 넘어왔는지만 눈으로 확인할 수 있게 나열한다.
         """
 
-        labels = [insight.label for insight in insights[:3] if insight.label]
+        if taste_query and taste_evidence:
+            return provider_result(
+                f"후기에서 {taste_query}와 관련해 언급된 내용이에요.",
+                source=ProviderSource.FAKE_LLM,
+            )
+
+        # 실제 구현과 같은 순서로 고른다 — 사용자 취향과 맞은 태그가 먼저다.
+        # Fake로 띄운 화면에서도 "취향이 앞에 오는지"를 눈으로 볼 수 있어야 한다.
+        matched = {code.strip() for code in matched_preference_codes if code.strip()}
+        ordered = sorted(insights, key=lambda insight: insight.code not in matched)
+        labels = [insight.label for insight in ordered[:3] if insight.label]
         if not labels:
             return provider_result("", source=ProviderSource.FAKE_LLM)
         return provider_result(

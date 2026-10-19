@@ -18,8 +18,6 @@ from app.domain.models import (
     DistrictPlaceRow,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
-    PlaceEvidenceMatch,
-    PlaceEvidenceSnippet,
     PlaceMoodMatch,
     PlaceMoodProfile,
     PlacePhoto,
@@ -33,13 +31,11 @@ from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
 from app.providers.tour_category_registry import TourCategoryRegistry, get_tour_category_registry
 from app.service_area import SUPPORTED_DISTRICT_CODES, is_plausible_seoul_coordinate
 
-# search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
-# 던진다 — 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다.
-_MAX_EVIDENCE_CANDIDATES = 500
-
-# search_place_mood도 같은 상한을 둔다. 이유는 다르다 — place_mood_vectors는
-# 장소당 한 행이라 종로구만 적재한 지금 631행이고 전체를 훑어도 빠르지만,
-# 후보 배열로 좁히면 HNSW 인덱스를 못 타고 순차 스캔이 된다.
+# search_place_mood RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를 던진다 —
+# 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다. 상한을 둔
+# 이유는 place_mood_vectors가 장소당 한 행이라 종로구만 적재한 지금 631행이고
+# 전체를 훑어도 빠르지만, 후보 배열로 좁히면 HNSW 인덱스를 못 타고 순차 스캔이
+# 되기 때문이다.
 _MAX_MOOD_CANDIDATES = 500
 
 # 발화 경로가 한 번에 읽는 장소 수. PostgREST의 in 필터는 URL에 그대로 실려서
@@ -574,9 +570,7 @@ class SupabasePlaceRepository:
                         "polarity": str(row.get("polarity") or "mixed"),
                         "text": str(row.get("evidence_text") or ""),
                         "source_type": str(row.get("source_type") or ""),
-                        "source_url": (
-                            str(row["source_url"]) if row.get("source_url") else None
-                        ),
+                        "source_url": (str(row["source_url"]) if row.get("source_url") else None),
                     }
                 )
         insights: list[dict[str, object]] = []
@@ -615,7 +609,11 @@ class SupabasePlaceRepository:
                 "/place_preference_tags",
                 params={
                     "select": (
-                        "content_id,preference_code,preference_label,display_rank,mention_count"
+                        "content_id,preference_code,preference_label,display_rank,"
+                        # 채점이 쓰는 값이다(scoring.py::match_preference_tags).
+                        # confidence는 적재가 이미 계산해 둔 0~1 강도이고,
+                        # 긍정·부정 문서 수는 부정이 우세한 태그를 가려내는 데 쓴다.
+                        "mention_count,positive_document_count,negative_document_count,confidence"
                     ),
                     "content_id": "in.(" + ",".join(chunk) + ")",
                     "order": "content_id.asc,display_rank.asc",
@@ -635,43 +633,6 @@ class SupabasePlaceRepository:
                     raise SupabaseRepositoryError("preference tag missing content_id")
                 grouped.setdefault(content_id, []).append(dict(row))
         return {content_id: tuple(rows) for content_id, rows in grouped.items()}
-
-    async def search_place_evidence(
-        self,
-        query_embedding: Sequence[float],
-        candidate_content_ids: Sequence[str],
-        *,
-        match_count: int,
-        min_similarity: float,
-    ) -> tuple[PlaceEvidenceMatch, ...]:
-        """취향 질의 임베딩으로 후보 범위 안에서만 근거 문장을 찾는다.
-
-        후보를 좁히지 않으면 RPC가 전체 행을 훑어 수 초가 걸리므로(2026-08-18
-        실측: 200~400건 100~300ms, 844건 6~9초) 상한을 여기서 먼저 막는다.
-        """
-        unique_ids = list(dict.fromkeys(candidate_content_ids))
-        if not unique_ids:
-            return ()
-        if len(unique_ids) > _MAX_EVIDENCE_CANDIDATES:
-            raise SupabaseRepositoryError(
-                f"후보 content_id가 {len(unique_ids)}건입니다. "
-                f"{_MAX_EVIDENCE_CANDIDATES}건 이하로 좁혀서 호출하세요."
-            )
-
-        response = await self._request(
-            "POST",
-            "/rpc/search_place_evidence",
-            json={
-                "p_query_embedding": list(query_embedding),
-                "p_candidate_content_ids": unique_ids,
-                "p_match_count": match_count,
-                "p_min_similarity": min_similarity,
-            },
-        )
-        payload = self._json(response)
-        if not isinstance(payload, list):
-            raise SupabaseRepositoryError("invalid search_place_evidence response")
-        return tuple(_to_evidence_match(row) for row in payload)
 
     async def find_mood_profiles(
         self,
@@ -824,9 +785,7 @@ class SupabasePlaceRepository:
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
                 "p_needs": [need.value for need in unique_needs],
-                "p_content_type_id": (
-                    category_filter.content_type_id if category_filter else None
-                ),
+                "p_content_type_id": (category_filter.content_type_id if category_filter else None),
                 "p_lcls_systm1": category_filter.lcls_systm1 if category_filter else None,
                 "p_lcls_systm2": category_filter.lcls_systm2 if category_filter else None,
                 "p_lcls_systm3": category_filter.lcls_systm3 if category_filter else None,
@@ -1354,9 +1313,7 @@ class SupabasePlaceRepository:
                         if isinstance(raw.get("operating_schedule"), dict)
                         else None
                     ),
-                    operating_parser_version=_optional_text(
-                        raw.get("operating_parser_version")
-                    ),
+                    operating_parser_version=_optional_text(raw.get("operating_parser_version")),
                     **_barrier_free_fields(raw.get("place_barrier_free")),
                 )
         return details
@@ -2257,37 +2214,6 @@ def _category_label(
 def _bump(counter: dict[str, int], value: object) -> None:
     key = str(value) if value is not None else "null"
     counter[key] = counter.get(key, 0) + 1
-
-
-def _to_evidence_match(row: object) -> PlaceEvidenceMatch:
-    if not isinstance(row, Mapping):
-        raise SupabaseRepositoryError("invalid evidence row")
-    raw_snippets = row.get("evidence")
-    snippets = (
-        tuple(_to_evidence_snippet(item) for item in raw_snippets)
-        if isinstance(raw_snippets, list)
-        else ()
-    )
-    return PlaceEvidenceMatch(
-        content_id=str(row["content_id"]),
-        place_title=str(row.get("place_title") or ""),
-        avg_similarity=float(row["avg_similarity"]),
-        snippets=snippets,
-    )
-
-
-def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
-    if not isinstance(item, Mapping):
-        raise SupabaseRepositoryError("invalid evidence snippet")
-    published_at = item.get("published_at")
-    return PlaceEvidenceSnippet(
-        source_text=str(item.get("source_text") or ""),
-        source_url=str(item["source_url"]) if item.get("source_url") else None,
-        similarity=float(item["similarity"]),
-        published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
-        source_type=str(item["source_type"]) if item.get("source_type") else None,
-        document_id=str(item["document_id"]) if item.get("document_id") else None,
-    )
 
 
 def _to_district_place_row(row: object) -> DistrictPlaceRow | None:

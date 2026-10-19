@@ -335,7 +335,7 @@ class Settings(BaseSettings):
     llm_generation_model_name: str = "gemini-3.5-flash"
     llm_generation_fallback_model_names: str = "gemini-3.5-flash-lite"
 
-    # 장소 상세 카드의 "AI가 추천하는 이유" 1~2문장 생성 전용 모델 묶음.
+    # 장소 상세 카드의 "AI가 추천하는 이유" 1~3문장 생성 전용 모델 묶음.
     #
     # **세 번째 티어를 만든 이유**는 이 호출이 fast·generation 어느 쪽 특성도 아니기
     # 때문이다. 판단이 아니라 문장 생성이라 fast(구조화 판단)가 아니고, 사용자가
@@ -354,6 +354,34 @@ class Settings(BaseSettings):
     # 끄면 상세 카드가 기존 고정 문장만 보여준다. LLM 호출이 통째로 사라지므로
     # 비용·지연 회수의 손잡이이자, 문장 품질 문제가 생겼을 때의 즉시 차단 수단이다.
     place_reason_enabled: bool = True
+
+    # 구간 이동수단 판정(judge_travel_modes) 전용 모델 묶음. 일정 구간과 추천 후보가
+    # 같은 판정을 쓴다(TP-227).
+    #
+    # 떼어낸 이유는 generation 스위치 하나가 일정 편성·답변 등 호출 9개를 묶고 있어서,
+    # 이 판정에 맞는 모델로 바꾸면 답변 품질까지 함께 바뀌기 때문이다. 비우면 generation
+    # 묶음을 그대로 따른다.
+    #
+    # 기본값 gemini-3.1-flash-lite의 근거는 실측이다(2026-09-15, 34입력 × 5회, 추론
+    # MINIMAL). 3.5-flash와 채점 칸 틀림이 0 대 0으로 같고, 흔들림 0 대 2, p50 0.97초 대
+    # 1.31초, 1,000호출당 $0.47 대 $2.83이다. test_results/mode_judge_thinking_2026-09-14/,
+    # test_results/mode_judge_prompt_ablation_2026-09-15/.
+    #
+    # **이 판정에만 해당한다.** 같은 모델이 FAST 티어에서는 탈락했다 — 조건 추출은 대등하지만
+    # 문맥 없는 첫 턴 `비 와서 실내로 바꿔줘`를 MODIFY로 5/5 분류한다
+    # (test_results/classify_gap_2026-09-15/, extract_homonym_2026-09-15/, fast_tier_2026-09-15/).
+    #
+    # **비워 두지 않고 기본값을 둔 이유는 프롬프트와의 짝 때문이다.** mode_judge.select
+    # 1.1.0이 추가한 문장은 3.1-lite의 첫 줄 불일치를 없애지만, 3.5-flash에서는 추천
+    # 판정의 흔들림을 2에서 5로 늘린다. 기본값이 비어 있으면 레포 프롬프트를 읽는 환경
+    # (LANGFUSE_PROMPTS_ENABLED=false)이 머지 순간 "1.1.0 + generation 모델"이라는 잰 적
+    # 없는 나쁜 조합이 된다. 기본값을 3.1-lite로 두면 어느 순서로 배포돼도 조합이
+    # "3.1-lite + 1.0.0"(잰 결과: 틀림 0 · 흔들림 0) 아니면 "3.1-lite + 1.1.0"이다.
+    mode_judge_model_name: str | None = "gemini-3.1-flash-lite"
+    # 비우면 generation 묶음 전체(지금 운영 모델)를 폴백으로 쓴다. 주 모델과 겹치는 이름은
+    # 빠진다. `.env`의 빈 값은 설정하지 않은 것으로 읽히므로(env_ignore_empty) 폴백을 끄는
+    # 방법은 없다 — 폴백까지 실패하면 호출부가 거리 규칙으로 되돌리므로 끌 이유도 없다.
+    mode_judge_fallback_model_names: str | None = None
 
     # 음성 입력을 텍스트로 바꿀 때 사용할 Gemini 모델. 음성 전사는 채팅 답변 생성과
     # 독립 호출이라, 비용·지연 특성에 맞는 멀티모달 모델을 따로 둔다. gemini-3.5-flash는
@@ -387,6 +415,15 @@ class Settings(BaseSettings):
     kakao_map_rest_api_key: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
+    # 취향 근거 벡터 검색 저장소(Pinecone). Supabase를 무료 플랜 용량 안에 넣으려고
+    # place_embeddings를 옮겼다(2026-10, 팀 합의). 인덱스 이름이 아니라 호스트를 받는
+    # 이유는, 이름만 있으면 호스트를 알아내려고 관리 API를 한 번 더 불러야 하기
+    # 때문이다. 호스트는 Pinecone 콘솔의 인덱스 화면에 있다.
+    pinecone_api_key: str = Field(default="", repr=False, exclude=True)
+    pinecone_index_host: str = ""
+    # 비우면 기본 네임스페이스. 적재 스크립트(import_place_embeddings)가
+    # 넣은 곳과 같아야 한다 — 다르면 오류 없이 검색 결과가 0건이 된다.
+    pinecone_namespace: str = ""
 
     # Real provider HTTP behavior (ignored by fake providers).
     external_api_timeout_seconds: float = 10.0
@@ -523,6 +560,20 @@ class Settings(BaseSettings):
             self.place_reason_model_name,
             self.place_reason_fallback_model_names,
         )
+
+    @property
+    def resolved_mode_judge_models(self) -> list[str]:
+        """구간 이동수단 판정에 사용할 Gemini 시도 순서. 미설정 시 generation과 같다."""
+        if not self.mode_judge_model_name:
+            return self.resolved_llm_generation_models
+        if self.mode_judge_fallback_model_names is None:
+            models = [self.mode_judge_model_name, *self.resolved_llm_generation_models]
+        else:
+            models = self._model_list(
+                self.mode_judge_model_name, self.mode_judge_fallback_model_names
+            )
+        # 같은 모델을 두 번 시도하는 것은 폴백이 아니라 재시도다.
+        return list(dict.fromkeys(models))
 
     @property
     def resolved_gemini_audio_model_name(self) -> str:

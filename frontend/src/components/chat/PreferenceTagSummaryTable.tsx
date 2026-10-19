@@ -70,19 +70,51 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
                   {item.name}
                 </th>
                 <td className="px-4 py-2.5">
-                  <div className="flex flex-nowrap gap-1.5">
+                  {/*
+                    **좁은 화면에서는 태그가 다음 줄로 내려간다(2026-09-16).**
+
+                    전에는 flex-nowrap이었다. 표가 table-fixed에 장소 칸이 w-1/3이라
+                    태그 칸 너비가 화면에 따라 고정되는데, 칩은 whitespace-nowrap이라
+                    줄바꿈도 축소도 하지 않는다. 그래서 넘친 만큼을 바깥 카드의
+                    overflow-hidden(둥근 모서리용)이 **말없이 잘라냈다.** 스크롤도
+                    안 되니 둘째 태그를 볼 방법이 아예 없었다.
+
+                    실측(태그 문구 실제 값 기준):
+                      기기 390px → 태그 칸 205px, 칩 247~253px, 20~31px 잘림
+                      기기 360px → 185px 칸에 40~51px 잘림
+                      기기 320px → 159px 칸에 66~77px 잘림
+                    390px에서 이미 모든 행의 둘째 태그가 잘렸다.
+
+                    줄바꿈을 허용하면 280px까지 넘침이 0이다. 대가는 높이다 —
+                    행 44px → 74px(3행 기준 표 133px → 222px). 장소 칸을 좁혀
+                    한 줄에 맞추는 안도 재봤지만, w-1/5까지 줄여야 들어가고
+                    그러면 장소명이 서너 줄로 깨져서 접었다.
+                  */}
+                  <div className="flex flex-wrap gap-1.5">
                     {item.preference_tags?.slice(0, 2).map((tag) => (
                       <span
                         key={tag.code}
                         data-query-match={tag.is_query_match ? "true" : undefined}
+                        /*
+                          질문에 걸린 태그만 브랜드 색으로 **채운다**(2026-09-16).
+                          나머지는 바탕도 테두리도 없이 브랜드 색 글자만 남는다.
+                          색은 한 가지고 채움 여부만 다르므로 "이 줄에서 무엇이
+                          답인가"가 한눈에 읽힌다.
+
+                          전에는 걸린 것이 옅은 브랜드 배경, 나머지가 하늘색 배경이라
+                          색이 두 갈래로 갈렸다.
+                        */
                         className={`flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          tag.is_query_match
-                            ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/30"
-                            : "bg-sky-light text-label"
+                          tag.is_query_match ? "bg-brand text-white" : "bg-white text-brand"
                         }`}
                       >
                         {tag.label}
-                        <span className="font-normal text-muted">({tag.mention_count})</span>
+                        {/*
+                          개수는 칩의 색과 굵기를 그대로 물려받는다. 전에는 회색
+                          가는 글씨였는데, 채운 칩 위에서 대비가 떨어져 읽히지 않았다.
+                          따로 감싸 두는 것은 개수만 집어낼 수 있게 하기 위해서다.
+                        */}
+                        <span>({tag.mention_count})</span>
                       </span>
                     ))}
                   </div>

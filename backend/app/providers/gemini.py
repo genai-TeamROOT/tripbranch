@@ -53,6 +53,7 @@ from app.schemas import (
     UserConditions,
 )
 from app.services.runtime.llm_execution import record_llm_call
+from app.services.runtime.recommendation_transform import to_search_radius_km
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -439,6 +440,7 @@ class RealGeminiProvider:
         fast_model_names: list[str] | None = None,
         generation_model_names: list[str] | None = None,
         place_reason_model_names: list[str] | None = None,
+        mode_judge_model_names: list[str] | None = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
@@ -454,6 +456,9 @@ class RealGeminiProvider:
         # 상세 카드 추천 이유 전용 티어. 안 넘기면 생성 묶음을 그대로 쓴다 —
         # 이 티어를 모르는 기존 생성자 호출(테스트 다수)이 그대로 돌아야 한다.
         self._place_reason_model_names = place_reason_model_names or self._generation_model_names
+        # 구간 이동수단 판정 전용 묶음. 안 넘기면 생성 묶음을 그대로 쓴다 — 추천 이유 티어와
+        # 같은 이유다(config.py `mode_judge_model_name`).
+        self._mode_judge_model_names = mode_judge_model_names or self._generation_model_names
         if not self._fast_model_names or not self._generation_model_names:
             raise ValueError("빠른 판단·응답 생성 모델은 각각 최소 1개 이상이어야 합니다.")
         self._client = genai.Client(
@@ -762,15 +767,7 @@ class RealGeminiProvider:
         instruction = gemini_prompts.build_recommendation_summary_instruction(
             intent, conditions=conditions
         )
-        payload = {
-            "recommendations": [
-                self._recommendation_summary_item(item)
-                for item in [
-                    *recommendations.recommendations,
-                    *recommendations.unverified_recommendations,
-                ]
-            ]
-        }
+        payload = self._recommendation_summary_payload(recommendations, conditions)
         result = await self._call_structured(
             instruction,
             json.dumps(payload, ensure_ascii=False),
@@ -788,7 +785,7 @@ class RealGeminiProvider:
     # 저장소는 한 장소에 태그 5개와 근거 최대 30건(각 500자)을 준다
     # (`find_preference_insights`). 그걸 그대로 넘기면 입력이 5,000토큰을 넘어가
     # 클릭당 호출로 아낀 것이 통째로 사라진다 — 상한이 이 기능의 비용 설계다.
-    # 1~2문장을 쓰는 데 상위 3태그 × 1문장이면 충분하다는 것은 실측으로 확인했다
+    # 1~3문장을 쓰는 데 상위 3태그 × 1문장이면 충분하다는 것은 실측으로 확인했다
     # (2026-09-09: 태그 3개·근거 2문장으로 입력 494토큰).
     _REASON_MAX_TAGS = 3
     _REASON_MAX_EVIDENCE_PER_TAG = 1
@@ -800,10 +797,18 @@ class RealGeminiProvider:
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
+        taste_query: str | None = None,
+        taste_evidence: Sequence[str] = (),
     ) -> ProviderResult[str]:
         instruction = gemini_prompts.build_place_reason_instruction()
         payload = self._place_reason_payload(
-            place_name=place_name, category_label=category_label, insights=insights
+            place_name=place_name,
+            category_label=category_label,
+            insights=insights,
+            matched_preference_codes=matched_preference_codes,
+            taste_query=taste_query,
+            taste_evidence=taste_evidence,
         )
         result = await self._call_structured(
             instruction,
@@ -826,8 +831,24 @@ class RealGeminiProvider:
         place_name: str,
         category_label: str | None,
         insights: Sequence[PlacePreferenceInsight],
+        matched_preference_codes: Sequence[str] = (),
+        taste_query: str | None = None,
+        taste_evidence: Sequence[str] = (),
     ) -> dict[str, object]:
         """상세 카드 문장 생성에 넘겨도 되는 값만 상한 안에서 남긴다.
+
+        **현재 취향 발화와 가까운 임베딩 근거를 먼저 넣는다.** `taste_evidence`는
+        이 장소 안에서 `taste_query`로 다시 검색한 실제 후기 문장이다. 태그는 여러
+        문서에서 집계된 안정적인 보조 근거로 함께 넣되, 이번 질문과 가까운 내용을
+        우선 설명할 수 있게 별도 필드(`query_taste_evidence`)로 분리한다.
+
+        **사용자 취향과 맞은 태그를 먼저 넣는다.** 저장소가 주는 순서는 그 장소에서
+        후기에 많이 언급된 순서라, 사용자가 "조용한 데"를 말했어도 사진 이야기가
+        앞설 수 있다. 태그를 상위 3개만 넘기므로 순서 문제가 아니라 **일치한 태그가
+        아예 안 실리는** 문제가 된다. 그래서 `matched_preference_codes`(화면이
+        들고 있던 `preference_tags[].is_query_match`)에 걸리는 태그를 앞으로 당기고,
+        payload에서도 `matches_user_preference`로 표시해 프롬프트가 그 태그부터
+        말하게 한다. 코드가 비면 예전과 똑같이 언급 수 순서다.
 
         **순위·점수·조건 축을 넣지 않는다.** 그 정보는 카드가 이미 들고 있는 고정
         문장이 말하고, 이 문장은 그 아래에 붙는다(recommend/HISTORY.md의
@@ -844,6 +865,11 @@ class RealGeminiProvider:
         중복은 비용만 늘리는 것이 아니라 그 문장을 세 번 강조된 근거처럼 보이게 한다.
         """
 
+        matched = {code.strip() for code in matched_preference_codes if code.strip()}
+        # 정렬은 안정 정렬이다 — 일치 여부만 앞으로 당기고, 같은 그룹 안에서는
+        # 저장소가 준 언급 수 순서를 그대로 둔다.
+        ordered = sorted(insights, key=lambda insight: insight.code not in matched)
+
         seen: set[str] = set()
         tags: list[dict[str, object]] = []
         evidence: list[str] = []
@@ -857,8 +883,14 @@ class RealGeminiProvider:
             seen.add(normalized)
             into.append(normalized[: cls._REASON_MAX_EVIDENCE_CHARS])
 
-        for insight in insights[: cls._REASON_MAX_TAGS]:
-            tags.append({"label": insight.label, "mention_count": insight.mention_count})
+        for insight in ordered[: cls._REASON_MAX_TAGS]:
+            tag: dict[str, object] = {
+                "label": insight.label,
+                "mention_count": insight.mention_count,
+            }
+            if insight.code in matched:
+                tag["matches_user_preference"] = True
+            tags.append(tag)
             taken_here = len(evidence)
             for quote in insight.evidence:
                 # 부정 근거는 태그 안에 섞지 않고 따로 모은다. 섞으면 모델이 그 문장을
@@ -877,6 +909,16 @@ class RealGeminiProvider:
             "preference_tags": tags,
             "tag_evidence": evidence,
         }
+        query_evidence = [
+            " ".join(text.split())[: cls._REASON_MAX_EVIDENCE_CHARS]
+            for text in taste_evidence
+            if text and text.strip()
+        ]
+        if taste_query and query_evidence:
+            payload["taste_query"] = taste_query
+            payload["query_taste_evidence"] = list(dict.fromkeys(query_evidence))[
+                : cls._REASON_MAX_TAGS
+            ]
         if negative:
             payload["negative_evidence"] = negative[: cls._REASON_MAX_TAGS]
         return payload
@@ -931,15 +973,7 @@ class RealGeminiProvider:
         instruction = gemini_prompts.build_recommendation_summary_instruction(
             intent, conditions=conditions
         )
-        payload = {
-            "recommendations": [
-                self._recommendation_summary_item(item)
-                for item in [
-                    *recommendations.recommendations,
-                    *recommendations.unverified_recommendations,
-                ]
-            ]
-        }
+        payload = self._recommendation_summary_payload(recommendations, conditions)
         async for text in self._stream_text(
             instruction=instruction,
             user_input=json.dumps(payload, ensure_ascii=False),
@@ -1250,6 +1284,71 @@ class RealGeminiProvider:
             summary_item["review_evidence"] = review_evidence
         return summary_item
 
+    @classmethod
+    def _recommendation_summary_payload(
+        cls,
+        recommendations: RecommendationResponse,
+        conditions: UserConditions | None,
+    ) -> dict[str, object]:
+        """추천 말풍선에 필요한 후보 충족도만, 내부 점수 없이 전달한다.
+
+        취향이 비어 있거나 후보가 모자랄 때도 LLM이 평소처럼 "취향에 맞아요"라고
+        단정하면 추천의 한계가 감춰진다. 반대로 후보 수·점수 같은 진단값을 그대로
+        주면 사용자 문장에 내부 구현이 새기 쉽다. 여기서는 사용자가 이해할 수 있는
+        안내 유형과, 문장에 쓸 장소 유형·중심지만 남긴다.
+        """
+        shown = [
+            *recommendations.recommendations,
+            *recommendations.unverified_recommendations,
+        ]
+        scored = recommendations.scoring_candidates or shown
+        taste_requested = bool(conditions and conditions.taste_query)
+        tag_matches = sum(1 for item in scored if (item.taste_tag_score or 0) > 0)
+        embedding_matches = sum(1 for item in scored if item.taste_evidence)
+        shown_tag_matches = sum(1 for item in shown if (item.taste_tag_score or 0) > 0)
+        shown_embedding_matches = sum(1 for item in shown if item.taste_evidence)
+        has_preference_match = tag_matches > 0 or embedding_matches > 0
+        has_shown_preference_match = (
+            shown_tag_matches > 0 or shown_embedding_matches > 0
+        )
+        pool_limited = bool(
+            recommendations.scoring_pool_exhausted
+            and recommendations.scoring_candidate_target is not None
+            and recommendations.scoring_input_count
+            < recommendations.scoring_candidate_target
+        )
+
+        guidance: str | None = None
+        if taste_requested and not has_preference_match:
+            guidance = "preference_fallback"
+        elif taste_requested and not has_shown_preference_match:
+            guidance = "preference_tradeoff"
+
+        radius_km = to_search_radius_km(conditions) if conditions else None
+        search_scope_label = (
+            f"{conditions.search_center} 반경 {radius_km:g}km 이내"
+            if conditions and conditions.search_center and radius_km is not None
+            else None
+        )
+        context: dict[str, object] = {
+            "guidance": guidance,
+            "taste_query": conditions.taste_query if conditions else None,
+            "search_scope_label": search_scope_label,
+            "place_type_label": ", ".join(tag.value for tag in conditions.place_tags)
+            if conditions and conditions.place_tags
+            else None,
+            "candidate_pool_limited": pool_limited and len(shown) < 5,
+            "operating_hours_limited": bool(
+                recommendations.excluded_closed_place_ids
+                and len(shown) < 5
+                and not recommendations.unverified_recommendations
+            ),
+        }
+        return {
+            "recommendations": [cls._recommendation_summary_item(item) for item in shown],
+            "selection_context": context,
+        }
+
     async def extract_closure_rules(
         self, rest_date: str
     ) -> ProviderResult[dict[str, object]]:
@@ -1302,7 +1401,7 @@ class RealGeminiProvider:
             _TravelModePlan,
             operation="judge_travel_modes",
             thinking_budget=0,
-            model_names=self._generation_model_names,
+            model_names=self._mode_judge_model_names,
         )
         return provider_result(tuple(result.modes), source=ProviderSource.GEMINI)
 

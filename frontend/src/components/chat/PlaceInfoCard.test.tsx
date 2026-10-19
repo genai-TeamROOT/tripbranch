@@ -68,10 +68,10 @@ it("질문 답과 썸네일은 바로 보이고, 클릭하면 같은 상세 모�
   // 홈페이지는 하단 별도 링크가 아니라 "관련 정보" 박스 안에 클릭 가능한 링크로 뜬다.
   // question_type이 "parking"이라 answer_fields엔 없지만(카드 최상위 필드), 박스가
   // 합성해서 보여준다.
-  expect(within(dialog).getByRole("link", { name: "https://example.test" })).toHaveAttribute(
-    "href",
-    "https://example.test",
-  );
+  // 버튼에 적히는 이름은 도메인이다 — 전체 주소는 href와 title에 그대로 남는다.
+  expect(
+    within(dialog).getByRole("link", { name: /example\.test/ }),
+  ).toHaveAttribute("href", "https://example.test");
 });
 
 it("관련 정보의 URL은 클릭 가능한 링크로 보여준다", async () => {
@@ -85,10 +85,10 @@ it("관련 정보의 URL은 클릭 가능한 링크로 보여준다", async () =
   await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
-  expect(dialog.getByRole("link", { name: "https://instagram.com/gyeongbokgung" })).toHaveAttribute(
-    "href",
-    "https://instagram.com/gyeongbokgung",
-  );
+  const homepageLink = dialog.getByRole("link", { name: /instagram\.com/ });
+  expect(homepageLink).toHaveAttribute("href", "https://instagram.com/gyeongbokgung");
+  // 긴 경로는 화면에 적지 않는다 — 누르는 것 말고 할 일이 없는 값이다.
+  expect(homepageLink).toHaveAttribute("title", "https://instagram.com/gyeongbokgung");
 });
 
 it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준다", async () => {
@@ -101,7 +101,7 @@ it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준
   await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
-  const link = dialog.getByRole("link", { name: "www.royalpalace.go.kr" });
+  const link = dialog.getByRole("link", { name: /royalpalace\.go\.kr/ });
   expect(link).toHaveAttribute("href", "https://www.royalpalace.go.kr");
 });
 
@@ -264,8 +264,10 @@ it("실시간 도시데이터 카드는 모달에서 추가 항목과 출처를 
   expect(within(dialog).getByRole("img", { name: "테스트 행사 이미지" })).toBeInTheDocument();
   /* 출처는 라벨이다. 서울 열린데이터광장 페이지는 데이터셋 설명이라 사용자가 읽을
      화면이 아니어서, 어디서 온 값인지만 밝히고 누를 수 있게 두지 않는다. */
-  expect(within(dialog).getByText("서울시 데이터")).toBeInTheDocument();
-  expect(within(dialog).queryByRole("link", { name: /서울시 데이터/ })).not.toBeInTheDocument();
+  expect(within(dialog).getByText("출처: ⓒ서울 실시간 도시데이터")).toBeInTheDocument();
+  expect(
+    within(dialog).queryByRole("link", { name: /서울 실시간 도시데이터/ }),
+  ).not.toBeInTheDocument();
   expect(within(dialog).getByRole("link", { name: "자세히 보기 ↗" })).toHaveAttribute(
     "href",
     "https://example.test/event",
@@ -332,8 +334,8 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   await user.click(screen.getByRole("button", { name: "장소 상세보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
-  expect(dialog.getByText("서울시 데이터")).toBeInTheDocument();
-  expect(dialog.queryByRole("link", { name: /서울시 데이터/ })).not.toBeInTheDocument();
+  expect(dialog.getByText("출처: ⓒ서울 실시간 도시데이터")).toBeInTheDocument();
+  expect(dialog.queryByRole("link", { name: /서울 실시간 도시데이터/ })).not.toBeInTheDocument();
   expect(dialog.getByRole("link", { name: "서울시 실시간 주차정보 ↗" })).toHaveAttribute(
     "href",
     "https://parking.seoul.go.kr/",

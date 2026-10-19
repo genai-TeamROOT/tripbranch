@@ -18,6 +18,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from app.domain.models import AccessibilityNeed
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.gemini import (
@@ -27,6 +28,7 @@ from app.providers.gemini import (
     _GeneralAnswer,
     _PlaceReason,
     _RecommendationSummary,
+    _TravelModePlan,
 )
 from app.schedule.budget import derive_item_range
 from app.schedule.planner import plan_schedule
@@ -151,6 +153,87 @@ def test_recommendation_summary_item_includes_limited_review_evidence() -> None:
         "디저트가 깔끔하고 대화하기 편한 분위기예요.",
     ]
     assert "similarity" not in item
+
+
+def test_recommendation_summary_payload_marks_preference_fallback() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    item = _recommendation_item()
+    response = RecommendationResponse(
+        recommendations=[item],
+        unverified_recommendations=[],
+        scoring_candidates=[item],
+        scoring_candidate_target=30,
+        scoring_input_count=3,
+        scoring_pool_exhausted=True,
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response,
+        UserConditions(
+            search_center="강남역",
+            taste_query="카공하기 좋은",
+        ),
+    )
+
+    assert payload["selection_context"] == {
+        "guidance": "preference_fallback",
+        "taste_query": "카공하기 좋은",
+        "search_scope_label": "강남역 반경 2km 이내",
+        "place_type_label": None,
+        "candidate_pool_limited": True,
+        "operating_hours_limited": False,
+    }
+    assert payload["recommendations"] == [provider._recommendation_summary_item(item)]
+
+
+def test_recommendation_summary_payload_marks_limited_pool_without_taste_request() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    item = _recommendation_item()
+    response = RecommendationResponse(
+        recommendations=[item],
+        unverified_recommendations=[],
+        scoring_candidates=[item],
+        scoring_candidate_target=30,
+        scoring_input_count=3,
+        scoring_pool_exhausted=True,
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response, UserConditions(search_center="강남역")
+    )
+
+    assert payload["selection_context"] == {
+        "guidance": None,
+        "taste_query": None,
+        "search_scope_label": "강남역 반경 2km 이내",
+        "place_type_label": None,
+        "candidate_pool_limited": True,
+        "operating_hours_limited": False,
+    }
+
+
+def test_recommendation_summary_payload_marks_preference_tradeoff() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    shown = _recommendation_item()
+    matched = _recommendation_item("p2").model_copy(
+        update={
+            "taste_evidence": [TasteEvidenceQuote(text="창가에서 작업하기 좋아요.", similarity=0.7)]
+        }
+    )
+    response = RecommendationResponse(
+        recommendations=[shown],
+        unverified_recommendations=[],
+        scoring_candidates=[shown, matched],
+        elapsed_ms=0,
+    )
+
+    payload = provider._recommendation_summary_payload(
+        response, UserConditions(taste_query="카공하기 좋은")
+    )
+
+    assert payload["selection_context"]["guidance"] == "preference_tradeoff"
 
 
 @pytest.mark.asyncio
@@ -972,6 +1055,69 @@ async def test_place_reason_turns_thinking_off_on_its_own_model() -> None:
     assert captured == [("gemini-3.1-flash-lite", genai_types.ThinkingLevel.MINIMAL)]
 
 
+@pytest.mark.asyncio
+async def test_mode_judge_uses_its_own_models_and_schedule_plan_stays_on_generation() -> None:
+    """이동수단 판정만 전용 묶음으로 가고, 같은 생성 티어였던 일정 편성은 그대로다.
+
+    배선이 끊겨 판정이 생성 모델로 흘러도 응답은 정상이라 테스트 없이는 모른다. 반대로
+    판정 묶음이 일정 편성까지 끌고 가면 편성 품질이 조용히 바뀐다 — 둘 다 못 박는다.
+    """
+
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model"],
+        mode_judge_model_names=["mode-judge-model"],
+        timeout_seconds=1.0,
+    )
+    called: dict[str, str] = {}
+    responses = {
+        _TravelModePlan: _TravelModePlan(modes=["walking"]),
+        ScheduleLLMPlan: ScheduleLLMPlan(
+            items=[_schedule_item_dict("p1", 1)], total_duration_min=60, route_summary="동선"
+        ),
+    }
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        schema = kwargs["config"].response_schema
+        called[schema.__name__] = kwargs["model"]
+        return _FakeResponse(responses[schema])
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.judge_travel_modes(
+            [
+                SegmentModeInput(
+                    from_place_id="p1", to_place_id="p2", order=1,
+                    distance_m=700, walk_minutes=10.0,
+                )
+            ],
+            ModeJudgmentContext(transport=None),
+        )
+        await provider.generate_schedule_plan(
+            SchedulePlanningRequest(
+                candidates=[_recommendation_item()],
+                conditions=UserConditions(),
+                visit_datetime=datetime(2026, 9, 15, 13, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+                pairwise_distances_km={},
+            )
+        )
+
+    assert called == {"_TravelModePlan": "mode-judge-model", "ScheduleLLMPlan": "generation-model"}
+
+
+def test_mode_judge_models_default_to_generation_models() -> None:
+    """판정 묶음을 안 넘기면 생성 묶음을 그대로 쓴다 — 이 인자를 모르는 호출부가 그대로 돈다."""
+
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model", "generation-fallback"],
+        timeout_seconds=1.0,
+    )
+
+    assert provider._mode_judge_model_names == ["generation-model", "generation-fallback"]
+
+
 def test_place_reason_payload_caps_evidence_and_hides_ranking() -> None:
     """상한이 이 기능의 비용 설계다 — 저장소가 주는 것을 그대로 넘기지 않는다.
 
@@ -1021,9 +1167,103 @@ def test_place_reason_payload_caps_evidence_and_hides_ranking() -> None:
     ]
     assert not any(
         key in payload for key in ("rank", "scoring_axes", "score", "recommendation_reason")
-    ), "순위·조건 축을 넘기고 있다 — 고정 문장과 같은 말을 두 번 하게 된다"
+    ), "순위·조건 축을 넘기고 있다 — 순위는 카드 제목이 이미 말한다"
     # 출처 링크는 문장이 말하지 않는다. 화면이 태그 근거로 따로 보여준다.
     assert "example.test" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_place_reason_payload_puts_user_preference_tags_first() -> None:
+    """사용자 취향과 맞은 태그가 상위 3개에 밀려 빠지지 않아야 한다.
+
+    저장소가 주는 순서는 "이 장소에서 후기에 많이 언급된 순서"다. 태그를 3개만
+    넘기므로, 사용자가 말한 취향에 걸린 태그가 4번째면 순서 문제가 아니라 근거에서
+    **아예 빠지는** 문제가 된다 — 문장이 사용자 취향과 무관한 이야기만 하게 된다.
+    """
+
+    insights = [
+        PlacePreferenceInsight(
+            code=code,
+            label=f"{code} 태그",
+            mention_count=mention_count,
+            positive_document_count=mention_count,
+            negative_document_count=0,
+            evidence=[
+                PreferenceEvidenceQuote(
+                    polarity="positive", text=f"{code} 후기 문장", source_type="naver_post"
+                )
+            ],
+        )
+        for code, mention_count in (
+            ("photo", 30),
+            ("culture", 25),
+            ("view", 20),
+            ("quiet", 5),
+        )
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각",
+        category_label="카페/전통찻집",
+        insights=insights,
+        matched_preference_codes=["quiet"],
+    )
+
+    tags = payload["preference_tags"]
+    assert [tag["label"] for tag in tags] == ["quiet 태그", "photo 태그", "culture 태그"]
+    # 프롬프트가 "이 태그부터 말하라"를 판단하는 표시다. 일치하지 않은 태그에는
+    # 붙지 않는다 — 전부 붙으면 우선순위를 말하지 않는 것과 같다.
+    assert tags[0]["matches_user_preference"] is True
+    assert all("matches_user_preference" not in tag for tag in tags[1:])
+    assert "quiet 후기 문장" in payload["tag_evidence"]
+
+
+def test_place_reason_payload_keeps_mention_order_without_user_preference() -> None:
+    """일치 코드가 없으면 예전 그대로 언급 수 순서다."""
+
+    insights = [
+        PlacePreferenceInsight(
+            code=code,
+            label=f"{code} 태그",
+            mention_count=mention_count,
+            positive_document_count=mention_count,
+            negative_document_count=0,
+        )
+        for code, mention_count in (("photo", 30), ("culture", 25), ("quiet", 5))
+    ]
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="한옥카페 선운각", category_label="카페/전통찻집", insights=insights
+    )
+
+    assert [tag["label"] for tag in payload["preference_tags"]] == [
+        "photo 태그",
+        "culture 태그",
+        "quiet 태그",
+    ]
+    assert all(
+        "matches_user_preference" not in tag for tag in payload["preference_tags"]
+    )
+
+
+def test_place_reason_payload_separates_current_taste_embedding_evidence() -> None:
+    """상세 카드가 현재 발화와 가까운 후기 문장을 태그와 섞지 않고 우선 전달한다."""
+
+    payload = RealGeminiProvider._place_reason_payload(
+        place_name="테스트 카페",
+        category_label="카페",
+        insights=[],
+        taste_query="카공하기 좋은",
+        taste_evidence=[
+            "  콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요.  ",
+            "콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요.",
+        ],
+    )
+
+    assert payload["taste_query"] == "카공하기 좋은"
+    assert payload["query_taste_evidence"] == [
+        "콘센트가 있는 창가 자리에 앉아 오래 작업하기 편했어요."
+    ]
+    assert payload["preference_tags"] == []
 
 
 def test_place_reason_payload_drops_evidence_repeated_across_tags() -> None:
@@ -1573,6 +1813,22 @@ def test_summary_instruction_omits_the_conditions_block_when_nothing_was_stated(
         )
         # 규칙 본문에도 같은 낱말이 나오므로 동적으로 삽입되는 줄만 본다.
         assert "사용자가 말한 조건: " not in instruction
+
+
+def test_summary_instruction_carries_the_search_center() -> None:
+    """검색 지역이 말풍선 프롬프트에 실린다.
+
+    카드 설명은 이동 출발점(현재 위치)을 이름으로 부른다. 이 줄에 지역이 없으면
+    말풍선이 그 출발점을 지역으로 착각한다 — "강남역 근처 맛집"에 "사당역
+    근처에서 골라보았어요"라고 답했다(2026-09-20 실사용).
+    """
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.MODIFY,
+        conditions=UserConditions(search_center="강남역"),
+    )
+
+    assert "사용자가 말한 조건: 강남역 근처" in instruction
 
 
 def test_summary_instruction_carries_the_stated_companion() -> None:

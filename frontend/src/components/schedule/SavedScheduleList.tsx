@@ -117,14 +117,18 @@ export function SavedScheduleList() {
   }
 
   /*
-   * 저장한 일정이 없으면 이 구획을 통째로 그리지 않는다.
+   * **저장한 일정이 없어도 검색바와 달력은 그린다(2026-09-16).** 전에는
+   * `schedules.length === 0`이면 이 구획을 통째로 접었는데, 그러면 저장이 하나
+   * 생기는 순간 검색바와 달력이 갑자기 나타나 화면이 다른 구조로 바뀌었다.
+   * 목록의 틀은 늘 같은 자리에 두고, 내용만 비운다.
    *
-   * 예전에는 "아직 저장한 일정이 없어요"를 여기서 냈는데, 일정도 없고 저장한 것도
-   * 없는 첫 화면에서 **비었다는 안내가 두 개 겹쳐 보였다**("아직 짠 일정이 없어요"
-   * 아래에 이 문장이 또 붙었다). 비었을 때 무엇을 안내할지는 화면(SchedulePage)이
-   * 정한다 — 거기만 "지금 일정"과 "저장한 일정"을 둘 다 알고 있다.
+   * **대신 "비었다"를 두 가지로 나눠 말한다.** 저장이 0건인 것과 검색·날짜에
+   * 걸린 것이 없는 것은 사용자가 할 일이 다르다.
+   *   - 저장 0건        → 화면(SchedulePage)이 "홈에서 일정 짜기"까지 안내한다
+   *   - 필터 결과 0건   → 여기서 "조건에 맞는 …이 없어요"만 낸다
+   * 둘을 같이 내면 **비었다는 안내가 두 개 겹쳐 보인다** — 예전에 실제로 그랬고,
+   * 그래서 구획을 통째로 접었던 것이다. 접는 대신 아래 조건으로 가른다.
    */
-  if (schedules.length === 0) return null;
 
   const markedDateKeys = new Set(
     schedules
@@ -158,7 +162,8 @@ export function SavedScheduleList() {
         isEn={isEn}
       />
 
-      {visible.length === 0 && (
+      {/* 저장이 0건일 때는 내지 않는다 — 그 안내는 화면이 CTA와 함께 낸다(위 주석). */}
+      {schedules.length > 0 && visible.length === 0 && (
         <p className="py-4 text-center text-[13px] text-muted">
           {isEn ? "No saved schedules match." : "조건에 맞는 저장한 일정이 없어요."}
         </p>

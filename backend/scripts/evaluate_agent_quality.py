@@ -32,7 +32,11 @@ import statistics
 import sys
 import time
 from collections import Counter
+
+# `field`라는 이름은 이 파일에서 조건 필드를 가리키는 루프 변수로 이미 쓰인다.
+# 별칭으로 들여와 가려지지 않게 한다.
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -52,6 +56,44 @@ DATASET_PATHS = {
 HISTORY_PATH = QUALITY_DIR / "history.csv"
 DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_INTERVAL_SECONDS = 0.4
+
+# operation이 어느 모델 스위치를 타는지. `providers/gemini.py`의 호출부에서 그대로 옮겼다.
+#
+# **이 표가 없으면 "모델을 바꿔 비교했다"가 성립하지 않는다.** 골드셋이 채점하는 것은
+# intent와 `user_conditions` 둘뿐이고 **둘 다 FAST 산출물이다** — `LLM_GENERATION_MODEL_NAME`을
+# 바꿔도 답변 문장은 완전히 달라지는데 이 스크립트의 점수는 한 자리도 안 움직인다.
+# 그래서 "GENERATION을 바꿨는데 차이가 없다"로 읽히는 사고가 구조적으로 가능하다.
+# 티어별로 **실제로 답한 모델**을 따로 기록해 그 오독을 막는다.
+_FAST_OPERATIONS = frozenset(
+    {
+        "classify_intent",
+        "extract_recommend_conditions",
+        "extract_recommend_conditions_retry",
+        "extract_modify_conditions",
+        "extract_info_query",
+        "extract_compare_request",
+        "extract_general_request",
+        "generate_follow_up_suggestions",
+        "filter_review_evidence",
+        "extract_closure_rules",
+    }
+)
+_GENERATION_OPERATIONS = frozenset(
+    {
+        "generate_general_answer",
+        "generate_recommendation_summary",
+        "stream_recommendation_summary",
+        "stream_general_answer",
+        "stream_info_answer",
+        "stream_review_answer",
+        "generate_compare_summary",
+        "judge_travel_modes",
+        "generate_schedule_plan",
+        "generate_schedule_fill",
+    }
+)
+# `PLACE_REASON_MODEL_NAME`이라는 **세 번째 스위치**를 탄다. 두 티어 어디에도 넣지 않는다.
+_PLACE_REASON_OPERATIONS = frozenset({"generate_place_reason"})
 
 
 @dataclass(frozen=True)
@@ -77,6 +119,9 @@ class CaseResult:
     # 턴마다 하나씩, 순서대로. 관측이 꺼져 있으면 빈 튜플이다.
     # 케이스 하나가 trace 여러 개에 대응하므로 단수가 아니다.
     langfuse_trace_ids: tuple[str, ...] = ()
+    # 티어 → 이 케이스에서 실제로 답한 모델들. 폴백이 걸리면 둘 이상이 들어온다.
+    served_models: dict[str, tuple[str, ...]] = dataclass_field(default_factory=dict)
+    tokens: dict[str, int] = dataclass_field(default_factory=dict)
     error: str = ""
 
     @property
@@ -193,6 +238,57 @@ def _langfuse_trace_id(body: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _served_models(body: dict[str, Any]) -> dict[str, set[str]]:
+    """이 턴에서 **실제로 답한** 모델을 티어별로 모은다.
+
+    `.env`에 적어 둔 값이 아니라 응답이 말하는 값을 읽는다 — 서버를 재기동하지 않아
+    옛 모델이 그대로 돌고 있는 것이 이 비교에서 가장 흔한 사고이고, 설정 파일을 읽는
+    방식으로는 그것을 잡을 수 없다. 폴백이 걸려 2순위가 답한 경우도 여기 드러난다.
+    """
+
+    tiers: dict[str, set[str]] = {"fast": set(), "generation": set(), "place_reason": set()}
+    execution = body.get("llm_execution")
+    if not isinstance(execution, dict):
+        return tiers
+    for call in execution.get("calls") or []:
+        if not isinstance(call, dict):
+            continue
+        served = call.get("served_model")
+        operation = call.get("operation")
+        if not isinstance(served, str) or not served:
+            continue
+        if operation in _FAST_OPERATIONS:
+            tiers["fast"].add(served)
+        elif operation in _GENERATION_OPERATIONS:
+            tiers["generation"].add(served)
+        elif operation in _PLACE_REASON_OPERATIONS:
+            tiers["place_reason"].add(served)
+    return tiers
+
+
+def _call_tokens(body: dict[str, Any]) -> dict[str, int]:
+    """이 턴의 토큰 합계. **사고 토큰을 따로 센다.**
+
+    사고 토큰은 과금 대상인데 `output_tokens`에 안 잡혀서, 안 세면 새 모델의 비용을
+    과소 집계한다. 지금까지 GENERATION 구간 비용은 프롬프트 크기로 계산한 추정치뿐이라
+    (`test_results/model_tier_2026-09-08/비용과_시간.md` §3) 실측이 없었다 — 이 열이
+    그 자리를 메운다. 실 API 호출은 늘지 않는다, 이미 받아 온 응답에서 읽을 뿐이다.
+    """
+
+    totals: dict[str, int] = {}
+    execution = body.get("llm_execution")
+    if not isinstance(execution, dict):
+        return totals
+    for call in execution.get("calls") or []:
+        if not isinstance(call, dict):
+            continue
+        for key in ("input_tokens", "output_tokens", "thoughts_tokens", "cached_tokens"):
+            value = call.get(key)
+            if isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+    return totals
+
+
 def _server_elapsed_ms(body: dict[str, Any]) -> float | None:
     recommendations = body.get("recommendations")
     if isinstance(recommendations, dict) and isinstance(
@@ -223,6 +319,38 @@ def _post(
     return body, elapsed_ms
 
 
+def _guard_expected_models(result: CaseResult, args: argparse.Namespace) -> None:
+    """실제로 답한 모델이 기대와 다르면 즉시 중단한다.
+
+    **모델은 이 스크립트가 못 정한다.** 서버가 시작할 때 `.env`로 고정하고
+    `/api/chat`에는 오버라이드가 없다 — 그래서 `--fast-model` 같은 플래그를 두면
+    "지정했으니 그 모델이겠지"라는 거짓 확신만 준다. 대신 응답이 말하는
+    `served_model`을 기대값과 대조한다.
+
+    관측이 꺼져 있으면(`llm_execution`이 없으면) 확인할 방법이 없으므로 통과시킨다 —
+    없는 정보로 실행을 막지는 않는다.
+    """
+
+    for tier, expected in (
+        ("fast", args.expect_fast_model),
+        ("generation", args.expect_generation_model),
+    ):
+        if not expected:
+            continue
+        served = set(result.served_models.get(tier, ()))
+        if not served:
+            continue
+        if served != {expected}:
+            raise SystemExit(
+                f"\n{tier.upper()} 티어 모델이 기대와 다릅니다 — 중단합니다.\n"
+                f"  기대: {expected}\n"
+                f"  실제: {', '.join(sorted(served))}\n"
+                f"  ({result.case.case_id}에서 확인)\n\n"
+                "서버가 시작할 때 .env로 모델을 고정하므로, .env를 고치고 "
+                "백엔드를 재기동해야 반영됩니다."
+            )
+
+
 def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> CaseResult:
     """한 케이스의 턴을 같은 session_id로 순서대로 실행한다."""
 
@@ -231,6 +359,9 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
     response: dict[str, Any] | None = None
     actual_intents: list[str] = []
     trace_ids: list[str] = []
+    # 케이스 전체에서 티어별로 답한 모델을 모은다. 턴마다 다를 수 있다(폴백).
+    served: dict[str, set[str]] = {"fast": set(), "generation": set(), "place_reason": set()}
+    tokens: dict[str, int] = {}
     try:
         for turn_index, user_input in enumerate(case.turns):
             payload: dict[str, Any] = {"user_input": user_input, "session_id": session_id}
@@ -238,6 +369,10 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
             if turn_index == 0 and case.device_location:
                 payload["device_location"] = case.device_location
             response, _ = _post(client, base_url, payload)
+            for tier, models in _served_models(response).items():
+                served[tier] |= models
+            for token_key, token_value in _call_tokens(response).items():
+                tokens[token_key] = tokens.get(token_key, 0) + token_value
             actual_intents.append(_intent(response))
             turn_trace_id = _langfuse_trace_id(response)
             if turn_trace_id is not None:
@@ -264,6 +399,8 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
             client_elapsed_ms=(time.perf_counter() - started) * 1000,
             server_elapsed_ms=_server_elapsed_ms(response),
             langfuse_trace_ids=tuple(trace_ids),
+            served_models={tier: tuple(sorted(models)) for tier, models in served.items()},
+            tokens=tokens,
         )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         return CaseResult(
@@ -368,8 +505,37 @@ def build_summary(results: list[CaseResult]) -> tuple[dict[str, Any], list[dict[
             field: _ratio(sum(values), len(values))
             for field, values in sorted(field_scores.items())
         },
+        **_served_model_summary(results),
+        **_token_summary(results),
     }
     return summary, per_intent
+
+
+def _served_model_summary(results: list[CaseResult]) -> dict[str, Any]:
+    """티어별로 실제 답한 모델을 한 줄로 만든다. 둘 이상이면 `+`로 잇는다.
+
+    값이 둘 이상이라는 것은 **폴백이 걸렸다**는 뜻이고, 그 실행의 점수는 한 모델의
+    점수가 아니다 — 모델 비교에 쓰기 전에 이 칸을 먼저 봐야 한다.
+    """
+
+    merged: dict[str, set[str]] = {}
+    for result in results:
+        for tier, models in result.served_models.items():
+            merged.setdefault(tier, set()).update(models)
+    return {
+        f"{tier}_models_served": "+".join(sorted(models)) if models else ""
+        for tier, models in merged.items()
+    }
+
+
+def _token_summary(results: list[CaseResult]) -> dict[str, Any]:
+    """실행 전체의 토큰 합계. 비용을 추정이 아니라 실측으로 내기 위한 것이다."""
+
+    totals: dict[str, int] = {}
+    for result in results:
+        for key, value in result.tokens.items():
+            totals[key] = totals.get(key, 0) + value
+    return {f"total_{key}": value for key, value in sorted(totals.items())}
 
 
 def percentile(values: list[float], quantile: float) -> float:
@@ -740,6 +906,15 @@ def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
         "error_count",
         "client_latency_p50_ms",
         "client_latency_p95_ms",
+        # 어느 모델의 점수인지 이력에 남는다. 이 열이 없으면 몇 달 뒤에 history.csv를
+        # 보고 "이 행은 어떤 모델이었나"를 .env 이력으로 역추적해야 한다.
+        "fast_models_served",
+        "generation_models_served",
+        "place_reason_models_served",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_thoughts_tokens",
+        "total_cached_tokens",
     ]
     HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     _migrate_history_header(header)
@@ -791,6 +966,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--limit", type=int, default=None, help="점검용으로 앞 N개 케이스만 실행")
     parser.add_argument(
+        "--expect-fast-model",
+        default=None,
+        help="FAST 티어가 이 모델이 아니면 첫 케이스에서 중단한다"
+        " (모델을 바꾸는 것이 아니라 대조하는 것 — 모델은 서버 .env가 정한다)",
+    )
+    parser.add_argument(
+        "--expect-generation-model",
+        default=None,
+        help="GENERATION 티어가 이 모델이 아니면 첫 케이스에서 중단한다."
+        " **이 티어를 바꿔도 이 스크립트의 점수는 안 움직인다** —"
+        " 채점 축(intent·user_conditions)이 둘 다 FAST 산출물이기 때문이다."
+        " 답변 품질·이동수단 판정은 measure_mode_judge.py 등으로 따로 재야 한다",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="API를 호출하지 않고 CSV 계약·건수만 검증"
     )
     return parser.parse_args()
@@ -823,6 +1012,10 @@ def main() -> None:
             for index, case in enumerate(cases, start=1):
                 result = evaluate_case(client, case, args.base_url.rstrip("/"))
                 results.append(result)
+                # **첫 케이스에서 모델을 확인하고 틀리면 즉시 멈춘다.** 서버를 재기동하지
+                # 않아 옛 모델이 그대로 도는 것이 이 비교에서 가장 흔한 사고이고,
+                # 끝까지 돌고 나서 알면 1시간과 그 실행을 통째로 버린다.
+                _guard_expected_models(result, args)
                 print(
                     f"[{split} {index:>2}/{len(cases)}] {'PASS' if result.passed else 'FAIL'} "
                     f"{case.case_id} · {result.client_elapsed_ms / 1000:.1f}s"

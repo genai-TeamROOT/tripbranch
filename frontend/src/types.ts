@@ -70,6 +70,19 @@ export interface RecommendationItem {
    * 빈 배열이면 컷을 넘는 근거가 없었다는 뜻이다. 개발자 디버그 화면 전용.
    */
   taste_evidence: TasteEvidenceQuote[];
+  /** 태그가 D 취향 점수에 반영된 경우의 후보군 상대 점수(0~1). */
+  taste_tag_score?: number | null;
+  taste_tag_label?: string | null;
+  taste_tag_documents?: number;
+  taste_tag_details?: PreferenceTagScoreDetail[];
+  /** 임베딩 평균 유사도 → 환산점수 → 태그 가산 후 최종 취향점수. */
+  taste_embedding_similarity?: number | null;
+  taste_embedding_score?: number | null;
+  /** 임베딩 점수를 펼 때 쓴 만점 기준 = max(후보 중 1등 유사도, 0.60). */
+  taste_embedding_full_score?: number | null;
+  taste_combined_score?: number | null;
+  /** D가 전체 후보를 정렬했을 때의 순위. 개발자 화면 전용. */
+  scoring_rank?: number | null;
   /** 리뷰·블로그에서 문서 단위로 집계한 장소별 상위 취향 태그. */
   preference_tags?: PreferenceTagSummary[];
   /**
@@ -94,6 +107,15 @@ export interface PreferenceTagSummary {
   mention_count: number;
   /** 이번 발화의 취향과 실제 장소 태그가 일치할 때만 true. */
   is_query_match?: boolean;
+}
+
+export interface PreferenceTagScoreDetail {
+  code: string;
+  label?: string | null;
+  positive_document_count: number;
+  negative_document_count: number;
+  candidate_max_positive_document_count: number;
+  relative_score: number;
 }
 
 /*
@@ -128,8 +150,23 @@ export interface TravelOriginToggle {
 export interface RecommendationsResponse {
   recommendations: RecommendationItem[];
   unverified_recommendations: RecommendationItem[];
+  scoring_candidates?: RecommendationItem[];
+  scoring_excluded_candidates?: ExcludedScoringCandidate[];
+  /** 후보 부족 원인을 C 검색과 D 필터로 구분하는 개발자 화면 전용 진단값. */
+  scoring_candidate_target?: number | null;
+  scoring_input_count?: number;
+  scoring_eligible_count?: number;
+  scoring_pool_exhausted?: boolean | null;
   travel_origin_toggle?: TravelOriginToggle | null;
   elapsed_ms: number;
+}
+
+export interface ExcludedScoringCandidate {
+  place_id: string;
+  name: string;
+  category: string;
+  distance_km: number;
+  reason: "closed" | "already_shown" | "rejected" | string;
 }
 
 /** Gemini Audio API가 짧은 사용자 음성을 전사한 결과. */
@@ -630,6 +667,8 @@ export type ChatMessage =
       type: "recommendation_result";
       recommendations: RecommendationItem[];
       unverified_recommendations: RecommendationItem[];
+      /* 이번 추천에서 벡터 검색에 쓴 취향 발화. 상세 카드 추천 이유의 서버 재검색에만 쓴다. */
+      taste_query?: string | null;
       /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
       travel_origin_toggle?: TravelOriginToggle | null;
       /* 추천 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms). */

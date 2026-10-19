@@ -87,6 +87,44 @@ test("3개 미만이면 저장 버튼이 남은 개수를 안내하며 비활성
   expect(screen.getByText("3–5개 중 3개 선택됨")).toBeInTheDocument();
 });
 
+/*
+ * 세는 칩의 채움이 저장 가능 여부를 말한다(2026-09-17). 색만 보는 테스트가
+ * 아니라 **경계에서 뒤집히는지**를 본다 — 2개까지는 비어 있고 3개째에 찬다.
+ */
+test("세는 칩은 3개째를 고르는 순간 브랜드 색으로 찬다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(screen.getByText("3–5개 중 0개 선택됨")).toHaveClass("bg-white", "text-brand");
+
+  await user.click(screen.getByRole("button", { name: "조용한 곳" }));
+  await user.click(screen.getByRole("button", { name: "카페" }));
+  expect(screen.getByText("3–5개 중 2개 선택됨")).toHaveClass("bg-white", "text-brand");
+
+  await user.click(screen.getByRole("button", { name: "아이와 함께" }));
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toHaveClass("bg-brand", "text-white");
+
+  /* 하나 빼면 다시 비워진다 — 저장하기가 닫히는 것과 같은 경계다. */
+  await user.click(screen.getByRole("button", { name: "카페" }));
+  expect(screen.getByText("3–5개 중 2개 선택됨")).toHaveClass("bg-white", "text-brand");
+});
+
+/*
+ * 테두리는 두 상태 모두에 있어야 한다. 한쪽에만 두면 3개째에서 칩이 1px씩
+ * 커졌다 작아지며 옆 안내 문구를 민다.
+ */
+test("세는 칩의 테두리는 채움과 무관하게 유지된다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(screen.getByText("3–5개 중 0개 선택됨")).toHaveClass("border-brand");
+
+  for (const label of ["조용한 곳", "카페", "아이와 함께"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  expect(screen.getByText("3–5개 중 3개 선택됨")).toHaveClass("border-brand");
+});
+
 test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", async () => {
   const user = userEvent.setup();
   renderPage();
@@ -207,7 +245,9 @@ test("선택 초기화는 저장해 둔 값까지 지운다", async () => {
   await user.click(screen.getByRole("button", { name: "선택 초기화" }));
 
   expect(loadPreferences()).toEqual([]);
-  expect(screen.getByRole("status")).toHaveTextContent("저장해 둔 취향을 지웠어요");
+  /* 문구를 통째로 본다. "홈 화면에서도 사라져요"가 되살아나면 여기서 걸린다 —
+     홈에는 2026-09-07부터 취향이 안 보이므로 그 문장은 거짓이다(2026-09-17). */
+  expect(screen.getByRole("status")).toHaveTextContent(/^저장해 둔 취향을 지웠어요\.$/);
 });
 
 test("저장하면 홈 화면으로 보낸다", async () => {

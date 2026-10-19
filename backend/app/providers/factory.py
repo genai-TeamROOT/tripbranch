@@ -102,6 +102,7 @@ from app.repositories.fake_places import (
 )
 from app.repositories.fake_public_toilet import FakePublicToiletRepository
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
+from app.repositories.pinecone_evidence import PineconeEvidenceRepository
 from app.repositories.protocols import PlacePhotoRepository
 from app.repositories.public_toilet import SupabasePublicToiletRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
@@ -128,6 +129,8 @@ def get_llm_provider() -> LLMProvider:
         # 상세 카드 추천 이유 전용 티어(PLACE_REASON_MODEL_NAME). 클릭당 별도
         # 호출이라 fast·generation 어느 쪽과도 특성이 달라 스위치를 따로 둔다.
         place_reason_model_names=settings.resolved_place_reason_models,
+        # 구간 이동수단 판정 전용(MODE_JUDGE_MODEL_NAME). 비우면 generation과 같다.
+        mode_judge_model_names=settings.resolved_mode_judge_models,
         # Tool/DB 호출과 분리된 LLM 전용 타임아웃(설정 없으면 EXTERNAL_API_TIMEOUT_SECONDS로
         # 폴백) — EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 때문에 올리면 TourAPI/Naver/
         # Supabase까지 같은 값을 물려받는 문제가 있어 분리했다(2026-08-11).
@@ -851,20 +854,24 @@ def get_place_evidence_provider(
     """
     if not settings.taste_evidence_enabled:
         return None
-    if not settings.supabase_url or not settings.supabase_secret_key:
+    if not settings.pinecone_api_key or not settings.pinecone_index_host:
         # 부팅을 막지 않는다. 취향은 순위를 다듬는 축이라 없어도 추천은
         # 동작하고, 여기서 죽이면 설정 하나 때문에 서비스 전체가 안 뜬다.
         # 대신 왜 안 켜졌는지는 로그로 남긴다 — 조용히 사라지면 "켰는데 왜
         # 순위가 그대로냐"를 추적할 방법이 없다.
+        #
+        # Supabase로 되돌아가지 않는다(D-042). 근거 벡터는 Pinecone으로 옮겼고
+        # Supabase 쪽 테이블은 지울 예정이라, 되돌아가면 언젠가 조용히 0건이 된다.
         logger.warning(
-            "TASTE_EVIDENCE_ENABLED=true인데 SUPABASE_URL/SUPABASE_SECRET_KEY가"
+            "TASTE_EVIDENCE_ENABLED=true인데 PINECONE_API_KEY/PINECONE_INDEX_HOST가"
             " 비어 있어 취향 근거 검색을 끕니다."
         )
         return None
-    repository = SupabasePlaceRepository(
-        supabase_url=settings.supabase_url,
-        secret_key=settings.supabase_secret_key,
+    repository = PineconeEvidenceRepository(
+        api_key=settings.pinecone_api_key,
+        index_host=settings.pinecone_index_host,
         client=client,
+        namespace=settings.pinecone_namespace,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
     return PlaceEvidenceProvider(get_shared_encoder(), repository)

@@ -25,10 +25,12 @@ import { useSavedPlaces } from "../../hooks/useSavedPlaces";
 import { PlaceCard } from "../PlaceCard";
 import { PlaceCardRow } from "./PlaceCardRow";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
+import { TourApiSourceNote } from "./SourceNotes";
 
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
+  tasteQuery?: string | null;
   elapsedMs: number;
   serverElapsedMs: number;
   showElapsedTime?: boolean;
@@ -45,6 +47,7 @@ function formatDuration(milliseconds: number | undefined) {
 export function RecommendationResultMessage({
   recommendations,
   unverifiedRecommendations,
+  tasteQuery,
   elapsedMs,
   serverElapsedMs,
   showElapsedTime = false,
@@ -129,12 +132,17 @@ export function RecommendationResultMessage({
               ))}
             </PlaceCardRow>
           )}
+          {/* 추천 목록의 장소·사진·운영시간은 관광공사 장소 데이터를 저장해 둔
+              것에서 나온다. 카드마다 붙이면 가로 스크롤이 표기로 뒤덮이므로
+              목록 아래 한 줄로만 밝힌다. */}
+          {rankedRecommendations.length > 0 && <TourApiSourceNote isEn={language === "en"} />}
         </>
       )}
 
       {selectedRecommendation && (
         <RecommendationDetailPreviewModal
           item={selectedRecommendation}
+          tasteQuery={tasteQuery}
           onClose={() => setSelectedRecommendation(null)}
         />
       )}

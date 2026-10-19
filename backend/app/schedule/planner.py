@@ -354,6 +354,7 @@ def _compose_items(
     candidates: Iterable[RecommendationItem],
     travel_edges: Sequence[ScheduleTravelEdge] = (),
     cluster_ids: Sequence[int | None] | None = None,
+    pinned_items: Sequence[ScheduleItem] = (),
 ) -> list[ScheduleItem]:
     """초안 + 시간표를 화면에 실리는 ScheduleItem으로 합친다.
 
@@ -379,9 +380,14 @@ def _compose_items(
 
     display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
     clusters = list(cluster_ids) if cluster_ids is not None else [None] * len(drafts)
-    # 후보가 이미 들고 있는 사진을 그대로 옮긴다. 운영시간 표기와 같은 방식이라
-    # 후보에 없는 pinned 항목은 자연히 None이 된다.
-    image_by_place = {c.place_id: (c.image_url, c.image_url_fallback) for c in candidates}
+    # 후보가 이미 들고 있는 사진을 그대로 옮긴다. 후보에 없는 pinned 항목은
+    # 호출부가 그 항목에 채워 보낸 사진을 쓴다 — 운영시간과 달리 사진은 편성 판단에
+    # 쓰이지 않고 화면에만 실리므로, 유지한 자리라고 비워 보내면 사진이 빠진
+    # 카드만 남는다. 같은 장소가 양쪽에 있으면 이번 턴 후보 값을 쓴다.
+    image_by_place = {
+        **{item.place_id: (item.image_url, item.image_url_fallback) for item in pinned_items},
+        **{c.place_id: (c.image_url, c.image_url_fallback) for c in candidates},
+    }
     edge_by_pair = {(edge.from_place_id, edge.to_place_id): edge for edge in travel_edges}
     items: list[ScheduleItem] = []
     for index, (draft, stop) in enumerate(zip(drafts, timeline.stops, strict=True)):
@@ -1052,6 +1058,7 @@ async def _pinned_only_result(
             cluster_ids=cluster_ids_in_order(
                 request, [draft.place_id for draft in drafts]
             ),
+            pinned_items=request.pinned_items,
         ),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
@@ -1258,6 +1265,7 @@ async def plan_partial_schedule(
             cluster_ids=cluster_ids_in_order(
                 request, [draft.place_id for draft in drafts]
             ),
+            pinned_items=request.pinned_items,
         ),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,

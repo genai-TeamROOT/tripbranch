@@ -11,6 +11,8 @@ from app.providers.contracts import ProviderSource, ProviderStatus
 from app.providers.place_evidence import (
     DEFAULT_MATCH_COUNT,
     DEFAULT_MIN_SIMILARITY,
+    EVIDENCE_POOL_COUNT,
+    MIN_EVIDENCE_TEXT_LENGTH,
     PlaceEvidenceProvider,
 )
 
@@ -57,7 +59,7 @@ def _match(content_id: str) -> PlaceEvidenceMatch:
         avg_similarity=0.55,
         snippets=(
             PlaceEvidenceSnippet(
-                source_text="혼자 조용히 있기 좋았다",
+                source_text="혼자 조용히 책 읽으며 오래 머물기 좋았다",
                 source_url=None,
                 similarity=0.55,
                 published_at=None,
@@ -75,7 +77,8 @@ async def test_cut_value_and_match_count_reach_the_repository() -> None:
     await provider.search("혼자 조용히 쉬고 싶어", ["a", "b"])
 
     assert repository.calls[0]["min_similarity"] == DEFAULT_MIN_SIMILARITY == 0.43
-    assert repository.calls[0]["match_count"] == DEFAULT_MATCH_COUNT
+    # 짧은 문장을 거른 뒤에도 칸을 채우도록 넉넉히 받아 온다.
+    assert repository.calls[0]["match_count"] == EVIDENCE_POOL_COUNT > DEFAULT_MATCH_COUNT
     assert repository.calls[0]["embedding_len"] == 768
 
 
@@ -119,6 +122,55 @@ async def test_no_match_is_reported_as_no_data() -> None:
     provider = PlaceEvidenceProvider(_RecordingEncoder(), _RecordingRepository(()))
 
     result = await provider.search("조용한 곳", ["a"])
+
+    assert result.data == {}
+    assert result.metadata.status is ProviderStatus.NO_DATA
+
+
+def _snippet(text: str, similarity: float) -> PlaceEvidenceSnippet:
+    return PlaceEvidenceSnippet(
+        source_text=text, source_url=None, similarity=similarity, published_at=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_short_praise_is_dropped_and_top_three_are_kept() -> None:
+    """"아주 좋은 카페입니다." 같은 짧은 칭찬은 취향 단어 없이 유사도만 높다."""
+    pool = PlaceEvidenceMatch(
+        content_id="a",
+        place_title="장소 a",
+        avg_similarity=0.60,
+        snippets=(
+            _snippet("아주 좋은 카페입니다.", 0.67),
+            _snippet("창가 자리에 콘센트가 있어 노트북 작업하기 좋았어요", 0.62),
+            _snippet("넓은 테이블이 많아 오래 앉아 공부하기 편했습니다", 0.58),
+            _snippet("조용해서 혼자 책 읽거나 작업하는 사람이 많았다", 0.55),
+            _snippet("커피 맛은 무난하고 디저트 종류가 다양한 편이에요", 0.50),
+        ),
+    )
+    provider = PlaceEvidenceProvider(_RecordingEncoder(), _RecordingRepository((pool,)))
+
+    result = await provider.search("카공하기 좋은 카페", ["a"])
+
+    match = result.data["a"]
+    assert [snippet.similarity for snippet in match.snippets] == [0.62, 0.58, 0.55]
+    assert all(len(s.source_text.strip()) >= MIN_EVIDENCE_TEXT_LENGTH for s in match.snippets)
+    # 남은 문장끼리 평균을 다시 낸다 — RPC가 준 평균은 거른 문장까지 섞인 값이다.
+    assert match.avg_similarity == pytest.approx((0.62 + 0.58 + 0.55) / 3)
+
+
+@pytest.mark.asyncio
+async def test_place_with_only_short_evidence_has_no_match() -> None:
+    """짧은 문장뿐인 장소는 근거가 없는 곳이다 — 채점에서 0점이 된다."""
+    pool = PlaceEvidenceMatch(
+        content_id="a",
+        place_title="장소 a",
+        avg_similarity=0.648,
+        snippets=(_snippet("전망 좋은 정말 멋진 카페!", 0.648),),
+    )
+    provider = PlaceEvidenceProvider(_RecordingEncoder(), _RecordingRepository((pool,)))
+
+    result = await provider.search("카공하기 좋은 카페", ["a"])
 
     assert result.data == {}
     assert result.metadata.status is ProviderStatus.NO_DATA

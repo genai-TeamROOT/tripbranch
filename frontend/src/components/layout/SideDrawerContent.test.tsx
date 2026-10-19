@@ -1091,11 +1091,15 @@ test("레일 계정 팝업도 펼친 쪽과 같은 내용을 낸다", async () =
   await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
   await user.click(within(sidebar()).getByRole("button", { name: /trip@example\.com/ }));
 
-  /* 신원 헤더 + 닉네임 변경 + 로그아웃. 그 밖의 줄은 만들지 않는다(갈 화면이 없다). */
+  /* 신원 헤더 + 닉네임 변경 + 로그아웃 + 회원 탈퇴. 그 밖의 줄은 만들지 않는다
+     (갈 화면이 없다). 탈퇴는 2026-09-15에 더했고, 되돌릴 수 없어 확인 단계를
+     거치므로 이 줄을 누르는 것만으로는 아무 일도 일어나지 않는다
+     (SidebarAccount.test.tsx). */
   expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
-  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(2);
+  expect(within(sidebar()).getAllByRole("menuitem")).toHaveLength(3);
   expect(within(sidebar()).getByRole("menuitem", { name: /닉네임 변경/ })).toBeInTheDocument();
   expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+  expect(within(sidebar()).getByRole("menuitem", { name: /회원 탈퇴/ })).toBeInTheDocument();
 });
 
 /*

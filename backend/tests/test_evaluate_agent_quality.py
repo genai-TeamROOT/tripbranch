@@ -59,7 +59,7 @@ def _result(
 
 
 def test_example_goldsets_have_requested_split_counts() -> None:
-    assert len(load_cases("dev")) == 84
+    assert len(load_cases("dev")) == 103
     assert len(load_cases("final")) == 15
 
 

@@ -179,6 +179,61 @@ def test_resolved_role_based_llm_models_use_independent_routes() -> None:
     assert settings.resolved_gemini_audio_model_name == "gemini-3.5-flash-lite"
 
 
+def test_mode_judge_default_is_paired_with_prompt_1_1_0() -> None:
+    """기본값은 gemini-3.1-flash-lite다. 프롬프트 mode_judge.select 1.1.0과 짝이다.
+
+    1.1.0은 이 모델로 잰 문장이라, 기본값이 generation(3.5-flash)으로 돌아가면 레포
+    프롬프트를 읽는 환경에서 추천 판정의 흔들림이 늘어난다(config.py 주석). 기본값을
+    바꿀 때는 이 테스트와 함께 프롬프트 HISTORY.md의 측정을 다시 본다.
+    """
+    settings = Settings(_env_file=None)
+
+    assert settings.resolved_mode_judge_models[0] == "gemini-3.1-flash-lite"
+
+
+def test_mode_judge_models_follow_generation_when_unset() -> None:
+    """MODE_JUDGE_MODEL_NAME을 비우면 판정은 generation 묶음을 그대로 쓴다.
+
+    폴백만 적어 둔 채 주 모델을 비우면 폴백도 무시한다. 주 모델 없이 폴백만 바뀌는 상태는
+    뜻이 없다.
+    """
+    for name in (None, ""):
+        settings = Settings(
+            _env_file=None,
+            llm_generation_model_name="gemini-3.5-flash",
+            llm_generation_fallback_model_names="gemini-3.5-flash-lite",
+            mode_judge_model_name=name,
+            mode_judge_fallback_model_names="gemini-3.1-flash-lite",
+        )
+
+        assert settings.resolved_mode_judge_models == [
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ]
+
+
+def test_mode_judge_models_fall_back_to_generation_chain_without_duplicates() -> None:
+    """폴백을 안 정하면 generation 묶음 전체가 폴백이 되고, 주 모델과 겹치는 이름은 빠진다."""
+    settings = Settings(
+        _env_file=None,
+        llm_generation_model_name="gemini-3.5-flash",
+        llm_generation_fallback_model_names="gemini-3.1-flash-lite",
+        mode_judge_model_name="gemini-3.1-flash-lite",
+    )
+
+    assert settings.resolved_mode_judge_models == ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
+
+
+def test_mode_judge_explicit_fallbacks_replace_generation_chain() -> None:
+    settings = Settings(
+        _env_file=None,
+        mode_judge_model_name="gemini-3.1-flash-lite",
+        mode_judge_fallback_model_names="gemini-3.5-flash-lite",
+    )
+
+    assert settings.resolved_mode_judge_models == ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

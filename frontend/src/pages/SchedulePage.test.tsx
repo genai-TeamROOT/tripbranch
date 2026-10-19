@@ -3,7 +3,7 @@
  * 호출 시점: vitest 실행 시.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -24,7 +24,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준다", async () => {
+test("저장한 일정이 없으면 저장하라고 안내한다", async () => {
   const user = userEvent.setup();
   render(
     <AuthProvider>
@@ -39,14 +39,21 @@ test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준�
   );
 
   /*
-   * **받아오기 전에는 안내가 없다.** 저장한 일정이 있는 사람에게 "아직 짠 일정이
+   * **받아오기 전에는 안내가 없다.** 저장한 일정이 있는 사람에게 "저장한 일정이
    * 없어요"가 한 번 스쳤다 사라지면 안 된다 — 그래서 목록이 도착하기 전인 이
    * 순간을 먼저 확인한다(비동기 대기 없이 바로 본다).
    */
-  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+  expect(screen.queryByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).not.toBeInTheDocument();
 
   /* 목록이 도착하고, 비어 있으니 그제야 안내가 뜬다. */
-  expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
+  expect(await screen.findByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).toBeInTheDocument();
+
+  /* **검색바와 달력은 비어 있어도 함께 보인다**(2026-09-16). 저장이 하나 생기는
+     순간 이 요소들이 튀어나오지 않게 틀을 늘 같은 자리에 둔다. */
+  expect(screen.getByRole("textbox", { name: "저장한 일정 검색" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "지난 주" })).toBeInTheDocument();
+  /* 안내가 두 개 겹치지 않는다. */
+  expect(screen.queryByText("조건에 맞는 저장한 일정이 없어요.")).not.toBeInTheDocument();
 
   const cta = screen.getByRole("button", { name: "홈에서 일정 짜기" });
   await user.click(cta);
@@ -118,8 +125,14 @@ function seedScheduleState() {
   );
 }
 
-test("짠 일정이 있으면 목록에 '지금 일정' 줄이 뜨고, 누르면 정류장 타임라인과 피드백 토글을 보여준다", async () => {
-  const user = userEvent.setup();
+/*
+ * **"지금 일정" 줄을 없앤 뒤의 계약이다(2026-09-16).** 저장하지 않은 일정은 이
+ * 화면에 오지 않는다. 없앨 때 **대부분이 보이지 않게 되는 것을 알고** 내린
+ * 결정이라(실측: 편성 100건 대 저장 14건, D 결정) 이 테스트가 깨지면 그 결정이
+ * 되돌아온 것이다. 자동 저장은 두지 않기로 했으므로 채팅의 저장 버튼이 유일한
+ * 경로다.
+ */
+test("저장하지 않은 일정은 이 화면에 오지 않는다", async () => {
   seedScheduleState();
   render(
     <AuthProvider>
@@ -133,40 +146,33 @@ test("짠 일정이 있으면 목록에 '지금 일정' 줄이 뜨고, 누르면
     </AuthProvider>,
   );
 
-  /* 목록과 상세를 한 화면에 같이 두지 않는다 — 들어온 직후에는 상세가 아니라
-     "지금 일정" 줄만 보인다. */
+  /* 세션에 일정이 있어도 목록은 비어 있으므로 안내가 뜬다. */
+  expect(await screen.findByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).toBeInTheDocument();
+  expect(screen.queryByText(/지금 일정/)).not.toBeInTheDocument();
+  /* 상세가 열릴 길 자체가 없다. */
   expect(screen.queryByText("역삼 아트뮤지엄")).not.toBeInTheDocument();
-
-  /* 카드 아이콘은 고정 아이콘 대신 계정 아바타다(2026-09-07) — 기본 세션은
-     게스트라 이니셜이 "게"다(identityLabel.ts). */
-  const currentRow = screen.getByRole("button", { name: /지금 일정/ });
-  expect(await within(currentRow).findByText("게")).toBeInTheDocument();
-
-  await user.click(currentRow);
-
-  /* 장소 이름은 두 곳에 나온다 — 시간 띠의 범례와 정류장 카드. 범례는 aria-hidden
-     이라 소리로는 한 번만 읽히지만, 화면 질의에는 둘 다 걸린다. */
-  expect(screen.getAllByText("역삼 아트뮤지엄").length).toBeGreaterThan(0);
-  expect(screen.getAllByText("대림창고").length).toBeGreaterThan(0);
-  // 서버가 내려준 이동수단을 그대로 쓴다 — 예전에는 전 구간을 도보로 고정 표기했다(TP-216).
-  expect(screen.getByText("대중교통으로 12분")).toBeInTheDocument();
-  // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null) — 구간 표기는 한 줄뿐이다.
-  expect(screen.queryAllByText(/으로 \d+분$/)).toHaveLength(1);
-
-  const helpful = screen.getByRole("button", { name: "도움이 됐어요" });
-  expect(helpful).toHaveAttribute("aria-pressed", "false");
-  await user.click(helpful);
-  expect(helpful).toHaveAttribute("aria-pressed", "true");
-
-  /* "목록으로"를 누르면 상세가 걷히고 다시 "지금 일정" 줄로 돌아온다. */
-  await user.click(screen.getByRole("button", { name: "목록으로" }));
-  expect(screen.queryByText("역삼 아트뮤지엄")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /지금 일정/ })).toBeInTheDocument();
 });
 
 test("목록↔상세를 오가면 PageTransition의 떠오르는 페이드가 다시 걸린다", async () => {
   const user = userEvent.setup();
-  seedScheduleState();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("/schedules/")
+        ? Response.json(SAVED_TWO_STOP)
+        : Response.json({
+            items: [
+              {
+                id: SAVED_TWO_STOP.id,
+                title: SAVED_TWO_STOP.title,
+                session_id: null,
+                created_at: SAVED_TWO_STOP.created_at,
+                updated_at: SAVED_TWO_STOP.updated_at,
+              },
+            ],
+          }),
+    ),
+  );
   const { container } = render(
     <AuthProvider>
       <MemoryRouter initialEntries={["/schedule"]}>
@@ -183,10 +189,10 @@ test("목록↔상세를 오가면 PageTransition의 떠오르는 페이드가 �
      안 탄다 — 이 화면이 안에 한 겹 더 두는 것을 직접 확인한다. */
   expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: /지금 일정/ }));
+  await user.click(await screen.findByRole("button", { name: "성수 저녁 코스 일정 열기" }));
   expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "목록으로" }));
+  await user.click(await screen.findByRole("button", { name: "목록으로" }));
   expect(container.querySelector(".tb-page-enter")).toBeInTheDocument();
 });
 
@@ -225,6 +231,55 @@ const SAVED_DETAIL = {
   },
 };
 
+/*
+ * 두 정류장짜리 저장 일정. 이동수단 표기와 피드백 토글은 원래 "지금 일정"
+ * 상세에서 검증했는데, 그 줄을 없애면서(2026-09-16) 저장 경로로 옮겼다 —
+ * 같은 ScheduleRoute를 쓰므로 검증 대상은 그대로다.
+ */
+/* 목록의 날짜 띠가 이번 주만 보여주고 날짜 필터가 걸리므로, 목록에 뜨려면
+   created_at이 오늘이어야 한다 — 고정 날짜를 쓰면 주가 바뀌는 순간 행이 사라진다. */
+const TODAY_ISO = new Date().toISOString();
+
+const SAVED_TWO_STOP = {
+  id: "aaaaaaaa-1111-4222-8333-444444444444",
+  title: "성수 저녁 코스",
+  session_id: "sess_2",
+  created_at: TODAY_ISO,
+  updated_at: TODAY_ISO,
+  payload: {
+    items: [
+      {
+        order: 1,
+        place_id: "place-1",
+        place_name: "역삼 아트뮤지엄",
+        estimated_arrival: "15:02",
+        estimated_duration_min: 60,
+        travel_to_next_min: 12,
+        travel_to_next_mode: "transit",
+        travel_to_next_measured: true,
+        reason: "실내라 비를 피하며 둘러보기 좋아요",
+        warnings: [],
+      },
+      {
+        order: 2,
+        place_id: "place-2",
+        place_name: "대림창고",
+        estimated_arrival: "16:14",
+        estimated_duration_min: 45,
+        travel_to_next_min: null,
+        travel_to_next_mode: null,
+        travel_to_next_measured: null,
+        reason: "천장이 높아 사진 찍기 좋은 공간이에요",
+        warnings: [],
+      },
+    ],
+    total_duration_min: 105,
+    route_summary: "역삼 아트뮤지엄을 둘러본 후 대림창고로 이동하는 동선이에요.",
+    basis_note: "이 정보는 계산 당시 시각 기준이에요.",
+    elapsed_ms: 120,
+  },
+};
+
 function renderSaved(id: string) {
   return render(
     <AuthProvider>
@@ -259,6 +314,30 @@ test("저장한 일정을 열면 그때 편성이 그대로 보인다", async ()
  * 통과한다(2026-09-06 되돌림 확인에서 실제로 그랬다). 일정 한가운데로 시계를
  * 맞춰, 넘기기만 하면 뜨는 상태에서 안 뜨는 것을 본다.
  */
+test("저장한 일정 상세가 정류장 타임라인과 피드백 토글을 보여준다", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(SAVED_TWO_STOP)),
+  );
+
+  renderSaved(SAVED_TWO_STOP.id);
+
+  /* 장소 이름은 두 곳에 나온다 — 시간 띠의 범례와 정류장 카드. 범례는 aria-hidden
+     이라 소리로는 한 번만 읽히지만, 화면 질의에는 둘 다 걸린다. */
+  expect((await screen.findAllByText("역삼 아트뮤지엄")).length).toBeGreaterThan(0);
+  expect(screen.getAllByText("대림창고").length).toBeGreaterThan(0);
+  // 서버가 내려준 이동수단을 그대로 쓴다 — 예전에는 전 구간을 도보로 고정 표기했다(TP-216).
+  expect(screen.getByText("대중교통으로 12분")).toBeInTheDocument();
+  // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null) — 구간 표기는 한 줄뿐이다.
+  expect(screen.queryAllByText(/으로 \d+분$/)).toHaveLength(1);
+
+  const helpful = screen.getByRole("button", { name: "도움이 됐어요" });
+  expect(helpful).toHaveAttribute("aria-pressed", "false");
+  await user.click(helpful);
+  expect(helpful).toHaveAttribute("aria-pressed", "true");
+});
+
 test("저장한 일정에는 지금 표시가 뜨지 않는다", async () => {
   vi.stubGlobal(
     "fetch",
@@ -302,8 +381,8 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
   renderSaved(SAVED_DETAIL.id);
 
   expect(await screen.findByText(/불러오지 못했어요/)).toBeInTheDocument();
-  /* "아직 짠 일정이 없어요"로 뭉뚱그리면 사용자는 저장이 안 된 줄 안다. */
-  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+  /* 빈 목록 안내로 뭉뚱그리면 사용자는 저장이 안 된 줄 안다 — 오류는 오류라고 말한다. */
+  expect(screen.queryByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).not.toBeInTheDocument();
 });
 
 /*
@@ -314,7 +393,7 @@ test("저장한 일정을 못 불러오면 그 사실을 알린다", async () =>
  * 한 화면에 같이 두지 않기로 하면서, 다른 일정을 고르는 입구는 목록 자체가
  * 아니라 상세 화면 위의 "목록으로" 버튼이 맡는다 — `savedError` 테스트가 잠근다.
  */
-test("저장한 일정이 있으면 목록 화면(짠 일정 없음/있음)에서 목록이 보인다", async () => {
+test("저장한 일정이 있으면 세션 일정 유무와 무관하게 목록만 보인다", async () => {
   const saved = {
     items: [
       {
@@ -349,10 +428,10 @@ test("저장한 일정이 있으면 목록 화면(짠 일정 없음/있음)에�
   );
   expect(await listed()).toBeInTheDocument();
   /* 목록이 있으면 빈 안내는 뜨지 않는다. */
-  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
+  expect(screen.queryByText("저장한 일정이 없어요. 채팅에서 일정을 저장하면 여기에 모여요.")).not.toBeInTheDocument();
   empty.unmount();
 
-  // ② 짠 일정이 있을 때 — 상세가 아니라 "지금 일정" 줄과 함께 목록이 보인다.
+  // ② 저장하지 않은 일정이 세션에 있어도 목록만 보인다 — 줄이 늘지 않는다.
   seedScheduleState();
   const filled = render(
     <AuthProvider>
@@ -366,7 +445,7 @@ test("저장한 일정이 있으면 목록 화면(짠 일정 없음/있음)에�
     </AuthProvider>,
   );
   expect(await listed()).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /지금 일정/ })).toBeInTheDocument();
+  expect(screen.queryByText(/지금 일정/)).not.toBeInTheDocument();
   filled.unmount();
 });
 

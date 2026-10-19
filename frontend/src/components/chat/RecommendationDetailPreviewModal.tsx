@@ -52,10 +52,17 @@ import {
   RoadTrafficStatusSection,
 } from "./CongestionForecastBars";
 import { SeoulRealtimeSummarySection } from "./SeoulRealtimeSummarySection";
+import { CollapseToggleButton } from "./CollapseToggleButton";
+import { splitOverviewParagraphs } from "../../utils/overviewText";
+import { hasSeoulRealtimeContent, hasTourApiContent } from "../../utils/dataSourceAttribution";
+import { SeoulRealtimeSourceNote, TourApiSourceNote } from "./SourceNotes";
+import { HomepageLink } from "./HomepageLink";
 
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
   item?: RecommendationItem;
+  /** 이번 추천의 취향 발화. 서버가 같은 장소의 임베딩 후기 근거를 다시 찾는 데 쓴다. */
+  tasteQuery?: string | null;
   /** INFO 카드에서 열면 답변 요약을 즉시 표시한다. */
   card?: InfoPlaceCard;
   /**
@@ -68,7 +75,7 @@ interface RecommendationDetailPreviewModalProps {
 }
 
 /**
- * 주소·혼잡도·행사 INFO는 첫 응답에서 필요한 값만 받아온다. 카드 클릭 때만
+ * 주소·혼잡도·행사·개요 INFO는 첫 응답에서 필요한 값만 받아온다. 카드 클릭 때만
  * 전체 PlaceDetails를 보강 조회해, 답변 단계의 불필요한 상세 API 호출은 피한다.
  */
 function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
@@ -78,7 +85,12 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   // 후기 답변 카드는 추천 카드와 같은 상세를 보여준다(사용자 결정, 2026-09-14).
   // C가 사진·개요를 이미 실어 보내지만 취향 태그·대표 후기(preference_insights)는
   // place-details 응답에만 있어서, 그 절을 띄우려면 여기서 한 번 더 조회해야 한다.
-  if (card?.question_type === "review_opinion") return true;
+  //
+  // 개요 답변(general_info)도 같다(사용자 결정, 2026-09-16). 개요·사진은 이미
+  // 왔으니 "더 받을 게 없다"고 건너뛰고 있었는데, 그 판단에서 후기가 빠져 있어
+  // 이 카드에서만 방문자 후기 절이 통째로 비었다. 호출은 답변 단계가 아니라
+  // 카드를 연 순간이라 목록 응답은 느려지지 않는다.
+  if (card && ["review_opinion", "general_info"].includes(card.question_type)) return true;
   return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 
@@ -263,6 +275,77 @@ function CollapsibleDetailText({
         </button>
       )}
     </div>
+  );
+}
+
+/*
+ * 개요는 접힌 상태에서 여섯 줄까지만 보이고, 버튼으로 펴고 다시 접는다.
+ *
+ * 답변 카드와 같은 규칙이다 — 개요가 수백 자인 장소(경복궁 등)에서는 이 절
+ * 하나가 모달의 나머지를 전부 아래로 밀어낸다.
+ *
+ * **자르는 것이 아니라 접는다.** 넘치는 부분을 가릴 뿐 원문은 그대로 남으므로
+ * 낭독기와 브라우저 찾기는 전문을 본다.
+ *
+ * 접는 높이는 줄 수(line-clamp)가 아니라 최대 높이로 준다. 본문이 여러 문단으로
+ * 나뉘어 있어 line-clamp가 문단을 가로질러 세지 못하기 때문이다. 10.5rem은
+ * leading-7(1.75rem) × 6줄이라, 줄 간격을 바꾸면 이 값도 같이 바꿔야 한다.
+ */
+function OverviewSection({ overview, isEn }: { overview: string; isEn: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const clampRef = useRef<HTMLDivElement | null>(null);
+  const paragraphs = splitOverviewParagraphs(overview);
+
+  /* 글자 수가 아니라 실제로 넘쳤는지로 판정한다 — 화면 폭과 언어에 따라 같은
+     값도 줄 수가 달라져서, 글자 수로 재면 어떤 화면에서는 버튼이 헛돈다. */
+  useEffect(() => {
+    const node = clampRef.current;
+    if (!node || expanded) return;
+    const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [overview, expanded]);
+
+  return (
+    /* 위 정보 표는 바깥까지 닿는 흰 상자라 그 상자의 글자보다 안쪽에서 시작한다.
+       개요를 모달 가장자리에 붙이면 표 안의 글자보다 바깥으로 튀어나와, 같은
+       화면인데 두 개의 글줄 시작선이 생긴다. 상자 안쪽 여백(px-4)과 맞춘다. */
+    <section className="flex flex-col gap-2 px-4">
+      <h3 className="text-xs font-bold text-label">{isEn ? "Overview" : "개요"}</h3>
+      <div className="relative">
+        <div
+          ref={clampRef}
+          className={`flex flex-col gap-3 text-sm leading-7 text-ink${
+            expanded ? "" : " max-h-[10.5rem] overflow-hidden"
+          }`}
+        >
+          {paragraphs.map((paragraph, index) => (
+            <p key={`${index}-${paragraph.slice(0, 12)}`} className="whitespace-pre-line">
+              {paragraph}
+            </p>
+          ))}
+        </div>
+        {/* 접힌 동안 마지막 줄을 배경색으로 흐린다. 글이 여기서 끝난 것이 아니라
+            이어진다는 것을 버튼을 읽기 전에 눈으로 먼저 알 수 있다. */}
+        {!expanded && overflowing && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-bg to-transparent"
+          />
+        )}
+      </div>
+      {/* 편 뒤에는 넘침 판정이 거짓이 되므로(가릴 것이 없다) expanded도 함께 본다. */}
+      {(overflowing || expanded) && (
+        <CollapseToggleButton
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          isEn={isEn}
+        />
+      )}
+    </section>
   );
 }
 
@@ -581,13 +664,13 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
   if (insights.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
+    <section className="rounded-xl border border-border p-4">
       <div className="flex items-baseline justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <h3 className="text-sm font-semibold text-ink">
             방문자 후기에 나타난 특징
           </h3>
-          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+          <p className="mt-0.5 text-xs text-muted">
             같은 문서에서 반복된 표현은 한 번만 집계했어요.
           </p>
         </div>
@@ -599,29 +682,29 @@ function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
             <details
               key={insight.code}
               open={index === 0}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+              className="rounded-lg border border-border px-3 py-2"
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <p className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                <p className="min-w-0 text-sm font-semibold text-ink">
                   {insight.label}
-                  <span className="ml-2 text-xs font-medium text-blue-600 dark:text-blue-300">
+                  <span className="ml-2 text-xs font-medium text-brand">
                     {insight.mention_count}개 후기
                   </span>
                 </p>
               </summary>
 
-              <div className="mt-2 space-y-3 border-t border-gray-100 pt-2.5 dark:border-gray-800">
+              <div className="mt-2 space-y-3 border-t border-border pt-2.5">
                 {insight.evidence.map((evidence, evidenceIndex) => (
                   <blockquote
                     key={`${evidence.text}-${evidenceIndex}`}
-                    className="border-l-2 border-blue-300 pl-3 text-sm leading-6 text-gray-700 dark:text-gray-300"
+                    className="border-l-2 border-brand/40 pl-3 text-sm leading-6 text-label"
                   >
                     <p>“{evidence.text}”</p>
                     <EvidenceSource evidence={evidence} />
                   </blockquote>
                 ))}
                 {insight.evidence.length === 0 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-xs text-muted">
                     대표 문장을 준비하고 있어요.
                   </p>
                 )}
@@ -645,12 +728,12 @@ function EvidenceSource({
       href={evidence.source_url}
       target="_blank"
       rel="noreferrer"
-      className="mt-1 inline-block text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+      className="mt-1 inline-block text-xs font-medium text-brand hover:underline"
     >
       {label} ↗
     </a>
   ) : (
-    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
+    <p className="mt-1 text-xs text-muted">{label}</p>
   );
 }
 
@@ -735,7 +818,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
   const items = card.realtime_detail_items ?? [];
   const groups = groupSubwayArrivals(items);
   return (
-    <section className="rounded-xl border border-border bg-chip/60 p-4">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 다른 구획과 같은 규칙. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-ink">실시간 지하철 도착 정보</h3>
@@ -750,7 +834,8 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
         {groups.map((group) => (
           <article
             key={group.stationLine}
-            className="min-w-0 rounded-lg border border-border bg-white px-3 py-2.5"
+            /* 바깥 구획의 바탕이 사라졌으니 흰 바탕으로 띄울 이유도 없다. */
+            className="min-w-0 rounded-lg border border-border px-3 py-2.5"
           >
             <div className="flex min-w-0 items-center gap-1.5">
               <span
@@ -771,7 +856,14 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
               className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "sm:grid-cols-2" : "grid-cols-1"}`}
             >
               {group.directions.map((direction) => (
-                <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2.5 py-2">
+                /* **방향 칸은 테두리를 반드시 남긴다.** 상행/하행이 나열 순서만으로는
+                   구분이 안 된다는 실사용 지적으로 칸을 나눈 자리다(2026-09-02).
+                   바탕만 걷고 테두리를 안 주면 두 방향이 붙어 읽혀 그 지적이 되살아난다
+                   — 실제로 렌더해 보고 확인했다. */
+                <div
+                  key={direction.direction}
+                  className="min-w-0 rounded-lg border border-border px-2.5 py-2"
+                >
                   <p className="text-xs font-semibold text-muted">{direction.direction}</p>
                   <div className="mt-1 grid gap-1">
                     {direction.items.map((item, index) => (
@@ -784,7 +876,7 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
           </article>
         ))}
         {items.length === 0 && (
-          <p className="rounded-lg bg-white px-3 py-4 text-center text-sm text-muted">
+          <p className="rounded-lg border border-border px-3 py-4 text-center text-sm text-muted">
             지하철 도착 정보를 제공하지 않는 역이에요.
           </p>
         )}
@@ -862,17 +954,17 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
   const address = item.details["주소"];
 
   return (
-    <article className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+    <article className="rounded-xl border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <span className="inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+          <span className="inline-flex rounded-md border border-border px-1.5 py-0.5 text-[11px] font-semibold text-label">
             {parkingItem.category}
           </span>
-          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100">
+          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-ink">
             {item.title}
           </h4>
           <p
-            className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400"
+            className="mt-1 truncate text-xs text-muted"
             title={address ?? item.details["거리"] ?? undefined}
           >
             {address ?? item.details["거리"] ?? "주소 정보 미제공"}
@@ -886,19 +978,19 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <div className="min-w-0 rounded-lg bg-sky-50 px-2.5 py-2 dark:bg-sky-950/30">
-          <p className="whitespace-nowrap text-[11px] text-sky-700 dark:text-sky-300">가능 주차</p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">가능 주차</p>
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {availableSpaces === null
               ? "잔여 정보 미제공"
               : `${new Intl.NumberFormat("ko-KR").format(availableSpaces)}대 가능`}
           </p>
         </div>
-        <div className="min-w-0 rounded-lg bg-gray-50 px-2.5 py-2 dark:bg-gray-800">
-          <p className="whitespace-nowrap text-[11px] text-gray-500 dark:text-gray-400">
+        <div className="min-w-0">
+          <p className="whitespace-nowrap text-[11px] text-muted">
             주차 규모
           </p>
-          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+          <p className="mt-0.5 text-sm font-bold leading-5 text-ink">
             {capacity === null
               ? "총 대수 미제공"
               : `총 ${new Intl.NumberFormat("ko-KR").format(capacity)}대`}
@@ -906,25 +998,25 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600 dark:text-gray-300">
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted">
         {currentParkedCount !== null && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {new Intl.NumberFormat("ko-KR").format(currentParkedCount)}대 주차 중
           </span>
         )}
         {item.details["거리"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["거리"]}
           </span>
         )}
         {item.details["요금"] && (
-          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+          <span className="whitespace-nowrap rounded-full border border-border px-2 py-1">
             {item.details["요금"]}
           </span>
         )}
       </div>
       {item.details["기준 시각"] && (
-        <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+        <p className="mt-2 text-[11px] text-muted">
           {item.details["기준 시각"]} 기준
         </p>
       )}
@@ -932,7 +1024,7 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
         <button
           type="button"
           onClick={() => openNaverMapSearch(address)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/60"
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-brand px-3 py-2 text-xs font-semibold text-brand transition-colors hover:bg-sky-light focus:outline-none focus:ring-2 focus:ring-brand"
         >
           <span aria-hidden="true">🧭</span>
           네이버 지도로 길찾기
@@ -944,18 +1036,17 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
 
 function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
   return (
-    <div className="flex flex-wrap gap-2">
-      {/* **출처는 링크가 아니라 라벨이다.** 서울 열린데이터광장 페이지는 데이터셋 설명과
-          신청 안내라 사용자가 읽을 화면이 아니다. 어디서 온 값인지만 밝히고 누를 수는
-          없게 둔다 — 화살표(↗)를 떼고 hover 반응도 없앤 것이 그 표시다.
-          **색은 옆 칩들과 같은 파랑으로 남긴다.** 회색으로 낮췄더니 눌리지 않는 칩이
-          아니라 비활성된 버튼처럼 보였다(2026-09-09). 옆의 두 칩(주차정보 포털·혼잡도
-          지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
-      {card.realtime_source_url && (
-        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300">
-          서울시 데이터
-        </span>
-      )}
+    /* 이 묶음은 실시간 절의 오른쪽 위에 놓인다. 출처를 맨 윗줄에 두어 그 아래
+       링크 칩들과 세로로 맞춘다 — 표기와 링크는 성격이 다르지만 "이 절이 어디서
+       온 무엇인지"를 한자리에서 읽게 된다. */
+    <div className="flex flex-col items-end gap-1.5">
+      {/* 이 절의 제목·라벨이 모두 한국어 고정이라 표기도 한국어로 둔다. */}
+      <SeoulRealtimeSourceNote />
+      <div className="flex flex-wrap justify-end gap-2">
+      {/* 출처 칩은 없다. 어디서 온 값인지는 화면 맨 아래 출처 줄이 관광공사 표기와
+          같은 모양으로 말한다(2026-09-16) — 예전에는 여기 파란 칩으로 떠서, 같은
+          뜻의 표기가 두 기관 사이에서 서로 다른 모양이었다. 옆의 두 칩(주차정보
+          포털·혼잡도 지도)은 실제로 열어볼 만한 화면이라 링크로 그대로 둔다. */}
       {isRealtimeParkingCard(card) && (
         <a
           href={SEOUL_PARKING_PORTAL_URL}
@@ -975,7 +1066,8 @@ function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
         >
           실시간 혼잡도 지도 ↗
         </a>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -1000,14 +1092,14 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
   const totalCapacity = items.reduce((sum, item) => sum + (item.capacity ?? 0), 0);
 
   return (
-    <section className="rounded-2xl border border-sky-100 bg-gradient-to-b from-sky-50 to-white p-4 shadow-sm dark:border-sky-900/60 dark:from-sky-950/30 dark:to-gray-900">
+    <section className="rounded-2xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-sky-700 dark:text-sky-300">
+          <p className="text-xs font-semibold tracking-wide text-brand">
             REALTIME PARKING
           </p>
-          <h3 className="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">주차장 현황</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+          <h3 className="mt-0.5 text-lg font-bold text-ink">주차장 현황</h3>
+          <p className="mt-1 text-sm text-muted">
             {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
             {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
           </p>
@@ -1016,39 +1108,39 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-xl bg-blue-600 px-3 py-3 text-white shadow-sm">
-          <p className="whitespace-nowrap text-xs font-medium text-blue-100">현재 가능한 주차</p>
+        <div className="rounded-xl bg-brand px-3 py-3 text-white">
+          <p className="whitespace-nowrap text-xs font-medium text-white">현재 가능한 주차</p>
           <p className="mt-1 whitespace-nowrap text-xl font-bold">
             {realtimeItems.length > 0
               ? `${new Intl.NumberFormat("ko-KR").format(totalAvailable)}대`
               : "정보 없음"}
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">실시간 제공</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">실시간 제공</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {realtimeItems.length}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">공영 주차장</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">공영 주차장</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {tabCounts["공영"]}곳
           </p>
         </div>
-        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
-          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">목록 총 수용</p>
-          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+        <div className="rounded-xl border border-border px-3 py-3">
+          <p className="whitespace-nowrap text-xs text-muted">목록 총 수용</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-ink">
             {formatParkingCount(totalCapacity)}
           </p>
         </div>
       </div>
 
-      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+      <p className="mt-2 text-xs text-muted">
         가능한 주차 대수는 실시간 정보가 제공된 주차장만 합산합니다.
       </p>
 
-      <div className="mt-4 grid grid-cols-4 rounded-xl border border-sky-100 bg-white p-1 dark:border-sky-900/60 dark:bg-gray-900">
+      <div className="mt-4 grid grid-cols-4 rounded-xl border border-border p-1">
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -1058,8 +1150,8 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             aria-pressed={activeTab === tab}
             className={`rounded-lg px-2 py-2 text-xs font-semibold transition sm:text-sm ${
               activeTab === tab
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-500 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-gray-300 dark:text-gray-400 dark:hover:bg-sky-950/30"
+                ? "bg-brand text-white"
+                : "text-muted hover:bg-chip disabled:cursor-not-allowed disabled:opacity-40"
             }`}
           >
             {tab} {tabCounts[tab]}
@@ -1073,11 +1165,11 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
             <div className="mb-2 flex items-center justify-between">
               <h4
                 id="realtime-parking-available-heading"
-                className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                className="text-sm font-semibold text-ink"
               >
                 실시간 주차 가능
               </h4>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-muted">
                 {visibleRealtimeItems.length}곳
               </span>
             </div>
@@ -1094,12 +1186,12 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
 
         {visibleUnavailableItems.length > 0 && (
           <details
-            className="rounded-xl border border-gray-200 bg-gray-50 p-2 dark:border-gray-800 dark:bg-gray-950/40"
+            className="rounded-xl border border-border p-2"
             open={visibleRealtimeItems.length === 0}
           >
-            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-white dark:text-gray-200 dark:hover:bg-gray-900">
+            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-label hover:bg-chip">
               <span>실시간 잔여 현황 미제공</span>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              <span className="text-xs font-medium text-muted">
                 {visibleUnavailableItems.length}곳 보기
               </span>
             </summary>
@@ -1114,7 +1206,7 @@ function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
           </details>
         )}
         {visibleItems.length === 0 && (
-          <p className="rounded-xl bg-white px-3 py-4 text-center text-sm text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+          <p className="rounded-xl border border-border px-3 py-4 text-center text-sm text-muted">
             이 유형의 주차장 정보는 제공되지 않습니다.
           </p>
         )}
@@ -1130,7 +1222,11 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   if (isRealtimeSubwayCard(card)) return <RealtimeSubwayEntries card={card} />;
 
   return (
-    <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
+    /* 바탕 없이 테두리로만 구분한다(2026-09-16) — 이 모달의 실시간 인구 칸·
+       돌발상황 칸과 같은 규칙이다. 하늘색 계열(sky-50/sky-100)을 쓰고 있었는데,
+       이 구획에서 색이 뜻을 나르는 것은 혼잡도 단계 칩뿐이라 바탕이 그 신호와
+       경쟁했다. 테두리는 팔레트 색이 아니라 토큰(border)을 쓴다. */
+    <section className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -1502,6 +1598,7 @@ function PlacePhotoGallery({
 /** 추천/INFO 어디서 열어도 같은 모양으로 PlaceDetails를 보여주는 상세 모달이다. */
 export function RecommendationDetailPreviewModal({
   item,
+  tasteQuery,
   card,
   placeId: placeIdProp,
   placeName: placeNameProp,
@@ -1700,6 +1797,12 @@ export function RecommendationDetailPreviewModal({
         place_id: resolved.place_id,
         place_name: resolved.place_name ?? item?.name ?? placeName ?? "",
         category_label: item?.category_label ?? item?.category,
+        // 사용자 취향과 맞은 태그를 문장이 먼저 말하도록 넘긴다. 추천 카드가
+        // 이미 들고 있는 값이라 조회가 더 붙지 않는다(is_query_match).
+        matched_preference_codes: (item?.preference_tags ?? [])
+          .filter((tag) => tag.is_query_match)
+          .map((tag) => tag.code),
+        ...(tasteQuery ? { taste_query: tasteQuery } : {}),
       })
         .then((response) => {
           if (!cancelled) setAiReason(response.ai_reason ?? "");
@@ -1793,13 +1896,13 @@ export function RecommendationDetailPreviewModal({
             h-1.5(6px)로 16px에서 끝나고, 아래 스크롤 영역의 pt-3(12px)이 더해진다.
             셋 중 하나를 바꾸면 이 값도 같이 바꿔야 한다.
 
-            right-3(12px)은 사진의 오른쪽 끝(스크롤 영역 px-4 = 16px)보다 4px
-            바깥이다. 딱 맞추면(right-4) 버튼의 모서리와 사진의 둥근 모서리가
+            right-5(20px)는 사진의 오른쪽 끝(스크롤 영역 px-6 = 24px)보다 4px
+            바깥이다. 딱 맞추면(right-6) 버튼의 모서리와 사진의 둥근 모서리가
             겹쳐 그 사이에 초승달 모양 틈이 보인다 — 조금 넘겨서 덮는다. */}
         <button
           type="button"
           onClick={handleClose}
-          className="absolute right-3 top-7 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/70 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-brand"
+          className="absolute right-5 top-7 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/70 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-brand"
           aria-label={isEn ? "Close details" : "상세 창 닫기"}
         >
           <X size={20} />
@@ -1809,7 +1912,7 @@ export function RecommendationDetailPreviewModal({
             없으면 상세를 맨 위까지 올린 뒤 더 올릴 때 뒤의 채팅이 함께 밀린다 —
             이 모달은 document.body로 포털되고 #root는 min-height라, 대화가 길면
             문서 자체가 스크롤되기 때문이다. */}
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pb-5 pt-3">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-6 pb-5 pt-3">
           {/* 사진이 있을 수 있는 장소는 세 경우(로딩·갤러리·이미지 없음) 모두
               PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서 갤러리로 바뀔 때
               화면이 밀리지 않게 하려면 자리가 같아야 한다. expectsNoPhoto인 장소는
@@ -1921,36 +2024,38 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {(item?.recommendation_reason || (isReviewCard && aiReason !== "")) && (
-            /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 문장은 추천 카드가
-               이미 들고 온 값이라(item) 상세 응답을 기다리지 않는다 — 위에 두면
-               표가 스켈레톤인 동안 읽을 것이 있고, 이 장소가 왜 떴는지를 운영시간
-               같은 사실보다 먼저 본다. 길이가 처음부터 정해져 있어 나중에 표가
-               채워져도 이 절이 밀리거나 늘지 않는다.
+          {(item || isReviewCard) && aiReason !== "" && (
+            /* **정보 표보다 위다**(2026-09-08, 사용자 결정). 이 장소가 왜 떴는지를
+               운영시간 같은 사실보다 먼저 본다.
 
-               박스(rounded-2xl bg-sky-light p-4)는 걷었다. 아래 "개요"와 같은
-               모양이 되어 이 화면의 절들이 제목 + 본문 하나로 고르게 읽힌다.
-               구분은 배경이 아니라 제목의 브랜드 색이 진다. */
-            <section className="flex flex-col gap-1.5">
+               **고정 문장은 더 이상 쓰지 않는다**(2026-09-16, 사용자 결정).
+               D가 주는 `item.recommendation_reason`은 "<축들> 조건을 종합한 N순위
+               추천이에요." 한 형식뿐이라 축 이름만 바뀌고 하는 말이 "N순위"인데,
+               그 순위는 카드 제목에 이미 붙어 있다. 카드에서 뺀 이유와 같다
+               (PlaceCard.tsx 주석). 값 자체는 남아 있어 개발자 패널이 그대로 쓴다.
+               그래서 이 절은 후기에서 읽어낸 LLM 문장 한 줄만 말한다.
+
+               **박스를 되살렸다**(2026-09-16, 사용자 결정). 남은 문장이 한 줄뿐이라
+               제목 색만으로는 옆 절과 구분이 안 됐다. 이 화면에서 유일하게 사람이
+               쓴 것처럼 읽히는 문장이므로 배경으로 눈에 먼저 들어오게 한다.
+               모양은 아래 "방문자 후기에 나타난 특징"(PreferenceInsightsSection)과
+               같은 값으로 맞춘다 — 한 화면에 박스가 둘인데 진하기가 다르면 둘 중
+               하나가 경고처럼 읽힌다. 바꿀 때는 두 곳을 같이 바꾼다. */
+            <section className="flex flex-col gap-1.5 rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
               <div className="flex items-center gap-1.5">
                 <Sparkles size={14} className="text-brand" />
                 <p className="text-xs font-bold text-brand">
                   {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
                 </p>
               </div>
-              {item?.recommendation_reason && (
-                <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
-              )}
-              {/* 두 번째 줄은 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
-                  위 문장이 순위·조건 축을 말하고, 이 문장은 후기에서 드러난 성격을
-                  말한다 — 서버 프롬프트가 순위·축을 다시 말하지 못하게 막는다.
+              {/* 상세조회 뒤 별도 호출로 도착한다(recommend.place_reason).
 
                   **자리를 미리 잡는다.** 이 절을 표보다 위에 둔 이유가 "표가
                   스켈레톤인 동안 읽을 것이 있고, 나중에 채워져도 이 절이 밀리거나
                   늘지 않는다"였다(2026-09-08 결정). 늦게 오는 줄을 그냥 끼우면 그
                   성질이 깨져 읽는 도중 아래가 밀린다. 그래서 대기 중에는 같은
                   높이의 자리표시자를 그리고, 문장 없이 확정되면(취향 태그가 없는
-                  장소·생성 실패) 접는다.
+                  장소·생성 실패) 절 전체를 접는다.
 
                   두 줄로 잡은 것은 프롬프트가 1~2문장으로 못 박혀 있기 때문이다. */}
               {aiReason === null ? (
@@ -1967,9 +2072,7 @@ export function RecommendationDetailPreviewModal({
                   <div className="h-3.5 w-2/3 animate-pulse rounded bg-chip" />
                 </div>
               ) : (
-                aiReason && (
-                  <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
-                )
+                <p className="text-sm leading-relaxed text-ink">{aiReason}</p>
               )}
             </section>
           )}
@@ -1987,26 +2090,30 @@ export function RecommendationDetailPreviewModal({
           ) : (
             detailCard && (
               <>
+                {/* 출처는 운영정보 표의 오른쪽 위에 둔다 — 이 표부터 아래 편의시설·
+                    개요까지가 전부 관광공사 값이라, 그 묶음이 시작하는 자리에서
+                    한 번 밝히면 된다. 실시간 절의 출처가 그 절 오른쪽 위에 붙는
+                    것과 같은 자리 규칙이다(2026-09-16 사용자 결정). */}
+                {hasTourApiContent(detailCard) && (
+                  <div className="-mb-2 flex justify-end">
+                    <TourApiSourceNote isEn={isEn} />
+                  </div>
+                )}
                 <InfoTable card={detailCard} isEn={isEn} />
                 <AccessibilityTable card={detailCard} isEn={isEn} />
               </>
             )
           )}
 
-          {detailCard?.overview && (
-            <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-bold text-label">{isEn ? "Overview" : "개요"}</h3>
-              <p className="whitespace-pre-line text-sm leading-relaxed text-ink">
-                {detailCard.overview}
-              </p>
-            </section>
-          )}
+          {detailCard?.overview && <OverviewSection overview={detailCard.overview} isEn={isEn} />}
 
           {!isLoading &&
             (detailCard ? (
               <>
                 {answerEntries.length > 0 && (
-                  <section className="rounded-xl bg-sky-light p-3">
+                  /* 위와 같은 규칙 — 바탕을 걷고 테두리로 구분한다(2026-09-16).
+                     여기는 테두리도 없이 bg-sky-light로만 묶여 있었다. */
+                  <section className="rounded-xl border border-border p-3">
                     <h3 className="text-sm font-semibold text-ink">
                       {isEn ? "Related info" : "관련 정보"}
                     </h3>
@@ -2018,7 +2125,16 @@ export function RecommendationDetailPreviewModal({
                               ? (ANSWER_FIELD_LABELS_EN[key] ?? ANSWER_FIELD_LABELS[key] ?? key)
                               : (ANSWER_FIELD_LABELS[key] ?? key)}
                           </dt>
-                          <AnswerValue value={value} />
+                          {/* 홈페이지만 링크 버튼이다 — 이 행에서 하는 일은 여는
+                              것 하나뿐이라 긴 주소를 그대로 적을 이유가 없다.
+                              나머지 값은 문장이라 그 안의 주소만 링크가 된다. */}
+                          {key === "homepage" ? (
+                            <dd className="min-w-0">
+                              <HomepageLink value={value} isEn={isEn} />
+                            </dd>
+                          ) : (
+                            <AnswerValue value={value} />
+                          )}
                         </div>
                       ))}
                     </dl>
@@ -2029,6 +2145,14 @@ export function RecommendationDetailPreviewModal({
                   (detailCard.concentration_forecasts?.length ?? 0) > 0 ||
                   detailCard.question_type === "realtime_traffic") && (
                   <section className="overflow-hidden rounded-xl border border-border bg-white">
+                    {/* 실시간 항목·지도가 없는 카드(예측 막대만 있는 혼잡도 답변)는
+                        위 실시간 절이 통째로 안 그려져 출처가 사라진다. 그때는 이
+                        절의 오른쪽 위가 서울시 값이 시작하는 자리다. */}
+                    {!hasRealtimeDetails && hasSeoulRealtimeContent(detailCard) && (
+                      <div className="flex justify-end px-4 pt-3">
+                        <SeoulRealtimeSourceNote isEn={isEn} />
+                      </div>
+                    )}
                     <ConcentrationForecastBars card={detailCard} />
                     <PopulationForecastBars card={detailCard} />
                     <SeoulRealtimeSummarySection card={detailCard} />
@@ -2036,6 +2160,10 @@ export function RecommendationDetailPreviewModal({
                   </section>
                 )}
                 <PreferenceInsightsSection card={detailCard} />
+                {/* 출처는 맨 아래 한 줄로만 둔다. 이 화면의 사진·개요·운영정보·
+                    편의시설이 전부 관광공사 값이라, 절마다 붙이면 같은 말이
+                    다섯 번 반복된다. 관광공사 값이 하나도 없는 카드(서울시
+                    실시간 전용)에서는 판정이 거짓이라 그려지지 않는다. */}
               </>
             ) : (
               <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
@@ -2051,7 +2179,7 @@ export function RecommendationDetailPreviewModal({
         </div>
 
         {showRouteFooter && (
-          <div className="relative shrink-0 bg-bg/80 px-4 pb-7 pt-4 backdrop-blur-md">
+          <div className="relative shrink-0 bg-bg/80 px-6 pb-7 pt-4 backdrop-blur-md">
             {/* **바 자체가 반투명이다**(2026-09-08). 처음에는 불투명한 bg-bg 바
                 위에 페이드 띠만 얹었는데, 그러니 그 띠가 내용 위에 덧칠된
                 별개의 층으로 읽혀 새 선처럼 보였다(사용자 보고). 지금은 바가

@@ -137,7 +137,7 @@ test("회원가입 화면과 같은 비밀번호 조건을 안내한다", async 
   renderAfterResetLink();
 
   expect(
-    await screen.findByText("8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요."),
+    await screen.findByText("8자 이상으로 입력해주세요. 이미 유출된 비밀번호는 쓸 수 없어요."),
   ).toBeInTheDocument();
 });
 
