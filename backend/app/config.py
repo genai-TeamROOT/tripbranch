@@ -421,7 +421,7 @@ class Settings(BaseSettings):
     # 때문이다. 호스트는 Pinecone 콘솔의 인덱스 화면에 있다.
     pinecone_api_key: str = Field(default="", repr=False, exclude=True)
     pinecone_index_host: str = ""
-    # 비우면 기본 네임스페이스. 적재 스크립트(export_place_embeddings_to_pinecone)가
+    # 비우면 기본 네임스페이스. 적재 스크립트(import_place_embeddings)가
     # 넣은 곳과 같아야 한다 — 다르면 오류 없이 검색 결과가 0건이 된다.
     pinecone_namespace: str = ""
 

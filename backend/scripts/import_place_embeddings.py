@@ -4,9 +4,8 @@
 근거 벡터를 Pinecone으로 옮겼고(2026-10, 팀 합의), 서비스도 Pinecone을 읽으므로
 적재도 Pinecone으로 한다. 장소가 활성 상태인지는 여전히 Supabase `places`로 확인한다.
 
-레코드 형식(ID = `chunk_id`, 메타데이터 열)은 이관 스크립트
-`export_place_embeddings_to_pinecone.py`의 `to_record`를 그대로 쓴다. 두 경로가
-다르면 같은 문장이 다른 ID로 들어가 중복이 쌓인다.
+레코드 형식(ID = `chunk_id`, 메타데이터 열)은 `pinecone_records.py`의 `to_record`가
+정한다. Supabase에서 옮겨 온 22만 개와 같은 형식이라, 다시 넣으면 같은 문장이 덮어써진다.
 
 설정: `backend/.env`의 SUPABASE_URL·SUPABASE_SECRET_KEY(장소 확인),
 PINECONE_API_KEY·PINECONE_INDEX_HOST·PINECONE_NAMESPACE(적재).
@@ -26,7 +25,7 @@ from pathlib import Path
 import httpx
 
 from app.config import Settings
-from scripts.export_place_embeddings_to_pinecone import (
+from scripts.pinecone_records import (
     PINECONE_API_VERSION,
     UPSERT_BATCH_SIZE,
     to_record,

@@ -41,7 +41,7 @@ from app.errors import AppError
 logger = logging.getLogger(__name__)
 
 # Pinecone 데이터 API 버전. 헤더가 없으면 가장 오래된 계약으로 응답하므로 명시한다.
-# 적재 스크립트(export_place_embeddings_to_pinecone)와 같은 값이다.
+# 적재 스크립트(scripts/pinecone_records.py)와 같은 값이다.
 _PINECONE_API_VERSION = "2026-07"
 
 # Supabase RPC와 같은 후보 상한. 호출부가 같은 계약을 기대하므로 맞춘다.
